@@ -56,6 +56,7 @@ from asterion_core.journal import (
     enqueue_journal_event_upserts,
     enqueue_order_state_transition_upserts,
     enqueue_order_upserts,
+    enqueue_reconciliation_result_upserts,
     enqueue_reservation_upserts,
     enqueue_strategy_run_upserts,
     enqueue_trade_ticket_upserts,
@@ -67,9 +68,12 @@ from asterion_core.risk import (
     apply_reservation_to_inventory,
     build_exposure_snapshot,
     build_reservation,
+    build_reconciliation_result,
     finalize_reservation,
+    classify_reconciliation_status,
     load_inventory_positions,
     load_reservation_for_order,
+    reconciliation_journal_payload,
     release_reservation_to_inventory,
 )
 from asterion_core.contracts import OrderStatus
@@ -502,6 +506,7 @@ def run_weather_paper_execution_job(
     fills = []
     inventory_positions_to_persist = list(current_inventory_positions)
     exposure_snapshots = []
+    reconciliation_results = []
     order_transitions = []
     order_ids: list[str] = []
     rejected_ticket_ids: list[str] = []
@@ -686,11 +691,20 @@ def run_weather_paper_execution_job(
             reservation=final_reservation,
             captured_at=fill_result.observed_at,
         )
+        reconciliation_result = build_reconciliation_result(
+            order=final_order,
+            reservation=final_reservation,
+            fills=fill_result.fills,
+            positions=current_inventory_positions,
+            exposure_snapshot=exposure_snapshot,
+            created_at=fill_result.observed_at,
+        )
         paper_orders.append(final_order)
         reservations.append(final_reservation)
         fills.extend(fill_result.fills)
         inventory_positions_to_persist = list(current_inventory_positions)
         exposure_snapshots.append(exposure_snapshot)
+        reconciliation_results.append(reconciliation_result)
         order_ids.append(final_order.order_id)
         order_transitions.append(posted_transition)
         if final_transition is not None:
@@ -867,6 +881,37 @@ def run_weather_paper_execution_job(
                 created_at=observed_at or datetime.now(UTC),
             )
         )
+        journal_events.append(
+            build_journal_event(
+                event_type="reconciliation.checked",
+                entity_type="reconciliation",
+                entity_id=reconciliation_result.reconciliation_id,
+                run_id=strategy_run.run_id,
+                payload_json=reconciliation_journal_payload(
+                    result=reconciliation_result,
+                    order=final_order,
+                    ticket_id=ticket.ticket_id,
+                    request_id=ticket.request_id,
+                ),
+                created_at=observed_at or datetime.now(UTC),
+            )
+        )
+        if reconciliation_result.status.value != "ok":
+            journal_events.append(
+                build_journal_event(
+                    event_type="reconciliation.mismatch",
+                    entity_type="reconciliation",
+                    entity_id=reconciliation_result.reconciliation_id,
+                    run_id=strategy_run.run_id,
+                    payload_json=reconciliation_journal_payload(
+                        result=reconciliation_result,
+                        order=final_order,
+                        ticket_id=ticket.ticket_id,
+                        request_id=ticket.request_id,
+                    ),
+                    created_at=observed_at or datetime.now(UTC),
+                )
+            )
 
     task_ids: list[str] = []
     task_ids.extend(_append_task_id(enqueue_strategy_run_upserts(queue_cfg, runs=[strategy_run], run_id=request_id)))
@@ -889,6 +934,15 @@ def run_weather_paper_execution_job(
             enqueue_exposure_snapshot_upserts(
                 queue_cfg,
                 snapshots=exposure_snapshots,
+                run_id=request_id,
+            )
+        )
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_reconciliation_result_upserts(
+                queue_cfg,
+                results=reconciliation_results,
                 run_id=request_id,
             )
         )
@@ -926,6 +980,8 @@ def run_weather_paper_execution_job(
             "fill_count": len(fills),
             "inventory_position_count": len(inventory_positions_to_persist),
             "exposure_snapshot_count": len(exposure_snapshots),
+            "reconciliation_count": len(reconciliation_results),
+            "reconciliation_mismatch_count": sum(1 for item in reconciliation_results if item.status.value != "ok"),
             "order_ids": order_ids,
             "rejected_ticket_ids": rejected_ticket_ids,
             "ticket_ids": [item.ticket_id for item in enriched_tickets],

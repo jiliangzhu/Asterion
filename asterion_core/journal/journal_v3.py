@@ -12,6 +12,7 @@ from asterion_core.contracts import (
     JournalEvent,
     Order,
     OrderStateTransition,
+    ReconciliationResult,
     Reservation,
     StrategyRun,
     TradeTicket,
@@ -177,6 +178,23 @@ TRADING_EXPOSURE_COLUMNS = [
     "settled_position_size",
     "redeemable_size",
     "captured_at",
+]
+
+TRADING_RECONCILIATION_COLUMNS = [
+    "reconciliation_id",
+    "wallet_id",
+    "funder",
+    "signature_type",
+    "asset_type",
+    "token_id",
+    "market_id",
+    "balance_type",
+    "local_quantity",
+    "remote_quantity",
+    "discrepancy",
+    "status",
+    "resolution",
+    "created_at",
 ]
 
 
@@ -374,6 +392,24 @@ def enqueue_exposure_snapshot_upserts(
     )
 
 
+def enqueue_reconciliation_result_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    results: list[ReconciliationResult],
+    run_id: str | None = None,
+) -> str | None:
+    if not results:
+        return None
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="trading.reconciliation_results",
+        pk_cols=["reconciliation_id"],
+        columns=list(TRADING_RECONCILIATION_COLUMNS),
+        rows=[reconciliation_result_to_row(item) for item in results],
+        run_id=run_id,
+    )
+
+
 def strategy_run_to_row(record: StrategyRun) -> list[Any]:
     return [
         record.run_id,
@@ -548,6 +584,25 @@ def exposure_snapshot_to_row(record: ExposureSnapshot) -> list[Any]:
         _decimal_to_sql(record.settled_position_size),
         _decimal_to_sql(record.redeemable_size),
         _sql_timestamp(record.captured_at),
+    ]
+
+
+def reconciliation_result_to_row(record: ReconciliationResult) -> list[Any]:
+    return [
+        record.reconciliation_id,
+        record.wallet_id,
+        record.funder,
+        record.signature_type,
+        record.asset_type,
+        record.token_id,
+        record.market_id,
+        _enum_value(record.balance_type),
+        _decimal_to_sql(record.local_quantity),
+        _decimal_to_sql(record.remote_quantity),
+        _decimal_to_sql(record.discrepancy),
+        _enum_value(record.status),
+        record.resolution,
+        _sql_timestamp(record.created_at),
     ]
 
 

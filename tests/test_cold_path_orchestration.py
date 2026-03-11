@@ -605,11 +605,26 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                     )(),
                 )
             )
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.build_reconciliation_result",
+                    return_value=type(
+                        "ReconciliationStub",
+                        (),
+                        {
+                            "reconciliation_id": "recon_1",
+                            "status": type("StatusStub", (), {"value": "ok"})(),
+                        },
+                    )(),
+                )
+            )
             stack.enter_context(patch("dagster_asterion.handlers.fill_journal_payload", return_value={"fill_id": "fill_1"}))
             stack.enter_context(patch("dagster_asterion.handlers.order_status_journal_payload", return_value={"status": "filled"}))
+            stack.enter_context(patch("dagster_asterion.handlers.reconciliation_journal_payload", return_value={"status": "ok", "reconciliation_id": "recon_1"}))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_reservation_upserts", return_value="task_reservation"))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_inventory_position_upserts", return_value="task_inventory"))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_exposure_snapshot_upserts", return_value="task_exposure"))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_reconciliation_result_upserts", return_value="task_reconciliation"))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_journal_event_upserts", return_value="task_journal"))
             result = run_weather_paper_execution_job(
                 object(),
@@ -639,6 +654,7 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                 "task_fill",
                 "task_inventory",
                 "task_exposure",
+                "task_reconciliation",
                 "task_transition",
                 "task_context",
                 "task_journal",
@@ -652,6 +668,8 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         self.assertEqual(result.metadata["fill_count"], 0)
         self.assertEqual(result.metadata["inventory_position_count"], 0)
         self.assertEqual(result.metadata["exposure_snapshot_count"], 2)
+        self.assertEqual(result.metadata["reconciliation_count"], 2)
+        self.assertEqual(result.metadata["reconciliation_mismatch_count"], 0)
         self.assertEqual(result.metadata["order_ids"], ["ordr_1", "ordr_1"])
         self.assertEqual(result.metadata["rejected_ticket_ids"], [])
         self.assertEqual(result.metadata["execution_context_count"], 1)

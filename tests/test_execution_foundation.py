@@ -18,6 +18,7 @@ from asterion_core.contracts import (
     InventoryPosition,
     MarketCapability,
     OrderStatus,
+    ReconciliationStatus,
     RouteAction,
     WatchOnlySnapshotRecord,
 )
@@ -71,8 +72,11 @@ from asterion_core.risk import (
     apply_fill_to_reservation,
     apply_reservation_to_inventory,
     build_exposure_snapshot,
+    build_reconciliation_result,
     build_reservation,
+    classify_reconciliation_status,
     finalize_reservation,
+    reconciliation_journal_payload,
     release_reservation_to_inventory,
 )
 from asterion_core.runtime import StrategyContext, StrategyRegistration, load_watch_only_snapshots, run_strategy_engine
@@ -80,6 +84,7 @@ from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.db_migrate import MigrationConfig, apply_migrations
 from asterion_core.storage.write_queue import WriteQueueConfig
 from asterion_core.storage.writerd import process_one
+from asterion_core.ui import build_ui_lite_db_once
 from dagster_asterion.handlers import run_weather_paper_execution_job
 
 HAS_DUCKDB = importlib.util.find_spec("duckdb") is not None
@@ -987,6 +992,119 @@ class ExecutionGateAndPortfolioTest(unittest.TestCase):
         self.assertEqual(sell_available.quantity, Decimal("7"))
         self.assertEqual(sell_reserved.quantity, Decimal("0"))
 
+    def test_reconciliation_builder_classifies_ok_and_inventory_mismatch(self) -> None:
+        order = build_order_from_intent(
+            build_signal_order_intent(
+                bind_trade_ticket_handoff(
+                    build_trade_ticket(
+                        run_strategy_engine(
+                            ctx=StrategyContext(
+                                data_snapshot_id="snap_weather_1",
+                                universe_snapshot_id=None,
+                                asof_ts_ms=1_710_000_000_000,
+                                dq_level="PASS",
+                                quote_snapshot_refs=[],
+                            ),
+                            snapshots=[_watch_snapshot(snapshot_id="snap_recon", token_id="tok_yes", outcome="YES", side="BUY", edge_bps=900)],
+                            strategies=[
+                                StrategyRegistration(
+                                    strategy_id="weather_primary",
+                                    strategy_version="v1",
+                                    priority=1,
+                                    route_action=RouteAction.FAK,
+                                    size=Decimal("10"),
+                                )
+                            ],
+                        )[1][0]
+                    ),
+                    wallet_id="wallet_weather_1",
+                    execution_context_id="ectx_recon",
+                ),
+                market_capability=_market_capability(),
+                account_capability=_account_capability(),
+            ),
+            wallet_id="wallet_weather_1",
+        )
+        fill = Fill(
+            fill_id="fill_recon_1",
+            order_id=order.order_id,
+            wallet_id=order.wallet_id,
+            market_id=order.market_id,
+            token_id=order.token_id,
+            outcome=order.outcome,
+            side=order.side,
+            price=Decimal("0.55"),
+            size=Decimal("10"),
+            fee=Decimal("0.10"),
+            fee_rate_bps=30,
+            trade_id="trade_recon_1",
+            exchange_order_id="ex_recon_1",
+            filled_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+        )
+        filled_order = dataclasses.replace(
+            order,
+            status=OrderStatus.FILLED,
+            filled_size=Decimal("10"),
+            remaining_size=Decimal("0"),
+            avg_fill_price=Decimal("0.55"),
+            exchange_order_id="ex_recon_1",
+        )
+        reservation = finalize_reservation(
+            apply_fill_to_reservation(build_reservation(order), fill),
+            order_status=OrderStatus.FILLED,
+            observed_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+        )
+        positions = [
+            InventoryPosition(
+                wallet_id="wallet_weather_1",
+                asset_type="outcome_token",
+                token_id="tok_yes",
+                market_id="mkt_weather_1",
+                outcome="YES",
+                balance_type=BalanceType.SETTLED,
+                quantity=Decimal("10"),
+                funder="0xfunder",
+                signature_type=1,
+                updated_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+            )
+        ]
+        exposure = build_exposure_snapshot(
+            filled_order,
+            positions=positions,
+            reservation=reservation,
+            captured_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+        )
+        ok_result = build_reconciliation_result(
+            order=filled_order,
+            reservation=reservation,
+            fills=[fill],
+            positions=positions,
+            exposure_snapshot=exposure,
+            created_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+        )
+        self.assertEqual(ok_result.status, ReconciliationStatus.OK)
+        self.assertEqual(
+            reconciliation_journal_payload(
+                result=ok_result,
+                order=filled_order,
+                ticket_id="tt_recon",
+                request_id="req_recon",
+            )["status"],
+            "ok",
+        )
+
+        bad_positions = [dataclasses.replace(positions[0], quantity=Decimal("9"))]
+        bad_status = classify_reconciliation_status(
+            order=filled_order,
+            reservation=reservation,
+            fills=[fill],
+            positions=bad_positions,
+            exposure_snapshot=exposure,
+            local_quantity=Decimal("9"),
+            remote_quantity=Decimal("10"),
+        )
+        self.assertEqual(bad_status, ReconciliationStatus.INVENTORY_MISMATCH)
+
     def test_journal_event_ids_are_stable(self) -> None:
         event_a = build_journal_event(
             event_type="trade_ticket.created",
@@ -1162,6 +1280,8 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertEqual(result.metadata["fill_count"], 1)
             self.assertEqual(result.metadata["inventory_position_count"], 3)
             self.assertEqual(result.metadata["exposure_snapshot_count"], 1)
+            self.assertEqual(result.metadata["reconciliation_count"], 1)
+            self.assertEqual(result.metadata["reconciliation_mismatch_count"], 0)
             self.assertEqual(result.metadata["execution_context_count"], 1)
 
             allow_tables = ",".join(
@@ -1175,6 +1295,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     "trading.inventory_positions",
                     "trading.order_state_transitions",
                     "trading.exposure_snapshots",
+                    "trading.reconciliation_results",
                     "capability.execution_contexts",
                     "runtime.journal_events",
                 ]
@@ -1202,8 +1323,9 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.inventory_positions").fetchone()[0], 3)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.order_state_transitions").fetchone()[0], 2)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.exposure_snapshots").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.reconciliation_results").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM capability.execution_contexts").fetchone()[0], 1)
-                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 13)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 14)
                     row = con.execute(
                         """
                         SELECT wallet_id, token_id, route_action, risk_gate_result
@@ -1260,6 +1382,13 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                         WHERE event_type = 'exposure.snapshot'
                         """
                     ).fetchone()
+                    reconciliation_event = con.execute(
+                        """
+                        SELECT payload_json
+                        FROM runtime.journal_events
+                        WHERE event_type = 'reconciliation.checked'
+                        """
+                    ).fetchone()
                     order_row = con.execute(
                         """
                         SELECT status
@@ -1282,6 +1411,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             fill_payload = json.loads(fill_event[0])
             reservation_payload = json.loads(reservation_event[0])
             exposure_payload = json.loads(exposure_event[0])
+            reconciliation_payload = json.loads(reconciliation_event[0])
             self.assertEqual(tuple(row), ("wallet_weather_1", "tok_yes", "fak", "pending_gate"))
             self.assertEqual(ticket.wallet_id, "wallet_weather_1")
             self.assertIsNotNone(ticket.execution_context_id)
@@ -1305,9 +1435,112 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertEqual(reservation_payload["status"], "converted")
             self.assertEqual(exposure_payload["filled_position_size"], "0")
             self.assertEqual(exposure_payload["settled_position_size"], "10.00000000")
+            self.assertEqual(reconciliation_payload["status"], "ok")
+            self.assertEqual(reconciliation_payload["discrepancy"], "0.00000000")
             self.assertEqual(order_row[0], "filled")
             self.assertEqual(tuple(latest_transition), ("posted", "filled"))
             self.assertTrue(handoff_payload["canonical_order_hash"].startswith("coh_"))
+
+    def test_ui_execution_ticket_summary_surfaces_reconciliation_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "asterion.duckdb")
+            lite_db = str(Path(tmpdir) / "ui_lite.duckdb")
+            report_json = str(Path(tmpdir) / "readiness.json")
+            queue_path = str(Path(tmpdir) / "write_queue.sqlite")
+            migrations_dir = str(Path(__file__).resolve().parents[1] / "sql" / "migrations")
+            writer_env = {
+                "ASTERION_STRICT_SINGLE_WRITER": "1",
+                "ASTERION_DB_ROLE": "writer",
+                "WRITERD": "1",
+            }
+            with patch.dict("os.environ", writer_env, clear=False):
+                apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=migrations_dir))
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    con.execute(
+                        "INSERT INTO capability.market_capabilities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ["tok_yes", "mkt_weather_1", "cond_weather_1", "YES", Decimal("0.01"), 30, False, Decimal("1"), True, True, "[\"gamma\",\"clob_public\"]", datetime(2026, 3, 10, 10, 0)],
+                    )
+                    con.execute(
+                        "INSERT INTO capability.account_trading_capabilities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ["wallet_weather_1", "eoa", 1, "0xfunder", "[\"0xrelayer\"]", True, True, None, datetime(2026, 3, 10, 10, 0)],
+                    )
+                    con.execute(
+                        "INSERT INTO weather.weather_watch_only_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ["snap_yes", "fv_yes", "frun_weather_1", "mkt_weather_1", "cond_weather_1", "tok_yes", "YES", 0.55, 0.63, 800, 500, "TAKE", "BUY", "ui recon", "{\"signal_ts_ms\":1710000000000}", datetime(2026, 3, 10, 10, 0)],
+                    )
+                    con.execute(
+                        "INSERT INTO trading.inventory_positions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ["wallet_weather_1", "usdc_e", "usdc_e", "cash", "cash", "available", Decimal("100"), "0xfunder", 1, datetime(2026, 3, 10, 10, 0)],
+                    )
+                finally:
+                    con.close()
+            reader_env = {
+                "ASTERION_STRICT_SINGLE_WRITER": "1",
+                "ASTERION_DB_ROLE": "reader",
+                "WRITERD": "0",
+            }
+            queue_cfg = WriteQueueConfig(path=queue_path)
+            with patch.dict("os.environ", reader_env, clear=False):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    run_weather_paper_execution_job(
+                        con,
+                        queue_cfg,
+                        params_json={
+                            "wallet_id": "wallet_weather_1",
+                            "strategy_registrations": [
+                                {
+                                    "strategy_id": "weather_primary",
+                                    "strategy_version": "v1",
+                                    "priority": 1,
+                                    "route_action": "FAK",
+                                    "size": "10",
+                                    "min_edge_bps": 500,
+                                }
+                            ],
+                            "snapshot_ids": ["snap_yes"],
+                        },
+                        observed_at=datetime(2026, 3, 10, 10, 6, tzinfo=UTC),
+                    )
+                finally:
+                    con.close()
+            allow_tables = ",".join(
+                [
+                    "runtime.strategy_runs",
+                    "runtime.trade_tickets",
+                    "runtime.gate_decisions",
+                    "trading.orders",
+                    "trading.reservations",
+                    "trading.fills",
+                    "trading.inventory_positions",
+                    "trading.order_state_transitions",
+                    "trading.exposure_snapshots",
+                    "trading.reconciliation_results",
+                    "capability.execution_contexts",
+                    "runtime.journal_events",
+                ]
+            )
+            with patch.dict("os.environ", {"ASTERION_DB_PATH": db_path, "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables}, clear=False):
+                while process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False):
+                    pass
+            built = build_ui_lite_db_once(
+                src_db_path=db_path,
+                dst_db_path=lite_db,
+                readiness_report_json_path=report_json,
+            )
+            self.assertTrue(built.ok, built.error)
+            con = connect_duckdb(DuckDBConfig(db_path=lite_db, ddl_path=None))
+            try:
+                row = con.execute(
+                    """
+                    SELECT reconciliation_status, reconciliation_discrepancy
+                    FROM ui.execution_ticket_summary
+                    """
+                ).fetchone()
+            finally:
+                con.close()
+            self.assertEqual(row, ("ok", Decimal("0E-8")))
 
     def test_weather_paper_execution_rerun_keeps_row_counts_and_latest_journal_stable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1449,6 +1682,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                         "trading.inventory_positions",
                         "trading.order_state_transitions",
                         "trading.exposure_snapshots",
+                        "trading.reconciliation_results",
                         "capability.execution_contexts",
                         "runtime.journal_events",
                     ]
@@ -1491,8 +1725,9 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.inventory_positions").fetchone()[0], 3)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.order_state_transitions").fetchone()[0], 2)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.exposure_snapshots").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.reconciliation_results").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM capability.execution_contexts").fetchone()[0], 1)
-                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 13)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 14)
                     by_type = dict(
                         con.execute(
                             """
@@ -1526,6 +1761,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     "order.created": 1,
                     "order.filled": 1,
                     "order.posted": 1,
+                    "reconciliation.checked": 1,
                     "reservation.converted": 1,
                     "reservation.created": 1,
                     "signal_order_intent.created": 1,
@@ -1672,6 +1908,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertEqual(result.metadata["reservation_count"], 0)
             self.assertEqual(result.metadata["fill_count"], 0)
             self.assertEqual(result.metadata["exposure_snapshot_count"], 0)
+            self.assertEqual(result.metadata["reconciliation_count"], 0)
             self.assertEqual(len(result.metadata["rejected_ticket_ids"]), 1)
 
             with patch.dict("os.environ", reader_env, clear=False):
@@ -1684,6 +1921,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.inventory_positions").fetchone()[0], 0)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.order_state_transitions").fetchone()[0], 0)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.exposure_snapshots").fetchone()[0], 0)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.reconciliation_results").fetchone()[0], 0)
                     by_type = dict(
                         con.execute(
                             """

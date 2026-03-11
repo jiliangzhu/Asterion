@@ -38,6 +38,14 @@ class BalanceType(str, Enum):
     REDEEMABLE = "redeemable"
 
 
+class ReconciliationStatus(str, Enum):
+    OK = "ok"
+    INVENTORY_MISMATCH = "inventory_mismatch"
+    RESERVATION_MISMATCH = "reservation_mismatch"
+    EXPOSURE_MISMATCH = "exposure_mismatch"
+    FILL_MISMATCH = "fill_mismatch"
+
+
 def reservation_asset_type_for_side(side: OrderSide) -> str:
     return "usdc_e" if side is OrderSide.BUY else "outcome_token"
 
@@ -253,3 +261,36 @@ class ExposureSnapshot:
         )
         if any(value < 0 for value in numeric_fields):
             raise ValueError("exposure values must be non-negative")
+
+
+@dataclass(frozen=True)
+class ReconciliationResult:
+    reconciliation_id: str
+    wallet_id: str
+    funder: str
+    signature_type: int
+    asset_type: str
+    token_id: str | None
+    market_id: str | None
+    balance_type: BalanceType
+    local_quantity: Decimal
+    remote_quantity: Decimal
+    discrepancy: Decimal
+    status: ReconciliationStatus
+    resolution: str | None
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if not self.reconciliation_id:
+            raise ValueError("reconciliation_id is required")
+        if not self.wallet_id or not self.funder or not self.asset_type:
+            raise ValueError("wallet_id, funder, and asset_type are required")
+        if self.signature_type < 0:
+            raise ValueError("signature_type must be non-negative")
+        numeric_fields = (
+            self.local_quantity,
+            self.remote_quantity,
+            self.discrepancy,
+        )
+        if any(value < 0 for value in numeric_fields):
+            raise ValueError("reconciliation quantities must be non-negative")

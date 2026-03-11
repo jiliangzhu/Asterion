@@ -501,6 +501,49 @@ def _build_ui_lite_contract(
                 )
                 WHERE rn = 1
             ),
+            latest_reconciliation_event_by_ticket AS (
+                SELECT
+                    ticket_id,
+                    request_id,
+                    reconciliation_id
+                FROM (
+                    SELECT
+                        json_extract_string(try_cast(payload_json AS JSON), '$.ticket_id') AS ticket_id,
+                        json_extract_string(try_cast(payload_json AS JSON), '$.request_id') AS request_id,
+                        json_extract_string(try_cast(payload_json AS JSON), '$.reconciliation_id') AS reconciliation_id,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY json_extract_string(try_cast(payload_json AS JSON), '$.ticket_id')
+                            ORDER BY created_at DESC, entity_id DESC
+                        ) AS rn
+                    FROM src.runtime.journal_events
+                    WHERE event_type IN ('reconciliation.checked', 'reconciliation.mismatch')
+                      AND json_extract_string(try_cast(payload_json AS JSON), '$.ticket_id') IS NOT NULL
+                )
+                WHERE rn = 1
+            ),
+            latest_reconciliation_event_by_request AS (
+                SELECT
+                    ticket_id,
+                    request_id,
+                    reconciliation_id
+                FROM (
+                    SELECT
+                        json_extract_string(try_cast(payload_json AS JSON), '$.ticket_id') AS ticket_id,
+                        json_extract_string(try_cast(payload_json AS JSON), '$.request_id') AS request_id,
+                        json_extract_string(try_cast(payload_json AS JSON), '$.reconciliation_id') AS reconciliation_id,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY json_extract_string(try_cast(payload_json AS JSON), '$.request_id')
+                            ORDER BY created_at DESC, entity_id DESC
+                        ) AS rn
+                    FROM src.runtime.journal_events
+                    WHERE event_type IN ('reconciliation.checked', 'reconciliation.mismatch')
+                      AND json_extract_string(try_cast(payload_json AS JSON), '$.ticket_id') IS NULL
+                      AND json_extract_string(try_cast(payload_json AS JSON), '$.request_id') IS NOT NULL
+                )
+                WHERE rn = 1
+            ),
             latest_journal_by_ticket AS (
                 SELECT
                     ticket_id,
@@ -583,6 +626,9 @@ def _build_ui_lite_contract(
                 ord.status AS order_status,
                 ord.reservation_id,
                 reservation.status AS reservation_status,
+                reconciliation.reconciliation_id,
+                reconciliation.status AS reconciliation_status,
+                reconciliation.discrepancy AS reconciliation_discrepancy,
                 COALESCE(journal_ticket.event_id, journal_request.event_id) AS latest_journal_event_id,
                 COALESCE(journal_ticket.event_type, journal_request.event_type) AS latest_journal_event_type,
                 COALESCE(journal_ticket.created_at, journal_request.created_at) AS latest_journal_created_at
@@ -601,6 +647,16 @@ def _build_ui_lite_contract(
                AND reservation_event_ticket.reservation_id IS NULL
             LEFT JOIN src.trading.reservations reservation
                 ON reservation.reservation_id = COALESCE(reservation_event_ticket.reservation_id, reservation_event_request.reservation_id)
+            LEFT JOIN latest_reconciliation_event_by_ticket reconciliation_event_ticket
+                ON reconciliation_event_ticket.ticket_id = ticket.ticket_id
+            LEFT JOIN latest_reconciliation_event_by_request reconciliation_event_request
+                ON reconciliation_event_request.request_id = ticket.request_id
+               AND reconciliation_event_ticket.reconciliation_id IS NULL
+            LEFT JOIN src.trading.reconciliation_results reconciliation
+                ON reconciliation.reconciliation_id = COALESCE(
+                    reconciliation_event_ticket.reconciliation_id,
+                    reconciliation_event_request.reconciliation_id
+                )
             LEFT JOIN latest_journal_by_ticket journal_ticket ON journal_ticket.ticket_id = ticket.ticket_id
             LEFT JOIN latest_journal_by_request journal_request
                 ON journal_request.request_id = ticket.request_id
