@@ -1,26 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_DOWN
 
-from asterion_core.contracts import (
-    Fill,
-    Order,
-    OrderStateTransition,
-    OrderStatus,
-    RouteAction,
-    TradeTicket,
-    stable_object_id,
-)
+from asterion_core.contracts import Fill, Order, OrderStatus, RouteAction, TradeTicket, stable_object_id
 
 
 @dataclass(frozen=True)
 class PaperFillSimulationResult:
-    updated_order: Order
     fills: list[Fill]
-    transitions: list[OrderStateTransition]
     outcome_reason: str
+    observed_at: datetime
 
 
 def simulate_quote_based_fill(
@@ -39,35 +30,19 @@ def simulate_quote_based_fill(
     fill_fraction = _base_fill_fraction(ticket)
     if route_action is RouteAction.POST_ONLY_GTC:
         return PaperFillSimulationResult(
-            updated_order=order,
             fills=[],
-            transitions=[],
             outcome_reason="post_only_rests",
+            observed_at=timestamp,
         )
     if route_action is RouteAction.FOK:
         fill_fraction = Decimal("1") if fill_fraction == Decimal("1") else Decimal("0")
 
     fill_size = _quantize_size(order.size * fill_fraction)
     if fill_size <= 0:
-        cancelled_order = replace(
-            order,
-            status=OrderStatus.CANCELLED,
-            remaining_size=Decimal("0"),
-            updated_at=timestamp,
-        )
         return PaperFillSimulationResult(
-            updated_order=cancelled_order,
             fills=[],
-            transitions=[
-                build_fill_transition(
-                    order_id=order.order_id,
-                    from_status=OrderStatus.POSTED,
-                    to_status=OrderStatus.CANCELLED,
-                    reason="paper_no_fill",
-                    timestamp=timestamp,
-                )
-            ],
             outcome_reason="no_fill",
+            observed_at=timestamp,
         )
 
     fill_price = order.price
@@ -98,77 +73,10 @@ def simulate_quote_based_fill(
         filled_at=timestamp,
     )
     remaining_size = _quantize_size(order.size - fill_size)
-    if remaining_size <= 0:
-        updated_order = replace(
-            order,
-            status=OrderStatus.FILLED,
-            filled_size=order.size,
-            remaining_size=Decimal("0"),
-            avg_fill_price=fill_price,
-            exchange_order_id=exchange_order_id,
-            updated_at=timestamp,
-        )
-        transition = build_fill_transition(
-            order_id=order.order_id,
-            from_status=OrderStatus.POSTED,
-            to_status=OrderStatus.FILLED,
-            reason="paper_full_fill",
-            timestamp=timestamp,
-        )
-        return PaperFillSimulationResult(
-            updated_order=updated_order,
-            fills=[fill],
-            transitions=[transition],
-            outcome_reason="full_fill",
-        )
-
-    updated_order = replace(
-        order,
-        status=OrderStatus.PARTIAL_FILLED,
-        filled_size=fill_size,
-        remaining_size=remaining_size,
-        avg_fill_price=fill_price,
-        exchange_order_id=exchange_order_id,
-        updated_at=timestamp,
-    )
-    transition = build_fill_transition(
-        order_id=order.order_id,
-        from_status=OrderStatus.POSTED,
-        to_status=OrderStatus.PARTIAL_FILLED,
-        reason="paper_partial_fill",
-        timestamp=timestamp,
-    )
     return PaperFillSimulationResult(
-        updated_order=updated_order,
         fills=[fill],
-        transitions=[transition],
-        outcome_reason="partial_fill",
-    )
-
-
-def build_fill_transition(
-    *,
-    order_id: str,
-    from_status: OrderStatus,
-    to_status: OrderStatus,
-    reason: str,
-    timestamp: datetime,
-) -> OrderStateTransition:
-    return OrderStateTransition(
-        transition_id=stable_object_id(
-            "otrans",
-            {
-                "order_id": order_id,
-                "from_status": from_status.value,
-                "to_status": to_status.value,
-                "reason": reason,
-            },
-        ),
-        order_id=order_id,
-        from_status=from_status,
-        to_status=to_status,
-        reason=reason,
-        timestamp=timestamp,
+        outcome_reason="full_fill" if remaining_size <= 0 else "partial_fill",
+        observed_at=timestamp,
     )
 
 
@@ -189,27 +97,6 @@ def fill_journal_payload(*, fill: Fill, ticket_id: str, request_id: str) -> dict
         "fee_rate_bps": fill.fee_rate_bps,
         "trade_id": fill.trade_id,
         "exchange_order_id": fill.exchange_order_id,
-    }
-
-
-def order_fill_status_journal_payload(
-    *,
-    order: Order,
-    ticket_id: str,
-    request_id: str,
-    reason: str,
-) -> dict[str, object]:
-    return {
-        "order_id": order.order_id,
-        "ticket_id": ticket_id,
-        "request_id": request_id,
-        "wallet_id": order.wallet_id,
-        "status": order.status.value,
-        "filled_size": str(order.filled_size),
-        "remaining_size": str(order.remaining_size),
-        "avg_fill_price": str(order.avg_fill_price) if order.avg_fill_price is not None else None,
-        "exchange_order_id": order.exchange_order_id,
-        "reason": reason,
     }
 
 

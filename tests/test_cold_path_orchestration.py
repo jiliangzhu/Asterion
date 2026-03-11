@@ -471,10 +471,12 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             )
             stack.enter_context(patch("dagster_asterion.handlers.load_account_trading_capability", return_value=account_capability))
             stack.enter_context(patch("dagster_asterion.handlers.load_market_capability", return_value=market_capability))
+            stack.enter_context(patch("dagster_asterion.handlers.load_inventory_positions", return_value=[]))
             stack.enter_context(patch("dagster_asterion.handlers.run_strategy_engine", return_value=(strategy_run, [object(), object()])))
             stack.enter_context(patch("dagster_asterion.handlers.build_trade_ticket", side_effect=tickets))
             build_context = stack.enter_context(patch("dagster_asterion.handlers.build_execution_context", return_value=object()))
             build_record = stack.enter_context(patch("dagster_asterion.handlers.build_execution_context_record", return_value=fake_record))
+            stack.enter_context(patch("dagster_asterion.handlers.available_inventory_quantity_for_ticket", return_value=Decimal("100")))
             stack.enter_context(
                 patch(
                     "dagster_asterion.handlers.evaluate_execution_gate",
@@ -488,9 +490,32 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             stack.enter_context(patch("dagster_asterion.handlers.route_trade_ticket", return_value=object()))
             stack.enter_context(patch("dagster_asterion.handlers.build_paper_order", return_value=type("OrderStub", (), {"order_id": "ordr_1"})()))
             stack.enter_context(
-                patch("dagster_asterion.handlers.build_order_state_transition", return_value=type("TransitionStub", (), {"transition_id": "otrans_1"})())
+                patch(
+                    "dagster_asterion.handlers.build_reservation",
+                    return_value=type(
+                        "ReservationStub",
+                        (),
+                        {
+                            "reservation_id": "res_1",
+                            "order_id": "ordr_1",
+                            "asset_type": "usdc_e",
+                            "reserved_quantity": Decimal("5.5"),
+                            "remaining_quantity": Decimal("5.5"),
+                            "status": type("StatusStub", (), {"value": "open"})(),
+                        },
+                    )(),
+                )
             )
-            stack.enter_context(patch("dagster_asterion.handlers.paper_order_journal_payload", return_value={"order_id": "ordr_1", "status": "posted"}))
+            stack.enter_context(patch("dagster_asterion.handlers.apply_reservation_to_inventory", return_value=[]))
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.transition_order_to_posted",
+                    return_value=(
+                        type("OrderPostedStub", (), {"order_id": "ordr_1", "status": "posted"})(),
+                        type("TransitionPostedStub", (), {"transition_id": "otrans_posted"})(),
+                    ),
+                )
+            )
             stack.enter_context(patch("dagster_asterion.handlers.paper_order_journal_payload_with_status", return_value={"order_id": "ordr_1", "status": "created"}))
             stack.enter_context(patch("dagster_asterion.handlers.gate_rejection_journal_payload", return_value={"reason": "blocked"}))
             stack.enter_context(
@@ -498,6 +523,8 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             )
             stack.enter_context(patch("dagster_asterion.handlers.canonical_order_router_hash", return_value="coh_1"))
             stack.enter_context(patch("dagster_asterion.handlers.build_signal_order_intent_from_handoff", return_value=object()))
+            stack.enter_context(patch("dagster_asterion.handlers.build_order_from_intent", return_value=type("PreviewOrderStub", (), {"order_id": "ordr_1"})()))
+            stack.enter_context(patch("dagster_asterion.handlers.load_reservation_for_order", return_value=None))
             stack.enter_context(patch("dagster_asterion.handlers.canonical_order_handoff_payload", return_value={"route_action": "fak", "post_only": False}))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_strategy_run_upserts", return_value="task_strategy"))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_trade_ticket_upserts", return_value="task_ticket"))
@@ -512,12 +539,77 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                     return_value=type(
                         "PaperFillResultStub",
                         (),
-                        {"updated_order": type("OrderStubFilled", (), {"order_id": "ordr_1", "status": "filled"})(), "fills": [], "transitions": [], "outcome_reason": "full_fill"},
+                        {"fills": [], "outcome_reason": "full_fill", "observed_at": None},
+                    )(),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.apply_fills_to_order",
+                    return_value=(
+                        type("OrderStubFilled", (), {"order_id": "ordr_1", "status": "filled"})(),
+                        type("TransitionFillStub", (), {"transition_id": "otrans_filled"})(),
+                    ),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.apply_fill_to_inventory",
+                    return_value=[],
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.apply_fill_to_reservation",
+                    return_value=type(
+                        "ReservationConvertedStub",
+                        (),
+                        {
+                            "reservation_id": "res_1",
+                            "order_id": "ordr_1",
+                            "remaining_quantity": Decimal("0"),
+                            "status": type("StatusStub", (), {"value": "converted"})(),
+                        },
+                    )(),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.finalize_reservation",
+                    return_value=type(
+                        "ReservationFinalStub",
+                        (),
+                        {
+                            "reservation_id": "res_1",
+                            "order_id": "ordr_1",
+                            "remaining_quantity": Decimal("0"),
+                            "status": type("StatusStub", (), {"value": "converted"})(),
+                        },
+                    )(),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.build_exposure_snapshot",
+                    return_value=type(
+                        "ExposureStub",
+                        (),
+                        {
+                            "snapshot_id": "expo_1",
+                            "open_order_size": Decimal("0"),
+                            "reserved_notional_usdc": Decimal("0"),
+                            "filled_position_size": Decimal("0"),
+                            "settled_position_size": Decimal("10"),
+                            "redeemable_size": Decimal("0"),
+                        },
                     )(),
                 )
             )
             stack.enter_context(patch("dagster_asterion.handlers.fill_journal_payload", return_value={"fill_id": "fill_1"}))
-            stack.enter_context(patch("dagster_asterion.handlers.order_fill_status_journal_payload", return_value={"status": "filled"}))
+            stack.enter_context(patch("dagster_asterion.handlers.order_status_journal_payload", return_value={"status": "filled"}))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_reservation_upserts", return_value="task_reservation"))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_inventory_position_upserts", return_value="task_inventory"))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_exposure_snapshot_upserts", return_value="task_exposure"))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_journal_event_upserts", return_value="task_journal"))
             result = run_weather_paper_execution_job(
                 object(),
@@ -538,13 +630,28 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             )
         self.assertEqual(
             result.task_ids,
-            ["task_strategy", "task_ticket", "task_gate", "task_order", "task_fill", "task_transition", "task_context", "task_journal"],
+            [
+                "task_strategy",
+                "task_ticket",
+                "task_gate",
+                "task_order",
+                "task_reservation",
+                "task_fill",
+                "task_inventory",
+                "task_exposure",
+                "task_transition",
+                "task_context",
+                "task_journal",
+            ],
         )
         self.assertEqual(result.metadata["ticket_count"], 2)
         self.assertEqual(result.metadata["ticket_ids"], ["tt_1", "tt_2"])
         self.assertEqual(result.metadata["gate_count"], 2)
         self.assertEqual(result.metadata["allowed_order_count"], 2)
+        self.assertEqual(result.metadata["reservation_count"], 2)
         self.assertEqual(result.metadata["fill_count"], 0)
+        self.assertEqual(result.metadata["inventory_position_count"], 0)
+        self.assertEqual(result.metadata["exposure_snapshot_count"], 2)
         self.assertEqual(result.metadata["order_ids"], ["ordr_1", "ordr_1"])
         self.assertEqual(result.metadata["rejected_ticket_ids"], [])
         self.assertEqual(result.metadata["execution_context_count"], 1)

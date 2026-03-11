@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, datetime
 
 from asterion_core.contracts import (
@@ -24,16 +23,11 @@ def build_paper_order(
     if not gate_decision.allowed:
         raise ValueError("paper adapter requires an allowed gate_decision")
     timestamp = created_at or datetime.now(UTC)
-    base_order = build_order_from_intent(
+    return build_order_from_intent(
         intent,
         wallet_id=wallet_id,
         created_at=timestamp,
         status=OrderStatus.CREATED,
-    )
-    return replace(
-        base_order,
-        status=OrderStatus.POSTED,
-        updated_at=timestamp,
     )
 
 

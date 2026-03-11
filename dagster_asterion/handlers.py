@@ -24,10 +24,11 @@ from asterion_core.contracts import (
     new_request_id,
 )
 from asterion_core.execution import (
+    apply_fills_to_order,
     bind_trade_ticket_handoff,
     build_execution_context,
     build_execution_context_record,
-    build_order_state_transition,
+    build_order_from_intent,
     build_paper_order,
     build_signal_order_intent_from_handoff,
     build_trade_ticket,
@@ -40,22 +41,36 @@ from asterion_core.execution import (
     gate_rejection_journal_payload,
     load_account_trading_capability,
     load_market_capability,
-    order_fill_status_journal_payload,
-    paper_order_journal_payload,
+    order_status_journal_payload,
     paper_order_journal_payload_with_status,
     route_trade_ticket,
-    reservation_required_quantity,
     simulate_quote_based_fill,
+    transition_order_to_posted,
 )
 from asterion_core.journal import (
     build_journal_event,
+    enqueue_exposure_snapshot_upserts,
     enqueue_fill_upserts,
     enqueue_gate_decision_upserts,
+    enqueue_inventory_position_upserts,
     enqueue_journal_event_upserts,
     enqueue_order_state_transition_upserts,
     enqueue_order_upserts,
+    enqueue_reservation_upserts,
     enqueue_strategy_run_upserts,
     enqueue_trade_ticket_upserts,
+)
+from asterion_core.risk import (
+    available_inventory_quantity_for_ticket,
+    apply_fill_to_inventory,
+    apply_fill_to_reservation,
+    apply_reservation_to_inventory,
+    build_exposure_snapshot,
+    build_reservation,
+    finalize_reservation,
+    load_inventory_positions,
+    load_reservation_for_order,
+    release_reservation_to_inventory,
 )
 from asterion_core.contracts import OrderStatus
 from asterion_core.runtime import (
@@ -443,6 +458,7 @@ def run_weather_paper_execution_job(
     )
 
     account_capability = load_account_trading_capability(con, wallet_id=batch_request.wallet_id)
+    current_inventory_positions = load_inventory_positions(con, wallet_id=batch_request.wallet_id)
     strategy_run, decisions = run_strategy_engine(
         ctx=ctx,
         snapshots=snapshots,
@@ -482,7 +498,10 @@ def run_weather_paper_execution_job(
 
     gate_decisions = []
     paper_orders = []
+    reservations = []
     fills = []
+    inventory_positions_to_persist = list(current_inventory_positions)
+    exposure_snapshots = []
     order_transitions = []
     order_ids: list[str] = []
     rejected_ticket_ids: list[str] = []
@@ -502,12 +521,24 @@ def run_weather_paper_execution_job(
             ticket,
             execution_context=hydrated_execution_context,
         )
+        preview_order = build_order_from_intent(
+            signal_order_intent,
+            wallet_id=ticket.wallet_id or "",
+            created_at=observed_at or datetime.now(UTC),
+        )
+        existing_reservation = load_reservation_for_order(con, order_id=preview_order.order_id)
+        available_quantity = available_inventory_quantity_for_ticket(
+            current_inventory_positions,
+            ticket=ticket,
+        )
+        if existing_reservation is not None:
+            available_quantity = max(available_quantity, existing_reservation.reserved_quantity)
         gate_decision = evaluate_execution_gate(
             ticket=ticket,
             intent=signal_order_intent,
             watch_only_active=batch_request.dq_level != "PASS",
             degrade_active=False,
-            available_quantity=reservation_required_quantity(ticket),
+            available_quantity=available_quantity,
             created_at=observed_at or datetime.now(UTC),
         )
         gate_decisions.append(gate_decision)
@@ -590,38 +621,88 @@ def run_weather_paper_execution_job(
                 )
             )
             continue
-        paper_order = build_paper_order(
+        created_order = build_paper_order(
             intent=signal_order_intent,
             wallet_id=ticket.wallet_id or "",
             gate_decision=gate_decision,
             created_at=observed_at or datetime.now(UTC),
         )
+        reservation = existing_reservation or build_reservation(
+            created_order,
+            created_at=observed_at or datetime.now(UTC),
+        )
+        if existing_reservation is None:
+            current_inventory_positions = apply_reservation_to_inventory(
+                current_inventory_positions,
+                reservation,
+                observed_at=observed_at or datetime.now(UTC),
+            )
+        posted_order, posted_transition = transition_order_to_posted(
+            created_order,
+            timestamp=observed_at or datetime.now(UTC),
+        )
         fill_result = simulate_quote_based_fill(
-            order=paper_order,
+            order=posted_order,
             ticket=ticket,
             observed_at=observed_at or datetime.now(UTC),
         )
-        paper_orders.append(fill_result.updated_order)
-        fills.extend(fill_result.fills)
-        order_ids.append(fill_result.updated_order.order_id)
-        order_transitions.append(
-            build_order_state_transition(
-                order=paper_order,
-                from_status=OrderStatus.CREATED,
-                to_status=OrderStatus.POSTED,
-                reason="paper_adapter_posted",
-                timestamp=observed_at or datetime.now(UTC),
-            )
+        current_reservation = reservation
+        if existing_reservation is None:
+            for fill in fill_result.fills:
+                current_inventory_positions = apply_fill_to_inventory(
+                    current_inventory_positions,
+                    order=posted_order,
+                    reservation=current_reservation,
+                    fill=fill,
+                    observed_at=fill.filled_at,
+                )
+                current_reservation = apply_fill_to_reservation(
+                    current_reservation,
+                    fill,
+                    observed_at=fill.filled_at,
+                )
+        final_order, final_transition = apply_fills_to_order(
+            posted_order,
+            fills=fill_result.fills,
+            timestamp=fill_result.observed_at,
         )
-        order_transitions.extend(fill_result.transitions)
+        if existing_reservation is None:
+            if final_order.status is OrderStatus.CANCELLED and current_reservation.remaining_quantity > 0:
+                current_inventory_positions = release_reservation_to_inventory(
+                    current_inventory_positions,
+                    current_reservation,
+                    observed_at=fill_result.observed_at,
+                )
+            final_reservation = finalize_reservation(
+                current_reservation,
+                order_status=final_order.status,
+                observed_at=fill_result.observed_at,
+            )
+        else:
+            final_reservation = current_reservation
+        exposure_snapshot = build_exposure_snapshot(
+            final_order,
+            positions=current_inventory_positions,
+            reservation=final_reservation,
+            captured_at=fill_result.observed_at,
+        )
+        paper_orders.append(final_order)
+        reservations.append(final_reservation)
+        fills.extend(fill_result.fills)
+        inventory_positions_to_persist = list(current_inventory_positions)
+        exposure_snapshots.append(exposure_snapshot)
+        order_ids.append(final_order.order_id)
+        order_transitions.append(posted_transition)
+        if final_transition is not None:
+            order_transitions.append(final_transition)
         journal_events.append(
             build_journal_event(
                 event_type="order.created",
                 entity_type="order",
-                entity_id=fill_result.updated_order.order_id,
+                entity_id=created_order.order_id,
                 run_id=strategy_run.run_id,
                 payload_json=paper_order_journal_payload_with_status(
-                    order=fill_result.updated_order,
+                    order=created_order,
                     ticket_id=ticket.ticket_id,
                     request_id=ticket.request_id,
                     status=OrderStatus.CREATED,
@@ -631,12 +712,31 @@ def run_weather_paper_execution_job(
         )
         journal_events.append(
             build_journal_event(
+                event_type="reservation.created",
+                entity_type="reservation",
+                entity_id=reservation.reservation_id,
+                run_id=strategy_run.run_id,
+                payload_json={
+                    "reservation_id": reservation.reservation_id,
+                    "order_id": reservation.order_id,
+                    "ticket_id": ticket.ticket_id,
+                    "request_id": ticket.request_id,
+                    "asset_type": reservation.asset_type,
+                    "reserved_quantity": str(reservation.reserved_quantity),
+                    "remaining_quantity": str(reservation.remaining_quantity),
+                    "status": reservation.status.value,
+                },
+                created_at=observed_at or datetime.now(UTC),
+            )
+        )
+        journal_events.append(
+            build_journal_event(
                 event_type="order.posted",
                 entity_type="order",
-                entity_id=fill_result.updated_order.order_id,
+                entity_id=posted_order.order_id,
                 run_id=strategy_run.run_id,
                 payload_json=paper_order_journal_payload_with_status(
-                    order=fill_result.updated_order,
+                    order=posted_order,
                     ticket_id=ticket.ticket_id,
                     request_id=ticket.request_id,
                     status=OrderStatus.POSTED,
@@ -659,15 +759,15 @@ def run_weather_paper_execution_job(
                     created_at=observed_at or datetime.now(UTC),
                 )
             )
-        if fill_result.updated_order.status is OrderStatus.PARTIAL_FILLED:
+        if final_order.status is OrderStatus.PARTIAL_FILLED:
             journal_events.append(
                 build_journal_event(
                     event_type="order.partial_filled",
                     entity_type="order",
-                    entity_id=fill_result.updated_order.order_id,
+                    entity_id=final_order.order_id,
                     run_id=strategy_run.run_id,
-                    payload_json=order_fill_status_journal_payload(
-                        order=fill_result.updated_order,
+                    payload_json=order_status_journal_payload(
+                        order=final_order,
                         ticket_id=ticket.ticket_id,
                         request_id=ticket.request_id,
                         reason=fill_result.outcome_reason,
@@ -675,15 +775,15 @@ def run_weather_paper_execution_job(
                     created_at=observed_at or datetime.now(UTC),
                 )
             )
-        elif fill_result.updated_order.status is OrderStatus.FILLED:
+        elif final_order.status is OrderStatus.FILLED:
             journal_events.append(
                 build_journal_event(
                     event_type="order.filled",
                     entity_type="order",
-                    entity_id=fill_result.updated_order.order_id,
+                    entity_id=final_order.order_id,
                     run_id=strategy_run.run_id,
-                    payload_json=order_fill_status_journal_payload(
-                        order=fill_result.updated_order,
+                    payload_json=order_status_journal_payload(
+                        order=final_order,
                         ticket_id=ticket.ticket_id,
                         request_id=ticket.request_id,
                         reason=fill_result.outcome_reason,
@@ -691,15 +791,15 @@ def run_weather_paper_execution_job(
                     created_at=observed_at or datetime.now(UTC),
                 )
             )
-        elif fill_result.updated_order.status is OrderStatus.CANCELLED:
+        elif final_order.status is OrderStatus.CANCELLED:
             journal_events.append(
                 build_journal_event(
                     event_type="order.cancelled",
                     entity_type="order",
-                    entity_id=fill_result.updated_order.order_id,
+                    entity_id=final_order.order_id,
                     run_id=strategy_run.run_id,
-                    payload_json=order_fill_status_journal_payload(
-                        order=fill_result.updated_order,
+                    payload_json=order_status_journal_payload(
+                        order=final_order,
                         ticket_id=ticket.ticket_id,
                         request_id=ticket.request_id,
                         reason=fill_result.outcome_reason,
@@ -707,13 +807,92 @@ def run_weather_paper_execution_job(
                     created_at=observed_at or datetime.now(UTC),
                 )
             )
+        if final_reservation.status.value == "partially_consumed":
+            reservation_event_type = "reservation.partially_consumed"
+        elif final_reservation.status.value == "converted":
+            reservation_event_type = "reservation.converted"
+        elif final_reservation.status.value == "released":
+            reservation_event_type = "reservation.released"
+        else:
+            reservation_event_type = "reservation.updated"
+        journal_events.append(
+            build_journal_event(
+                event_type=reservation_event_type,
+                entity_type="reservation",
+                entity_id=final_reservation.reservation_id,
+                run_id=strategy_run.run_id,
+                payload_json={
+                    "reservation_id": final_reservation.reservation_id,
+                    "order_id": final_reservation.order_id,
+                    "ticket_id": ticket.ticket_id,
+                    "request_id": ticket.request_id,
+                    "remaining_quantity": str(final_reservation.remaining_quantity),
+                    "status": final_reservation.status.value,
+                },
+                created_at=observed_at or datetime.now(UTC),
+            )
+        )
+        journal_events.append(
+            build_journal_event(
+                event_type="inventory.updated",
+                entity_type="inventory_position",
+                entity_id=final_order.order_id,
+                run_id=strategy_run.run_id,
+                payload_json={
+                    "order_id": final_order.order_id,
+                    "ticket_id": ticket.ticket_id,
+                    "request_id": ticket.request_id,
+                    "position_count": len(current_inventory_positions),
+                },
+                created_at=observed_at or datetime.now(UTC),
+            )
+        )
+        journal_events.append(
+            build_journal_event(
+                event_type="exposure.snapshot",
+                entity_type="exposure_snapshot",
+                entity_id=exposure_snapshot.snapshot_id,
+                run_id=strategy_run.run_id,
+                payload_json={
+                    "snapshot_id": exposure_snapshot.snapshot_id,
+                    "order_id": final_order.order_id,
+                    "ticket_id": ticket.ticket_id,
+                    "request_id": ticket.request_id,
+                    "open_order_size": str(exposure_snapshot.open_order_size),
+                    "reserved_notional_usdc": str(exposure_snapshot.reserved_notional_usdc),
+                    "filled_position_size": str(exposure_snapshot.filled_position_size),
+                    "settled_position_size": str(exposure_snapshot.settled_position_size),
+                    "redeemable_size": str(exposure_snapshot.redeemable_size),
+                },
+                created_at=observed_at or datetime.now(UTC),
+            )
+        )
 
     task_ids: list[str] = []
     task_ids.extend(_append_task_id(enqueue_strategy_run_upserts(queue_cfg, runs=[strategy_run], run_id=request_id)))
     task_ids.extend(_append_task_id(enqueue_trade_ticket_upserts(queue_cfg, tickets=enriched_tickets, run_id=request_id)))
     task_ids.extend(_append_task_id(enqueue_gate_decision_upserts(queue_cfg, gate_decisions=gate_decisions, run_id=request_id)))
     task_ids.extend(_append_task_id(enqueue_order_upserts(queue_cfg, orders=paper_orders, run_id=request_id)))
+    task_ids.extend(_append_task_id(enqueue_reservation_upserts(queue_cfg, reservations=reservations, run_id=request_id)))
     task_ids.extend(_append_task_id(enqueue_fill_upserts(queue_cfg, fills=fills, run_id=request_id)))
+    task_ids.extend(
+        _append_task_id(
+            enqueue_inventory_position_upserts(
+                queue_cfg,
+                positions=inventory_positions_to_persist,
+                run_id=request_id,
+            )
+        )
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_exposure_snapshot_upserts(
+                queue_cfg,
+                snapshots=exposure_snapshots,
+                run_id=request_id,
+            )
+        )
+    )
     task_ids.extend(
         _append_task_id(
             enqueue_order_state_transition_upserts(queue_cfg, transitions=order_transitions, run_id=request_id)
@@ -743,7 +922,10 @@ def run_weather_paper_execution_job(
             "ticket_count": len(enriched_tickets),
             "gate_count": len(gate_decisions),
             "allowed_order_count": len(paper_orders),
+            "reservation_count": len(reservations),
             "fill_count": len(fills),
+            "inventory_position_count": len(inventory_positions_to_persist),
+            "exposure_snapshot_count": len(exposure_snapshots),
             "order_ids": order_ids,
             "rejected_ticket_ids": rejected_ticket_ids,
             "ticket_ids": [item.ticket_id for item in enriched_tickets],

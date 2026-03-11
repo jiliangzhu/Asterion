@@ -22,8 +22,8 @@ from asterion_core.contracts import (
     WatchOnlySnapshotRecord,
 )
 from asterion_core.execution import (
+    apply_fills_to_order,
     bind_trade_ticket_handoff,
-    build_order_state_transition,
     build_paper_order,
     build_execution_context,
     build_execution_context_record,
@@ -45,10 +45,12 @@ from asterion_core.execution import (
     load_account_trading_capability,
     load_market_capability,
     load_trade_ticket,
-    order_fill_status_journal_payload,
+    order_status_journal_payload,
     route_trade_ticket,
     route_trade_ticket_from_handoff,
     simulate_quote_based_fill,
+    transition_order_to_posted,
+    validate_order_transition,
 )
 from asterion_core.journal import (
     build_journal_event,
@@ -64,11 +66,14 @@ from asterion_core.journal import (
     enqueue_trade_ticket_upserts,
 )
 from asterion_core.risk import (
+    available_inventory_quantity_for_ticket,
+    apply_fill_to_inventory,
     apply_fill_to_reservation,
     apply_reservation_to_inventory,
     build_exposure_snapshot,
     build_reservation,
     finalize_reservation,
+    release_reservation_to_inventory,
 )
 from asterion_core.runtime import StrategyContext, StrategyRegistration, load_watch_only_snapshots, run_strategy_engine
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
@@ -461,7 +466,7 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "route_action"):
             route_trade_ticket(base_ticket, mismatched_context)
 
-    def test_paper_adapter_builds_posted_order_and_transition(self) -> None:
+    def test_paper_adapter_builds_created_order_and_oms_posts_it(self) -> None:
         _, decisions = run_strategy_engine(
             ctx=StrategyContext(
                 data_snapshot_id="snap_weather_1",
@@ -507,11 +512,8 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
             gate_decision=gate,
             created_at=datetime(2026, 3, 10, 10, 1, tzinfo=UTC),
         )
-        transition = build_order_state_transition(
-            order=order,
-            from_status=OrderStatus.CREATED,
-            to_status=OrderStatus.POSTED,
-            reason="paper_adapter_posted",
+        posted_order, transition = transition_order_to_posted(
+            order,
             timestamp=datetime(2026, 3, 10, 10, 1, tzinfo=UTC),
         )
         rejection_payload = gate_rejection_journal_payload(
@@ -529,13 +531,14 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(order.status, OrderStatus.POSTED)
+        self.assertEqual(order.status, OrderStatus.CREATED)
         self.assertEqual(order.remaining_size, Decimal("10"))
+        self.assertEqual(posted_order.status, OrderStatus.POSTED)
         self.assertEqual(transition.from_status, OrderStatus.CREATED)
         self.assertEqual(transition.to_status, OrderStatus.POSTED)
         self.assertEqual(rejection_payload["reason"], "market_not_tradable")
 
-    def test_quote_based_fill_simulator_full_partial_and_cancel_paths(self) -> None:
+    def test_quote_based_fill_simulator_and_oms_cover_full_partial_cancel_and_resting_paths(self) -> None:
         market_capability = _market_capability()
         account_capability = _account_capability()
 
@@ -584,7 +587,11 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
                 ),
                 created_at=datetime(2026, 3, 10, 10, 1, tzinfo=UTC),
             )
-            return ticket, order
+            posted_order, _ = transition_order_to_posted(
+                order,
+                timestamp=datetime(2026, 3, 10, 10, 1, tzinfo=UTC),
+            )
+            return ticket, posted_order
 
         full_ticket, full_order = _build_posted_order(RouteAction.FAK, 800)
         full_result = simulate_quote_based_fill(
@@ -592,10 +599,16 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
             ticket=full_ticket,
             observed_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
         )
-        self.assertEqual(full_result.updated_order.status, OrderStatus.FILLED)
         self.assertEqual(len(full_result.fills), 1)
-        self.assertEqual(full_result.updated_order.remaining_size, Decimal("0"))
-        self.assertEqual(full_result.transitions[0].to_status, OrderStatus.FILLED)
+        full_order_after, full_transition = apply_fills_to_order(
+            full_order,
+            fills=full_result.fills,
+            timestamp=full_result.observed_at,
+        )
+        self.assertEqual(full_order_after.status, OrderStatus.FILLED)
+        self.assertEqual(full_order_after.remaining_size, Decimal("0"))
+        self.assertIsNotNone(full_transition)
+        self.assertEqual(full_transition.to_status, OrderStatus.FILLED)
 
         partial_ticket, partial_order = _build_posted_order(RouteAction.FAK, 600)
         partial_result = simulate_quote_based_fill(
@@ -603,10 +616,23 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
             ticket=partial_ticket,
             observed_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
         )
-        self.assertEqual(partial_result.updated_order.status, OrderStatus.PARTIAL_FILLED)
         self.assertEqual(partial_result.fills[0].size, Decimal("5.00000000"))
-        self.assertEqual(partial_result.transitions[0].to_status, OrderStatus.PARTIAL_FILLED)
-        self.assertEqual(order_fill_status_journal_payload(order=partial_result.updated_order, ticket_id=partial_ticket.ticket_id, request_id=partial_ticket.request_id, reason=partial_result.outcome_reason)["status"], "partial_filled")
+        partial_order_after, partial_transition = apply_fills_to_order(
+            partial_order,
+            fills=partial_result.fills,
+            timestamp=partial_result.observed_at,
+        )
+        self.assertEqual(partial_order_after.status, OrderStatus.PARTIAL_FILLED)
+        self.assertEqual(partial_transition.to_status, OrderStatus.PARTIAL_FILLED)
+        self.assertEqual(
+            order_status_journal_payload(
+                order=partial_order_after,
+                ticket_id=partial_ticket.ticket_id,
+                request_id=partial_ticket.request_id,
+                reason=partial_result.outcome_reason,
+            )["status"],
+            "partial_filled",
+        )
 
         fok_ticket, fok_order = _build_posted_order(RouteAction.FOK, 600)
         fok_result = simulate_quote_based_fill(
@@ -614,9 +640,15 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
             ticket=fok_ticket,
             observed_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
         )
-        self.assertEqual(fok_result.updated_order.status, OrderStatus.CANCELLED)
         self.assertEqual(fok_result.fills, [])
-        self.assertEqual(fok_result.transitions[0].to_status, OrderStatus.CANCELLED)
+        fok_order_after, fok_transition = apply_fills_to_order(
+            fok_order,
+            fills=fok_result.fills,
+            timestamp=fok_result.observed_at,
+        )
+        self.assertEqual(fok_order_after.status, OrderStatus.CANCELLED)
+        self.assertIsNotNone(fok_transition)
+        self.assertEqual(fok_transition.to_status, OrderStatus.CANCELLED)
 
         resting_ticket, resting_order = _build_posted_order(RouteAction.POST_ONLY_GTC, 900)
         resting_result = simulate_quote_based_fill(
@@ -624,10 +656,20 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
             ticket=resting_ticket,
             observed_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
         )
-        self.assertEqual(resting_result.updated_order.status, OrderStatus.POSTED)
         self.assertEqual(resting_result.fills, [])
-        self.assertEqual(resting_result.transitions, [])
+        resting_order_after, resting_transition = apply_fills_to_order(
+            resting_order,
+            fills=resting_result.fills,
+            timestamp=resting_result.observed_at,
+        )
+        self.assertEqual(resting_order_after.status, OrderStatus.POSTED)
+        self.assertIsNone(resting_transition)
         self.assertIn("fill_id", fill_journal_payload(fill=full_result.fills[0], ticket_id=full_ticket.ticket_id, request_id=full_ticket.request_id))
+
+    def test_oms_state_machine_rejects_invalid_transitions(self) -> None:
+        validate_order_transition(OrderStatus.CREATED, OrderStatus.POSTED)
+        with self.assertRaisesRegex(ValueError, "invalid OMS transition"):
+            validate_order_transition(OrderStatus.CREATED, OrderStatus.FILLED)
 
 
 class ExecutionGateAndPortfolioTest(unittest.TestCase):
@@ -787,6 +829,164 @@ class ExecutionGateAndPortfolioTest(unittest.TestCase):
         self.assertEqual(released.remaining_quantity, Decimal("0"))
         self.assertEqual(str(released.status), "ReservationStatus.RELEASED")
 
+    def test_inventory_helpers_cover_buy_sell_fill_and_release_paths(self) -> None:
+        buy_ticket = bind_trade_ticket_handoff(
+            build_trade_ticket(
+                run_strategy_engine(
+                    ctx=StrategyContext(
+                        data_snapshot_id="snap_weather_1",
+                        universe_snapshot_id=None,
+                        asof_ts_ms=1_710_000_000_000,
+                        dq_level="PASS",
+                        quote_snapshot_refs=[],
+                    ),
+                    snapshots=[_watch_snapshot(snapshot_id="snap_yes_fill", token_id="tok_yes", outcome="YES", side="BUY", edge_bps=900)],
+                    strategies=[
+                        StrategyRegistration(
+                            strategy_id="weather_primary",
+                            strategy_version="v1",
+                            priority=1,
+                            route_action=RouteAction.FAK,
+                            size=Decimal("10"),
+                        )
+                    ],
+                )[1][0]
+            ),
+            wallet_id="wallet_weather_1",
+            execution_context_id="ectx_buy_fill",
+        )
+        buy_intent = build_signal_order_intent(
+            buy_ticket,
+            market_capability=_market_capability(),
+            account_capability=_account_capability(),
+        )
+        buy_order = build_order_from_intent(buy_intent, wallet_id="wallet_weather_1")
+        buy_reservation = build_reservation(buy_order)
+        buy_positions = [
+            InventoryPosition(
+                wallet_id="wallet_weather_1",
+                asset_type="usdc_e",
+                token_id=None,
+                market_id=None,
+                outcome=None,
+                balance_type=BalanceType.AVAILABLE,
+                quantity=Decimal("100"),
+                funder="0xfunder",
+                signature_type=1,
+                updated_at=datetime(2026, 3, 10, 10, 0, tzinfo=UTC),
+            )
+        ]
+        self.assertEqual(
+            available_inventory_quantity_for_ticket(buy_positions, ticket=buy_ticket),
+            Decimal("100"),
+        )
+        buy_reserved_positions = apply_reservation_to_inventory(
+            buy_positions,
+            buy_reservation,
+            observed_at=datetime(2026, 3, 10, 10, 1, tzinfo=UTC),
+        )
+        buy_fill = Fill(
+            fill_id="fill_buy_inventory",
+            order_id=buy_order.order_id,
+            wallet_id=buy_order.wallet_id,
+            market_id=buy_order.market_id,
+            token_id=buy_order.token_id,
+            outcome=buy_order.outcome,
+            side=buy_order.side,
+            price=Decimal("0.55"),
+            size=Decimal("10"),
+            fee=Decimal("0.10"),
+            fee_rate_bps=30,
+            trade_id="trade_buy_inventory",
+            exchange_order_id="ex_buy_inventory",
+            filled_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+        )
+        buy_after_fill = apply_fill_to_inventory(
+            buy_reserved_positions,
+            order=buy_order,
+            reservation=buy_reservation,
+            fill=buy_fill,
+            observed_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+        )
+        buy_reserved_cash = next(item for item in buy_after_fill if item.asset_type == "usdc_e" and item.balance_type is BalanceType.RESERVED)
+        buy_settled_token = next(item for item in buy_after_fill if item.asset_type == "outcome_token" and item.balance_type is BalanceType.SETTLED)
+        self.assertEqual(buy_reserved_cash.quantity, Decimal("0.00"))
+        self.assertEqual(buy_settled_token.quantity, Decimal("10"))
+
+        sell_ticket = bind_trade_ticket_handoff(
+            build_trade_ticket(
+                run_strategy_engine(
+                    ctx=StrategyContext(
+                        data_snapshot_id="snap_weather_1",
+                        universe_snapshot_id=None,
+                        asof_ts_ms=1_710_000_000_000,
+                        dq_level="PASS",
+                        quote_snapshot_refs=[],
+                    ),
+                    snapshots=[_watch_snapshot(snapshot_id="snap_no_inventory", token_id="tok_no", outcome="NO", side="SELL", edge_bps=-900)],
+                    strategies=[
+                        StrategyRegistration(
+                            strategy_id="weather_primary",
+                            strategy_version="v1",
+                            priority=1,
+                            route_action=RouteAction.FOK,
+                            size=Decimal("7"),
+                        )
+                    ],
+                )[1][0]
+            ),
+            wallet_id="wallet_weather_1",
+            execution_context_id="ectx_sell_inventory",
+        )
+        sell_intent = build_signal_order_intent(
+            sell_ticket,
+            market_capability=MarketCapability(
+                market_id="mkt_weather_1",
+                condition_id="cond_weather_1",
+                token_id="tok_no",
+                outcome="NO",
+                tick_size=Decimal("0.01"),
+                fee_rate_bps=30,
+                neg_risk=False,
+                min_order_size=Decimal("1"),
+                tradable=True,
+                fees_enabled=True,
+                data_sources=["gamma"],
+                updated_at=datetime(2026, 3, 10, 10, 0, tzinfo=UTC),
+            ),
+            account_capability=_account_capability(),
+        )
+        sell_order = build_order_from_intent(sell_intent, wallet_id="wallet_weather_1")
+        sell_reservation = build_reservation(sell_order)
+        sell_positions = [
+            InventoryPosition(
+                wallet_id="wallet_weather_1",
+                asset_type="outcome_token",
+                token_id="tok_no",
+                market_id="mkt_weather_1",
+                outcome="NO",
+                balance_type=BalanceType.AVAILABLE,
+                quantity=Decimal("7"),
+                funder="0xfunder",
+                signature_type=1,
+                updated_at=datetime(2026, 3, 10, 10, 0, tzinfo=UTC),
+            )
+        ]
+        sell_reserved_positions = apply_reservation_to_inventory(
+            sell_positions,
+            sell_reservation,
+            observed_at=datetime(2026, 3, 10, 10, 1, tzinfo=UTC),
+        )
+        released_positions = release_reservation_to_inventory(
+            sell_reserved_positions,
+            sell_reservation,
+            observed_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+        )
+        sell_available = next(item for item in released_positions if item.asset_type == "outcome_token" and item.balance_type is BalanceType.AVAILABLE)
+        sell_reserved = next(item for item in released_positions if item.asset_type == "outcome_token" and item.balance_type is BalanceType.RESERVED)
+        self.assertEqual(sell_available.quantity, Decimal("7"))
+        self.assertEqual(sell_reserved.quantity, Decimal("0"))
+
     def test_journal_event_ids_are_stable(self) -> None:
         event_a = build_journal_event(
             event_type="trade_ticket.created",
@@ -902,6 +1102,23 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                             datetime(2026, 3, 10, 10, 5),
                         ],
                     )
+                    con.execute(
+                        """
+                        INSERT INTO trading.inventory_positions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            "wallet_weather_1",
+                            "usdc_e",
+                            "usdc_e",
+                            "cash",
+                            "cash",
+                            "available",
+                            Decimal("100"),
+                            "0xfunder",
+                            1,
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
                 finally:
                     con.close()
 
@@ -941,7 +1158,10 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertEqual(result.metadata["ticket_count"], 1)
             self.assertEqual(result.metadata["gate_count"], 1)
             self.assertEqual(result.metadata["allowed_order_count"], 1)
+            self.assertEqual(result.metadata["reservation_count"], 1)
             self.assertEqual(result.metadata["fill_count"], 1)
+            self.assertEqual(result.metadata["inventory_position_count"], 3)
+            self.assertEqual(result.metadata["exposure_snapshot_count"], 1)
             self.assertEqual(result.metadata["execution_context_count"], 1)
 
             allow_tables = ",".join(
@@ -950,8 +1170,11 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     "runtime.trade_tickets",
                     "runtime.gate_decisions",
                     "trading.orders",
+                    "trading.reservations",
                     "trading.fills",
+                    "trading.inventory_positions",
                     "trading.order_state_transitions",
+                    "trading.exposure_snapshots",
                     "capability.execution_contexts",
                     "runtime.journal_events",
                 ]
@@ -974,10 +1197,13 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.trade_tickets").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.gate_decisions").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.orders").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.reservations").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.fills").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.inventory_positions").fetchone()[0], 3)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.order_state_transitions").fetchone()[0], 2)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.exposure_snapshots").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM capability.execution_contexts").fetchone()[0], 1)
-                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 9)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 13)
                     row = con.execute(
                         """
                         SELECT wallet_id, token_id, route_action, risk_gate_result
@@ -1020,12 +1246,42 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                         WHERE event_type = 'fill.created'
                         """
                     ).fetchone()
+                    reservation_event = con.execute(
+                        """
+                        SELECT payload_json
+                        FROM runtime.journal_events
+                        WHERE event_type = 'reservation.converted'
+                        """
+                    ).fetchone()
+                    exposure_event = con.execute(
+                        """
+                        SELECT payload_json
+                        FROM runtime.journal_events
+                        WHERE event_type = 'exposure.snapshot'
+                        """
+                    ).fetchone()
+                    order_row = con.execute(
+                        """
+                        SELECT status
+                        FROM trading.orders
+                        """
+                    ).fetchone()
+                    latest_transition = con.execute(
+                        """
+                        SELECT from_status, to_status
+                        FROM trading.order_state_transitions
+                        ORDER BY timestamp DESC, transition_id DESC
+                        LIMIT 1
+                        """
+                    ).fetchone()
                 finally:
                     con.close()
             handoff_payload = json.loads(handoff_event[0])
             routed_payload = json.loads(routed_event[0])
             order_payload = json.loads(order_event[0])
             fill_payload = json.loads(fill_event[0])
+            reservation_payload = json.loads(reservation_event[0])
+            exposure_payload = json.loads(exposure_event[0])
             self.assertEqual(tuple(row), ("wallet_weather_1", "tok_yes", "fak", "pending_gate"))
             self.assertEqual(ticket.wallet_id, "wallet_weather_1")
             self.assertIsNotNone(ticket.execution_context_id)
@@ -1046,6 +1302,11 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertEqual(order_payload["status"], "posted")
             self.assertEqual(fill_payload["ticket_id"], ticket.ticket_id)
             self.assertEqual(fill_payload["request_id"], ticket.request_id)
+            self.assertEqual(reservation_payload["status"], "converted")
+            self.assertEqual(exposure_payload["filled_position_size"], "0")
+            self.assertEqual(exposure_payload["settled_position_size"], "10.00000000")
+            self.assertEqual(order_row[0], "filled")
+            self.assertEqual(tuple(latest_transition), ("posted", "filled"))
             self.assertTrue(handoff_payload["canonical_order_hash"].startswith("coh_"))
 
     def test_weather_paper_execution_rerun_keeps_row_counts_and_latest_journal_stable(self) -> None:
@@ -1120,6 +1381,23 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                             datetime(2026, 3, 10, 10, 0),
                         ],
                     )
+                    con.execute(
+                        """
+                        INSERT INTO trading.inventory_positions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            "wallet_weather_1",
+                            "usdc_e",
+                            "usdc_e",
+                            "cash",
+                            "cash",
+                            "available",
+                            Decimal("100"),
+                            "0xfunder",
+                            1,
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
                 finally:
                     con.close()
 
@@ -1166,8 +1444,11 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                         "runtime.trade_tickets",
                         "runtime.gate_decisions",
                         "trading.orders",
+                        "trading.reservations",
                         "trading.fills",
+                        "trading.inventory_positions",
                         "trading.order_state_transitions",
+                        "trading.exposure_snapshots",
                         "capability.execution_contexts",
                         "runtime.journal_events",
                     ]
@@ -1205,10 +1486,13 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.trade_tickets").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.gate_decisions").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.orders").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.reservations").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.fills").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.inventory_positions").fetchone()[0], 3)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.order_state_transitions").fetchone()[0], 2)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.exposure_snapshots").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM capability.execution_contexts").fetchone()[0], 1)
-                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 9)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 13)
                     by_type = dict(
                         con.execute(
                             """
@@ -1235,11 +1519,15 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                 by_type,
                 {
                     "canonical_order.routed": 1,
+                    "exposure.snapshot": 1,
                     "fill.created": 1,
                     "gate.decision": 1,
+                    "inventory.updated": 1,
                     "order.created": 1,
                     "order.filled": 1,
                     "order.posted": 1,
+                    "reservation.converted": 1,
+                    "reservation.created": 1,
                     "signal_order_intent.created": 1,
                     "strategy_run.created": 1,
                     "trade_ticket.created": 1,
@@ -1381,7 +1669,9 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     pass
 
             self.assertEqual(result.metadata["allowed_order_count"], 0)
+            self.assertEqual(result.metadata["reservation_count"], 0)
             self.assertEqual(result.metadata["fill_count"], 0)
+            self.assertEqual(result.metadata["exposure_snapshot_count"], 0)
             self.assertEqual(len(result.metadata["rejected_ticket_ids"]), 1)
 
             with patch.dict("os.environ", reader_env, clear=False):
@@ -1389,8 +1679,11 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                 try:
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.gate_decisions").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.orders").fetchone()[0], 0)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.reservations").fetchone()[0], 0)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.fills").fetchone()[0], 0)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.inventory_positions").fetchone()[0], 0)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.order_state_transitions").fetchone()[0], 0)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.exposure_snapshots").fetchone()[0], 0)
                     by_type = dict(
                         con.execute(
                             """

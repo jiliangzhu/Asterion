@@ -1,5 +1,12 @@
 """Execution layer modules."""
 from .execution_gate_v1 import evaluate_execution_gate, reservation_required_quantity
+from .oms_state_machine_v1 import (
+    apply_fills_to_order,
+    cancel_order,
+    order_status_journal_payload,
+    transition_order_to_posted,
+    validate_order_transition,
+)
 from .order_router_v1 import (
     RoutedCanonicalOrder,
     canonical_order_router_hash,
@@ -16,9 +23,7 @@ from .paper_adapter_v1 import (
 )
 from .paper_fill_simulator_v1 import (
     PaperFillSimulationResult,
-    build_fill_transition,
     fill_journal_payload,
-    order_fill_status_journal_payload,
     simulate_quote_based_fill,
 )
 from .signal_to_order_v1 import (
@@ -46,16 +51,17 @@ __all__ = [
     "PersistedExecutionContextRecord",
     "PaperFillSimulationResult",
     "RoutedCanonicalOrder",
+    "apply_fills_to_order",
     "bind_trade_ticket_handoff",
     "build_execution_context",
     "build_execution_context_record",
-    "build_fill_transition",
     "build_order_state_transition",
     "build_order_from_intent",
     "build_paper_order",
     "build_signal_order_intent",
     "build_signal_order_intent_from_handoff",
     "build_trade_ticket",
+    "cancel_order",
     "canonical_order_router_hash",
     "canonical_order_router_payload",
     "canonical_order_handoff_hash",
@@ -71,11 +77,13 @@ __all__ = [
     "load_account_trading_capability",
     "load_market_capability",
     "load_trade_ticket",
+    "order_status_journal_payload",
     "paper_order_journal_payload",
     "paper_order_journal_payload_with_status",
-    "order_fill_status_journal_payload",
     "route_trade_ticket",
     "route_trade_ticket_from_handoff",
     "reservation_required_quantity",
     "simulate_quote_based_fill",
+    "transition_order_to_posted",
+    "validate_order_transition",
 ]
