@@ -30,6 +30,7 @@ from asterion_core.contracts import (
     ResolutionSpec,
     RouteAction,
     StrategyRun,
+    TimeInForce,
     TradeTicket,
     UMAProposal,
     WatchOnlySnapshotRecord,
@@ -53,6 +54,7 @@ from dagster_asterion.handlers import (
     run_weather_market_discovery_job,
     run_weather_forecast_refresh,
     run_weather_forecast_replay_job,
+    run_weather_order_signing_smoke_job,
     run_weather_signer_audit_smoke_job,
     run_weather_wallet_state_refresh_job,
     run_weather_resolution_review_job,
@@ -285,6 +287,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_capability_refresh",
             "weather_wallet_state_refresh",
             "weather_signer_audit_smoke",
+            "weather_order_signing_smoke",
             "weather_forecast_refresh",
             "weather_forecast_replay",
             "weather_paper_execution",
@@ -298,11 +301,13 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_capability_refresh"].upstream_jobs, ["weather_market_discovery"])
         self.assertEqual(jobs["weather_wallet_state_refresh"].upstream_jobs, ["weather_capability_refresh"])
         self.assertEqual(jobs["weather_signer_audit_smoke"].upstream_jobs, ["weather_capability_refresh"])
+        self.assertEqual(jobs["weather_order_signing_smoke"].upstream_jobs, ["weather_paper_execution"])
         self.assertEqual(jobs["weather_forecast_refresh"].upstream_jobs, ["weather_spec_sync"])
         self.assertEqual(jobs["weather_market_discovery"].mode, "scheduled")
         self.assertEqual(jobs["weather_watcher_backfill"].mode, "scheduled")
         self.assertEqual(jobs["weather_paper_execution"].mode, "manual")
         self.assertEqual(jobs["weather_signer_audit_smoke"].mode, "manual")
+        self.assertEqual(jobs["weather_order_signing_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
         self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
         self.assertEqual(jobs["weather_data_qa_review"].upstream_jobs, ["weather_forecast_replay"])
@@ -636,7 +641,7 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             "SignerServiceStub",
             (),
             {
-                "sign_order": lambda self, request, *, queue_cfg, run_id=None: type(
+                "sign_transaction": lambda self, request, *, queue_cfg, run_id=None: type(
                     "InvocationResultStub",
                     (),
                     {
@@ -660,10 +665,8 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                 params_json={
                     "wallet_id": "wallet_weather_1",
                     "requester": "operator",
-                    "signing_purpose": "order",
-                    "token_id": "tok_yes",
-                    "fee_rate_bps": 30,
-                    "payload_json": {"kind": "signer_smoke", "order_id": "ordr_test"},
+                    "signing_purpose": "transaction",
+                    "payload_json": {"kind": "signer_smoke", "tx_id": "tx_test"},
                 },
                 run_id="run_signer_smoke",
                 observed_at=datetime(2026, 3, 10, 10, 5, tzinfo=timezone.utc),
@@ -672,9 +675,133 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         self.assertEqual(result.task_ids, ["task_sig_audit", "task_sig_journal"])
         self.assertEqual(result.metadata["request_id"], "run_signer_smoke")
         self.assertEqual(result.metadata["wallet_id"], "wallet_weather_1")
-        self.assertEqual(result.metadata["signing_purpose"], "order")
+        self.assertEqual(result.metadata["signing_purpose"], "transaction")
         self.assertEqual(result.metadata["payload_hash"], "phash_1")
         self.assertEqual(result.metadata["status"], "rejected")
+
+    def test_weather_order_signing_smoke_routes_to_signature_audit_submit_attempts_and_journal(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        account_capability = AccountTradingCapability(
+            wallet_id="wallet_weather_1",
+            wallet_type="eoa",
+            signature_type=1,
+            funder="0x1111111111111111111111111111111111111111",
+            allowance_targets=["0x2222222222222222222222222222222222222222"],
+            can_use_relayer=True,
+            can_trade=True,
+            restricted_reason=None,
+        )
+        execution_context = type("ExecutionContextStub", (), {"account_capability": account_capability})()
+        ticket = TradeTicket(
+            ticket_id="tt_1",
+            run_id="run_1",
+            strategy_id="weather_primary",
+            strategy_version="v1",
+            market_id="mkt_weather_1",
+            token_id="tok_yes",
+            outcome="YES",
+            side="buy",
+            reference_price=Decimal("0.63"),
+            fair_value=Decimal("0.65"),
+            edge_bps=200,
+            threshold_bps=100,
+            route_action=RouteAction.FAK,
+            size=Decimal("10"),
+            signal_ts_ms=1710000000000,
+            forecast_run_id="frun_1",
+            watch_snapshot_id="snap_1",
+            request_id="req_ticket_1",
+            ticket_hash="thash_1",
+            wallet_id="wallet_weather_1",
+            execution_context_id="ectx_1",
+            provenance_json={"source": "test"},
+            created_at=datetime(2026, 3, 10, 10, 5),
+        )
+        routed_order = type(
+            "RoutedOrderStub",
+            (),
+            {
+                "ticket_id": "tt_1",
+                "request_id": "req_ticket_1",
+                "wallet_id": "wallet_weather_1",
+                "execution_context_id": "ectx_1",
+                "market_id": "mkt_weather_1",
+                "token_id": "tok_yes",
+                "outcome": "YES",
+                "side": "buy",
+                "price": Decimal("0.63"),
+                "size": Decimal("10"),
+                "route_action": RouteAction.FAK,
+                "time_in_force": TimeInForce.FAK,
+                "expiration": None,
+                "fee_rate_bps": 30,
+                "signature_type": 1,
+                "funder": "0x1111111111111111111111111111111111111111",
+                "post_only": False,
+                "canonical_order_hash": "coh_1",
+                "router_reason": "route_action_normalized",
+            },
+        )()
+        signer_service = type(
+            "SignerServiceStub",
+            (),
+            {
+                "sign_order": lambda self, request, *, queue_cfg, run_id=None: type(
+                    "InvocationResultStub",
+                    (),
+                    {
+                        "payload_hash": "phash_1",
+                        "task_ids": ["task_sig_requested", "task_sig_final"],
+                        "response": type(
+                            "OrderSigningResultStub",
+                            (),
+                            {
+                                "request_id": request.request_id,
+                                "status": "signed",
+                                "signature": "stubsig_1",
+                                "error": None,
+                                "payload_hash": "phash_1",
+                                "submit_payload_json": {"backend_kind": "official_stub", "signed": True},
+                                "completed_at": datetime(2026, 3, 10, 10, 5),
+                            },
+                        )(),
+                    },
+                )()
+            },
+        )()
+        with ExitStack() as stack:
+            stack.enter_context(patch("dagster_asterion.handlers.load_trade_ticket", return_value=ticket))
+            stack.enter_context(
+                patch("dagster_asterion.handlers.load_execution_context_record", return_value=object())
+            )
+            stack.enter_context(
+                patch("dagster_asterion.handlers.hydrate_execution_context", return_value=execution_context)
+            )
+            stack.enter_context(
+                patch("dagster_asterion.handlers.route_trade_ticket_from_handoff", return_value=routed_order)
+            )
+            enqueue_attempts = stack.enter_context(
+                patch("dagster_asterion.handlers.enqueue_submit_attempt_upserts", return_value="task_submit_attempt")
+            )
+            result = run_weather_order_signing_smoke_job(
+                object(),
+                queue_cfg,
+                signer_service=signer_service,
+                params_json={"ticket_ids": ["tt_1"], "requester": "operator"},
+                run_id="run_order_signing",
+                observed_at=datetime(2026, 3, 10, 10, 5, tzinfo=timezone.utc),
+            )
+        enqueue_attempts.assert_called_once()
+        self.assertEqual(
+            result.task_ids,
+            ["task_sig_requested", "task_sig_final", "task_submit_attempt"],
+        )
+        self.assertEqual(result.metadata["wallet_id"], "wallet_weather_1")
+        self.assertEqual(result.metadata["attempt_count"], 1)
+        self.assertEqual(result.metadata["signed_count"], 1)
+        self.assertEqual(result.metadata["rejected_count"], 0)
+        self.assertEqual(result.metadata["payload_hashes"], ["phash_1"])
+        self.assertEqual(result.metadata["ticket_ids"], ["tt_1"])
 
     def test_weather_paper_execution_rejects_invalid_selectors(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")

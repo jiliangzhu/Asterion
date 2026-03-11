@@ -111,6 +111,22 @@ _JOB_SPECS = [
         default_schedule_key=None,
     ),
     ColdPathJobSpec(
+        job_name="weather_order_signing_smoke",
+        description="Run the canonical manual official-order-compatible signing smoke and persist signer audit plus sign-only submit attempts.",
+        mode="manual",
+        upstream_jobs=["weather_paper_execution"],
+        input_tables=[
+            "runtime.trade_tickets",
+            "capability.execution_contexts",
+            "capability.market_capabilities",
+            "capability.account_trading_capabilities",
+            "meta.signature_audit_logs",
+        ],
+        output_tables=["meta.signature_audit_logs", "runtime.submit_attempts", "runtime.journal_events"],
+        handler_name="run_weather_order_signing_smoke_job",
+        default_schedule_key=None,
+    ),
+    ColdPathJobSpec(
         job_name="weather_forecast_replay",
         description="Replay persisted forecast/pricing outputs from canonical replay keys.",
         mode="manual",

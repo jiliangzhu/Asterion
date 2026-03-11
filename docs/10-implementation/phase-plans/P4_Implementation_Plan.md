@@ -3,7 +3,7 @@
 **版本**: v1.0
 **更新日期**: 2026-03-11
 **阶段**: `P4`
-**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` 已完成）
+**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` 已完成）
 **目标**: 在 `P3 paper execution` 已关闭的基础上，补齐 `live prerequisites`：真实外部只读数据、capability refresh、signer boundary、submitter dry-run/shadow path、chain transaction scaffolding、external reconciliation、operator/readiness/ops hardening，并保持默认安全边界。
 
 ---
@@ -96,21 +96,26 @@
   - `asterion_core/signer/` 已落地为 default-off signer shell
   - `weather_signer_audit_smoke` 已成为 canonical signer smoke entry
   - `meta.signature_audit_logs` 已接入 signer request / response / payload hash audit path
+- `P4-05` 已完成：
+  - `weather_order_signing_smoke` 已成为 canonical official-order-compatible signing smoke entry
+  - `runtime.submit_attempts` 已落地为 sign-only canonical attempt ledger
+  - official-order-compatible payload envelope 已可由 `SignerServiceShell + official_stub` 生成，默认仍不触发真实 submit
 
 ### 2.2 P4 Start-State Register
 
 `P4` 不是从空白开始，但当前起点也不是“live path 已经实现”。以下差距必须作为 `P4` 起点显式登记：
 
-#### Register A: signer shell 已落地，但 official signing backend 与 live blockchain path 仍未落地
+#### Register A: signer shell 与 official-order-compatible signing seam 已落地，但 real signing backend 与 live blockchain path 仍未落地
 
 - [Signer_Service_Design.md](../../30-trading/Signer_Service_Design.md) 与 [Gas_Manager_Design.md](../../30-trading/Gas_Manager_Design.md) 已有接口冻结候选
-- 当前 repo 中已存在 `asterion_core/signer/`，但 backend 仍保持 `default-off`
+- 当前 repo 中已存在 `asterion_core/signer/`，并已支持 `official_stub` order signing backend，但真实 backend 仍保持 `default-off`
 - 当前 repo 中的 `asterion_core/blockchain/` 仅包含 read-only wallet observation helpers，还没有 live submit / broadcast / nonce / gas management path
 
-#### Register B: `meta.signature_audit_logs` 已接入 shell audit，但尚未进入 official signing / submit path
+#### Register B: `meta.signature_audit_logs` 已接入 shell audit，`runtime.submit_attempts` 已接入 sign-only path，但 submitter / external submit observation 仍未落地
 
 - `0010_signature_audit_boundary.sql` 已扩充 `meta.signature_audit_logs`
-- 当前 signer shell 已写 request / response / payload hash，但 official signing / submitter 仍未消费该审计链
+- `0011_runtime_submit_attempts.sql` 已新增 `runtime.submit_attempts`
+- 当前 signer shell 已写 request / response / payload hash，official-order-compatible signing 已进入 sign-only attempt ledger，但 submitter / external submitter 仍未消费该审计链
 
 #### Register C: capability contract 与 canonical refresh path 已闭合，但 downstream live path 仍未消费其全部信号
 
@@ -119,9 +124,9 @@
 - canonical 的 `Gamma + CLOB public + chain read + local config` refresh pipeline 已在 `P4-02` 落地
 - 但 submitter / live tx scaffold 仍未把这些 refreshed values 全量接入
 
-#### Register D: orchestration job map 已覆盖 signer smoke，但还未覆盖 submitter / chain tx / shadow submit
+#### Register D: orchestration job map 已覆盖 signer smoke 与 order-signing smoke，但还未覆盖 submitter / chain tx / shadow submit
 
-- 当前 `dagster_asterion/job_map.py` 已包含 `weather_signer_audit_smoke`
+- 当前 `dagster_asterion/job_map.py` 已包含 `weather_signer_audit_smoke` 与 `weather_order_signing_smoke`
 - 但仍没有 submitter / chain tx / shadow submit job
 - 当前仍没有 canonical 的 `controlled live smoke` job boundary
 

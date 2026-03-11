@@ -2,7 +2,7 @@
 
 **版本**: v1.2
 **更新日期**: 2026-03-11
-**状态**: P4 implementation in progress (`P4-01` / `P4-02` / `P4-03` / `P4-04` completed)
+**状态**: P4 implementation in progress (`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` completed)
 
 ---
 
@@ -148,7 +148,7 @@ python3 -m unittest discover -s tests -v
 
 ## 🏗️ 技术架构
 
-### 当前已落地模块（P4-04）
+### 当前已落地模块（P4-05）
 
 ```
 asterion_core/              # 平台核心
@@ -170,7 +170,7 @@ asterion_core/              # 平台核心
 │   └── strategy_engine_v3.py
 ├── risk/                   # reservation / inventory / reconciliation
 │   └── portfolio_v3.py
-├── signer/                 # default-off signer shell / audit boundary
+├── signer/                 # default-off signer shell / official order signing seam
 │   └── signer_service_v1.py
 ├── journal/                # runtime / trading journal
 │   └── journal_v3.py
@@ -209,7 +209,8 @@ agents/                     # AI Agent
 - `order_router_v1.py`、paper adapter、quote-based fill simulator、OMS state machine 已在 `P3` 落地
 - `capability_refresh_v1.py` 与 `clients/clob_public.py` 已在 `P4-02` 落地，用于 canonical capability refresh
 - `blockchain/wallet_state_v1.py` 与 `runtime.external_balance_observations` 已在 `P4-03` 落地，用于 external wallet state observation
-- `signer/signer_service_v1.py` 与 `meta.signature_audit_logs` 已在 `P4-04` 落地，用于 signer shell / audit boundary
+- `signer/signer_service_v1.py`、`meta.signature_audit_logs`、`runtime.submit_attempts` 已在 `P4-04` / `P4-05` 落地，用于 signer shell、official-order-compatible signing 与 sign-only attempt ledger
+- `weather_signer_audit_smoke` 与 `weather_order_signing_smoke` 已成为 `P4` signer / order-signing 的 canonical manual entry
 - `daily_review_agent.py` 仍未落地；当前只完成 `ui.daily_review_input` 等 review input surface
 - `P4` 当前 canonical 实施入口见 [P4_Implementation_Plan.md](./docs/10-implementation/phase-plans/P4_Implementation_Plan.md)
 - `P3` 的 canonical closeout 与 runbook 入口见 [P3_Closeout_Checklist.md](./docs/10-implementation/checklists/P3_Closeout_Checklist.md)、[P3_Paper_Execution_Runbook.md](./docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md)

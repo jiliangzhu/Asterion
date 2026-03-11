@@ -21,6 +21,9 @@ dev = [
 orchestration = [
   "dagster>=1.9",
 ]
+signing = [
+  "py-clob-client",
+]
 
 [tool.setuptools]
 include-package-data = true

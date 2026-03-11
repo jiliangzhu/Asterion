@@ -49,13 +49,17 @@ from asterion_core.execution import (
     fill_journal_payload,
     gate_rejection_journal_payload,
     load_account_trading_capability,
+    load_execution_context_record,
     load_market_capability,
+    load_trade_ticket,
     refresh_account_capabilities,
     refresh_market_capabilities,
     order_status_journal_payload,
     paper_order_journal_payload_with_status,
     route_trade_ticket,
+    route_trade_ticket_from_handoff,
     simulate_quote_based_fill,
+    hydrate_execution_context,
     transition_order_to_posted,
 )
 from asterion_core.journal import (
@@ -89,10 +93,13 @@ from asterion_core.risk import (
     release_reservation_to_inventory,
 )
 from asterion_core.signer import (
+    build_sign_order_request_from_routed_order,
     SignerRequest,
     SignerServiceShell,
     SigningPurpose,
+    build_submit_attempt_record,
     build_signing_context_from_account_capability,
+    enqueue_submit_attempt_upserts,
 )
 from asterion_core.contracts import OrderStatus
 from asterion_core.runtime import (
@@ -210,6 +217,18 @@ class SignerAuditSmokeRequest:
                 raise ValueError("token_id is required for order signing")
             if self.fee_rate_bps is None or self.fee_rate_bps < 0:
                 raise ValueError("fee_rate_bps is required for order signing")
+
+
+@dataclass(frozen=True)
+class OrderSigningSmokeRequest:
+    ticket_ids: list[str]
+    requester: str
+
+    def __post_init__(self) -> None:
+        if not self.ticket_ids:
+            raise ValueError("ticket_ids are required")
+        if not self.requester:
+            raise ValueError("requester is required")
 
 
 def run_weather_market_discovery_job(
@@ -440,9 +459,7 @@ def run_weather_signer_audit_smoke_job(
         context=signing_context,
         payload=normalized_request.payload_json,
     )
-    if normalized_request.signing_purpose is SigningPurpose.ORDER:
-        invocation = signer_service.sign_order(signer_request, queue_cfg=queue_cfg, run_id=request_id)
-    elif normalized_request.signing_purpose is SigningPurpose.TRANSACTION:
+    if normalized_request.signing_purpose is SigningPurpose.TRANSACTION:
         invocation = signer_service.sign_transaction(signer_request, queue_cfg=queue_cfg, run_id=request_id)
     else:
         invocation = signer_service.derive_api_credentials(signer_request, queue_cfg=queue_cfg, run_id=request_id)
@@ -457,6 +474,96 @@ def run_weather_signer_audit_smoke_job(
             "signing_purpose": normalized_request.signing_purpose.value,
             "payload_hash": invocation.payload_hash,
             "status": invocation.response.status,
+        },
+    )
+
+
+def run_weather_order_signing_smoke_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    signer_service: SignerServiceShell,
+    params_json: dict[str, Any],
+    run_id: str | None = None,
+    observed_at: datetime | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    normalized_request = _normalize_order_signing_smoke_request(params_json)
+    normalized_observed_at = _normalize_datetime(observed_at) or datetime.now(UTC).replace(tzinfo=None)
+
+    routed_orders = []
+    hydrated_contexts = {}
+    ticket_ids = list(normalized_request.ticket_ids)
+    wallet_ids: set[str] = set()
+    request_ids: list[str] = []
+    payload_hashes: list[str] = []
+    attempt_ids: list[str] = []
+    task_ids: list[str] = []
+    signed_count = 0
+    rejected_count = 0
+    submit_attempts = []
+
+    for ticket_id in ticket_ids:
+        ticket = load_trade_ticket(con, ticket_id=ticket_id)
+        if ticket.wallet_id is None or ticket.execution_context_id is None:
+            raise ValueError("ticket.wallet_id and ticket.execution_context_id are required for order signing smoke")
+        wallet_ids.add(ticket.wallet_id)
+        if ticket.execution_context_id not in hydrated_contexts:
+            record = load_execution_context_record(con, execution_context_id=ticket.execution_context_id)
+            hydrated_contexts[ticket.execution_context_id] = hydrate_execution_context(con, record=record)
+        routed_orders.append(route_trade_ticket_from_handoff(con, ticket_id=ticket_id))
+
+    if len(wallet_ids) != 1:
+        raise ValueError("weather_order_signing_smoke only supports a single wallet per invocation")
+    wallet_id = next(iter(wallet_ids))
+
+    for routed_order in routed_orders:
+        request_item = build_sign_order_request_from_routed_order(
+            routed_order,
+            hydrated_contexts[routed_order.execution_context_id],
+            requester=normalized_request.requester,
+            request_id=stable_object_id("sigreq", {"run_id": request_id, "ticket_id": routed_order.ticket_id}),
+            timestamp=normalized_observed_at,
+        )
+        invocation = signer_service.sign_order(request_item, queue_cfg=queue_cfg, run_id=request_id)
+        submit_attempt = build_submit_attempt_record(
+            request_item,
+            invocation.response,
+            wallet_id=routed_order.wallet_id,
+        )
+        submit_attempts.append(submit_attempt)
+        task_ids.extend(invocation.task_ids)
+        request_ids.append(request_item.request_id)
+        payload_hashes.append(invocation.payload_hash)
+        attempt_ids.append(submit_attempt.attempt_id)
+        if invocation.response.status == "signed":
+            signed_count += 1
+        else:
+            rejected_count += 1
+
+    task_ids.extend(
+        _append_task_id(
+            enqueue_submit_attempt_upserts(
+                queue_cfg,
+                attempts=submit_attempts,
+                run_id=request_id,
+            )
+        )
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_order_signing_smoke",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=len(ticket_ids),
+        metadata={
+            "request_ids": request_ids,
+            "ticket_ids": ticket_ids,
+            "wallet_id": wallet_id,
+            "attempt_count": len(submit_attempts),
+            "signed_count": signed_count,
+            "rejected_count": rejected_count,
+            "payload_hashes": payload_hashes,
+            "attempt_ids": attempt_ids,
         },
     )
 
@@ -1539,8 +1646,10 @@ def _normalize_signer_audit_smoke_request(params_json: dict[str, Any]) -> Signer
     if not isinstance(params_json, dict):
         raise ValueError("params_json must be a dictionary")
     raw_signing_purpose = str(params_json.get("signing_purpose") or "").strip().lower()
-    if raw_signing_purpose not in {"order", "transaction", "l2_auth"}:
-        raise ValueError("signing_purpose must be one of order, transaction, or l2_auth")
+    if raw_signing_purpose not in {"transaction", "l2_auth"}:
+        raise ValueError(
+            "weather_signer_audit_smoke only supports transaction or l2_auth; use weather_order_signing_smoke for order signing"
+        )
     raw_payload = params_json.get("payload_json")
     if not isinstance(raw_payload, dict) or not raw_payload:
         raise ValueError("payload_json must be a non-empty object")
@@ -1552,6 +1661,16 @@ def _normalize_signer_audit_smoke_request(params_json: dict[str, Any]) -> Signer
         payload_json=dict(raw_payload),
         token_id=_coerce_optional_non_empty_string(params_json.get("token_id")),
         fee_rate_bps=int(fee_rate_bps) if fee_rate_bps is not None else None,
+    )
+
+
+def _normalize_order_signing_smoke_request(params_json: dict[str, Any]) -> OrderSigningSmokeRequest:
+    if not isinstance(params_json, dict):
+        raise ValueError("params_json must be a dictionary")
+    ticket_ids = _coerce_optional_str_list(params_json.get("ticket_ids"))
+    return OrderSigningSmokeRequest(
+        ticket_ids=ticket_ids or [],
+        requester=str(params_json.get("requester") or ""),
     )
 
 

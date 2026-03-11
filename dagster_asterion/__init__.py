@@ -4,6 +4,7 @@ import importlib.util
 
 from .handlers import (
     ColdPathHandlerResult,
+    OrderSigningSmokeRequest,
     PaperExecutionBatchRequest,
     SignerAuditSmokeRequest,
     SettlementVerificationInput,
@@ -12,6 +13,7 @@ from .handlers import (
     run_weather_market_discovery_job,
     run_weather_forecast_refresh,
     run_weather_forecast_replay_job,
+    run_weather_order_signing_smoke_job,
     run_weather_paper_execution_job,
     run_weather_signer_audit_smoke_job,
     run_weather_wallet_state_refresh_job,
@@ -80,6 +82,7 @@ __all__ = [
     "ForecastRuntimeResource",
     "GammaDiscoveryRuntimeResource",
     "HttpJsonClient",
+    "OrderSigningSmokeRequest",
     "PaperExecutionBatchRequest",
     "SignerAuditSmokeRequest",
     "SignerRuntimeResource",
@@ -105,6 +108,7 @@ __all__ = [
     "run_weather_market_discovery_job",
     "run_weather_forecast_refresh",
     "run_weather_forecast_replay_job",
+    "run_weather_order_signing_smoke_job",
     "run_weather_paper_execution_job",
     "run_weather_signer_audit_smoke_job",
     "run_weather_wallet_state_refresh_job",

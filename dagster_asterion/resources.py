@@ -9,7 +9,12 @@ from typing import Any
 from asterion_core.blockchain import PolygonWalletStateReader
 from asterion_core.clients import ClobPublicClient
 from asterion_core.execution import SafeDefaultChainAccountCapabilityReader
-from asterion_core.signer import DisabledSignerBackend, SignerServiceShell
+from asterion_core.signer import (
+    DeterministicOfficialOrderSigningBackend,
+    DisabledSignerBackend,
+    PyClobClientOrderSigningBackend,
+    SignerServiceShell,
+)
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.write_queue import WriteQueueConfig, default_write_queue_path
 from domains.weather.forecast import AdapterRouter, ForecastService, InMemoryForecastCache, NWSAdapter, OpenMeteoAdapter
@@ -187,9 +192,13 @@ class SignerRuntimeResource:
     def build_signer_service(self, *, service: Any | None = None) -> SignerServiceShell:
         if service is not None:
             return service
-        if self.settings.signer_backend_kind != "disabled":
-            raise ValueError("P4-04 only supports signer_backend_kind=disabled")
-        return SignerServiceShell(DisabledSignerBackend())
+        if self.settings.signer_backend_kind == "disabled":
+            return SignerServiceShell(DisabledSignerBackend())
+        if self.settings.signer_backend_kind == "official_stub":
+            return SignerServiceShell(DeterministicOfficialOrderSigningBackend())
+        if self.settings.signer_backend_kind == "py_clob_client":
+            return SignerServiceShell(PyClobClientOrderSigningBackend())
+        raise ValueError(f"unsupported signer_backend_kind={self.settings.signer_backend_kind!r}")
 
 
 @dataclass(frozen=True)
