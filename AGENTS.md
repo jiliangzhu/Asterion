@@ -1,0 +1,280 @@
+# AGENTS.md
+
+本文件定义 Asterion 仓库内 AI coding agents 的默认工作规范。
+
+目标不是替代详细设计文档，而是给任何进入本仓库的 agent 一个统一、可执行、低歧义的协作基线。
+
+---
+
+## 1. 项目定位
+
+Asterion 是一个面向 Polymarket 多领域事件市场的统一平台。
+
+当前仓库状态：
+
+- `P2` 已关闭
+- 当前开发阶段是 `P3`
+- `P3` 的唯一主题是 `paper execution`
+- 当前仓库已经是独立的 Asterion 仓库，不再依赖 AlphaDesk 作为运行时代码来源
+
+Agent 在理解任务时，默认遵守以下边界：
+
+- 当前 source of truth 是 **当前仓库代码 + docs 中已冻结的 contract 文档**
+- 不得把旧文档中的 aspirational module tree 当作“已落地代码事实”
+- 若文档与代码冲突，先以当前代码、migration、tests 为准，再回写文档
+
+---
+
+## 2. Canonical 文档入口
+
+进入任务前，优先阅读以下文档：
+
+1. `README.md`
+2. `docs/00-overview/Documentation_Index.md`
+3. `docs/00-overview/Asterion_Project_Plan.md`
+4. `docs/00-overview/DEVELOPMENT_ROADMAP.md`
+5. `docs/10-implementation/Implementation_Index.md`
+6. `docs/10-implementation/phase-plans/P3_Implementation_Plan.md`
+7. `docs/10-implementation/checklists/P2_Closeout_Checklist.md`
+8. `docs/10-implementation/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md`
+9. `docs/10-implementation/runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md`
+
+文档优先级：
+
+1. 当前代码与 migration
+2. subsystem 设计文档
+3. phase closeout / runbook
+4. 当前 phase implementation plan
+5. overview 类文档
+
+如果发现漂移：
+
+- 不要静默忽略
+- 在实施文档或相关导航文档中显式修正
+
+---
+
+## 3. 当前代码边界
+
+Agent 必须基于当前真实代码结构工作，不得凭设计想象新增平行边界。
+
+当前关键落点：
+
+- `asterion_core/contracts/`
+- `asterion_core/runtime/`
+- `asterion_core/execution/`
+- `asterion_core/risk/`
+- `asterion_core/journal/`
+- `asterion_core/monitoring/`
+- `asterion_core/ui/`
+- `domains/weather/`
+- `dagster_asterion/`
+- `agents/weather/`
+- `sql/migrations/`
+- `tests/`
+
+当前已落地但仍需继续收口的 execution foundation：
+
+- `strategy_engine_v3.py`
+- `trade_ticket_v1.py`
+- `signal_to_order_v1.py`
+- `execution_gate_v1.py`
+- `portfolio_v3.py`
+- `journal_v3.py`
+
+当前仍属于规划或后续阶段的内容，不应假设已存在可运行实现：
+
+- `order_router_v1.py`
+- paper adapter / paper fill simulator
+- `agents/weather/daily_review_agent.py`
+- signer / KMS / HSM / live submitter
+- 完整产品化 operator UI
+
+---
+
+## 4. 执行与数据契约原则
+
+任何 agent 在实现执行链路时，必须继续复用现有 canonical contracts，不得引入平行接口。
+
+关键 contract 原则：
+
+- 统一使用 `RouteAction + time_in_force/expiration`
+- 统一使用 `CanonicalOrderContract`
+- 下单前统一构造 `ExecutionContext`
+- inventory / reservation / exposure 继续使用当前 canonical objects
+- 不允许再发明第二套 `paper-only` 或 `live-only` execution contract
+
+当前 canonical data flow 基线：
+
+`weather.weather_watch_only_snapshots`
+-> `strategy_engine_v3`
+-> `runtime.strategy_runs`
+-> `trade_ticket_v1`
+-> `runtime.trade_tickets`
+-> `signal_to_order_v1`
+-> `capability.execution_contexts`
+-> `execution_gate_v1`
+-> `runtime.gate_decisions`
+-> router / paper adapter / fill simulator
+-> `trading.orders`
+-> `trading.order_state_transitions`
+-> `trading.reservations`
+-> `trading.fills`
+-> `trading.inventory_positions`
+-> `trading.exposure_snapshots`
+-> `trading.reconciliation_results`
+-> `runtime.journal_events`
+-> `ui.*`
+
+持久化原则：
+
+- `trading.*` 是 canonical execution ledger
+- `runtime.*` 是运行时 / 审计层
+- `agent.*` 只保存 review / evaluation，不改写 canonical execution state
+- 不新建 `paper.*` schema，除非有非常强的理由且不会重复表达现有语义
+
+---
+
+## 5. Agent 行为边界
+
+所有 AI agent 必须保持在执行路径之外。
+
+允许：
+
+- 规则解析
+- 数据质量审查
+- 结算审阅
+- 日报 / review / summary
+- readiness / reconciliation 分析
+
+不允许：
+
+- 直接下单
+- 直接撤单
+- 直接改写 canonical execution tables
+- 直接访问私钥、原始 signer、wallet secrets
+- 通过 agent 输出绕过人工审批或规则 gate
+
+如果引入新的 agent 相关代码：
+
+- 输出必须是结构化建议
+- 默认落到 `agent.invocations / outputs / reviews / evaluations`
+- 失败不能阻塞主链路
+
+---
+
+## 6. P3 阶段边界
+
+`P3` 只做 `paper execution`。
+
+明确允许：
+
+- paper order lifecycle
+- paper router / paper adapter / quote-based fill simulator
+- OMS state machine completion
+- reservation / inventory / exposure / reconciliation closure
+- operator read model
+- paper run journal / daily ops / review flow
+- P4 readiness / closeout entry criteria
+
+明确不做：
+
+- 真实下单
+- 真实 signer RPC
+- 真实链上广播
+- KMS / HSM / Vault
+- live capital deployment
+- 生产级告警体系全量建设
+
+如果任务触及 live side effects，默认应回退到：
+
+- mock
+- paper
+- deterministic replay
+- read-only validation
+
+---
+
+## 7. 测试与验证
+
+本仓库默认测试入口：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -e .
+python3 -m unittest discover -s tests -v
+```
+
+测试基线：
+
+- 仓库内 `.venv` 是 canonical 验证环境
+- `duckdb` 是正式依赖
+- system Python 若缺少 `duckdb`，不能据此否定仓库状态
+
+修改代码时，默认要求：
+
+- 至少运行与改动直接相关的测试
+- 若改动 execution / storage / migrations / UI lite / readiness，优先补 DuckDB integration coverage
+- 若改动 contract 或 schema，必须同步更新 tests
+
+修改文档时，默认要求：
+
+- 确认入口文档间导航一致
+- `git diff --check` 通过
+
+---
+
+## 8. 文档维护规则
+
+根目录文档原则：
+
+- 根目录默认只保留 `README.md`
+- `AGENTS.md` 作为仓库协作规范例外保留在根目录
+- 其他项目文档统一放在 `docs/`
+
+文档更新规则：
+
+- 新增 phase 文档时，必须同步更新 `README.md`、`Documentation_Index.md`、`Implementation_Index.md`
+- overview 文档不得把“未来规划”写成“当前已落地”
+- 若 `P3_Implementation_Plan.md` 与代码状态不符，应优先修正文档而不是继续沿错口径开发
+
+---
+
+## 9. 代码风格与实现原则
+
+默认实现原则：
+
+- 优先做 deterministic、可回放、可审计实现
+- 优先扩展现有模块，不平行造新层
+- 优先复用已有 canonical tables，不重复造表
+- 小步修改，避免一次性重构整个子系统
+- 代码、migration、tests、文档应一起闭环
+
+提交前应检查：
+
+- 是否引入了新的平行 contract
+- 是否破坏了 `runtime.*` / `trading.*` 的分层
+- 是否让 agent 进入了执行路径
+- 是否把 future design 误写成 current state
+
+---
+
+## 10. 默认工作方式
+
+Agent 接到任务后，默认顺序：
+
+1. 先看当前代码和相关文档
+2. 确认当前 phase 和 source of truth
+3. 识别是否存在文档漂移
+4. 再决定改代码、改文档、还是两者都改
+5. 用最小改动完成闭环
+
+如果任务不明确，优先做的不是猜，而是：
+
+- 查当前代码
+- 查 migration
+- 查 tests
+- 查 phase plan / runbook
+
+本文件是基础稿。后续若项目规范变化，应优先更新本文件，再继续扩展 agent 使用范围。

@@ -1,7 +1,7 @@
 # Asterion Implementation Index
 
-**版本**: v1.1  
-**更新日期**: 2026-03-10  
+**版本**: v1.2
+**更新日期**: 2026-03-11
 **目标**: 作为 `docs/10-implementation/` 的统一入口，按“阶段计划 / 检查清单 / runbook / 迁移台账 / module notes”分类组织实施文档，便于快速定位每个阶段的实施计划、关闭条件和运行入口。
 
 ---
@@ -27,6 +27,7 @@ docs/10-implementation/
     P0_Implementation_Plan.md
     P1_Implementation_Plan.md
     P2_Implementation_Plan.md
+    P3_Implementation_Plan.md
   checklists/
     P0_Closeout_Checklist.md
     P1_Closeout_Checklist.md
@@ -63,6 +64,7 @@ docs/10-implementation/
 
 ### 3.1 当前阶段计划
 
+- [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
 - [P0_Implementation_Plan.md](./phase-plans/P0_Implementation_Plan.md)
 - [P1_Implementation_Plan.md](./phase-plans/P1_Implementation_Plan.md)
 - [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
@@ -171,13 +173,14 @@ docs/10-implementation/
 ## 5. 当前建议阅读顺序
 
 1. [Implementation_Index.md](./Implementation_Index.md)
-2. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
+2. [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
 3. [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
-4. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
-5. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
-6. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
-7. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
-8. 对应模块的 module note
+4. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
+5. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
+6. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+7. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+8. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
+9. 对应模块的 module note
 
 ---
 

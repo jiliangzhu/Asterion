@@ -19,10 +19,14 @@ from asterion_core.contracts import (
     WatchOnlySnapshotRecord,
 )
 from asterion_core.execution import (
+    build_execution_context,
+    build_execution_context_record,
     build_order_from_intent,
     build_signal_order_intent,
     build_trade_ticket,
+    enqueue_execution_context_upserts,
     evaluate_execution_gate,
+    execution_context_record_to_row,
     load_account_trading_capability,
     load_market_capability,
 )
@@ -49,6 +53,7 @@ from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.db_migrate import MigrationConfig, apply_migrations
 from asterion_core.storage.write_queue import WriteQueueConfig
 from asterion_core.storage.writerd import process_one
+from dagster_asterion.handlers import run_weather_paper_execution_job
 
 HAS_DUCKDB = importlib.util.find_spec("duckdb") is not None
 
@@ -218,6 +223,50 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
         self.assertEqual(intent.execution_context.tick_size, Decimal("0.01"))
         self.assertEqual(intent.execution_context.signature_type, 1)
         self.assertEqual(intent.execution_context.funder, "0xfunder")
+
+    def test_execution_context_record_is_stable_and_sensitive_to_capability_changes(self) -> None:
+        execution_context = build_execution_context(
+            market_capability=_market_capability(),
+            account_capability=_account_capability(),
+            route_action=RouteAction.FAK,
+        )
+        record_a = build_execution_context_record(
+            wallet_id="wallet_weather_1",
+            execution_context=execution_context,
+            created_at=datetime(2026, 3, 10, 10, 0, tzinfo=UTC),
+        )
+        record_b = build_execution_context_record(
+            wallet_id="wallet_weather_1",
+            execution_context=execution_context,
+            created_at=datetime(2026, 3, 10, 10, 1, tzinfo=UTC),
+        )
+        changed_context = build_execution_context(
+            market_capability=MarketCapability(
+                market_id="mkt_weather_1",
+                condition_id="cond_weather_1",
+                token_id="tok_yes",
+                outcome="YES",
+                tick_size=Decimal("0.01"),
+                fee_rate_bps=35,
+                neg_risk=False,
+                min_order_size=Decimal("1"),
+                tradable=True,
+                fees_enabled=True,
+                data_sources=["gamma", "clob_public"],
+                updated_at=datetime(2026, 3, 10, 10, 5, tzinfo=UTC),
+            ),
+            account_capability=_account_capability(),
+            route_action=RouteAction.FAK,
+        )
+        record_c = build_execution_context_record(
+            wallet_id="wallet_weather_1",
+            execution_context=changed_context,
+            created_at=datetime(2026, 3, 10, 10, 0, tzinfo=UTC),
+        )
+
+        self.assertEqual(record_a.execution_context_id, record_b.execution_context_id)
+        self.assertNotEqual(record_a.execution_context_id, record_c.execution_context_id)
+        self.assertEqual(execution_context_record_to_row(record_a)[1], "wallet_weather_1")
 
 
 class ExecutionGateAndPortfolioTest(unittest.TestCase):
@@ -397,6 +446,177 @@ class ExecutionGateAndPortfolioTest(unittest.TestCase):
 
 @unittest.skipUnless(HAS_DUCKDB, "duckdb is required for execution foundation integration tests")
 class ExecutionFoundationDuckDBTest(unittest.TestCase):
+    def test_weather_paper_execution_job_persists_strategy_ticket_and_context_ledgers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "asterion.duckdb")
+            queue_path = str(Path(tmpdir) / "write_queue.sqlite")
+            migrations_dir = str(Path(__file__).resolve().parents[1] / "sql" / "migrations")
+            writer_env = {
+                "ASTERION_STRICT_SINGLE_WRITER": "1",
+                "ASTERION_DB_ROLE": "writer",
+                "WRITERD": "1",
+            }
+            with patch.dict("os.environ", writer_env, clear=False):
+                apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=migrations_dir))
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    con.execute(
+                        """
+                        INSERT INTO capability.market_capabilities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            "tok_yes",
+                            "mkt_weather_1",
+                            "cond_weather_1",
+                            "YES",
+                            Decimal("0.01"),
+                            30,
+                            False,
+                            Decimal("1"),
+                            True,
+                            True,
+                            "[\"gamma\",\"clob_public\"]",
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
+                    con.execute(
+                        """
+                        INSERT INTO capability.account_trading_capabilities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            "wallet_weather_1",
+                            "eoa",
+                            1,
+                            "0xfunder",
+                            "[\"0xrelayer\"]",
+                            True,
+                            True,
+                            None,
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
+                    con.execute(
+                        """
+                        INSERT INTO weather.weather_watch_only_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            "snap_yes",
+                            "fv_yes",
+                            "frun_weather_1",
+                            "mkt_weather_1",
+                            "cond_weather_1",
+                            "tok_yes",
+                            "YES",
+                            0.55,
+                            0.63,
+                            800,
+                            500,
+                            "TAKE",
+                            "BUY",
+                            "paper chain",
+                            "{\"signal_ts_ms\":1710000000000}",
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
+                    con.execute(
+                        """
+                        INSERT INTO weather.weather_watch_only_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            "snap_hold",
+                            "fv_hold",
+                            "frun_weather_1",
+                            "mkt_weather_1",
+                            "cond_weather_1",
+                            "tok_yes",
+                            "YES",
+                            0.55,
+                            0.56,
+                            50,
+                            500,
+                            "NO_TRADE",
+                            "BUY",
+                            "hold path",
+                            "{\"signal_ts_ms\":1710000000100}",
+                            datetime(2026, 3, 10, 10, 5),
+                        ],
+                    )
+                finally:
+                    con.close()
+
+            reader_env = {
+                "ASTERION_STRICT_SINGLE_WRITER": "1",
+                "ASTERION_DB_ROLE": "reader",
+                "WRITERD": "0",
+            }
+            queue_cfg = WriteQueueConfig(path=queue_path)
+            with patch.dict("os.environ", reader_env, clear=False):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    result = run_weather_paper_execution_job(
+                        con,
+                        queue_cfg,
+                        params_json={
+                            "wallet_id": "wallet_weather_1",
+                            "strategy_registrations": [
+                                {
+                                    "strategy_id": "weather_primary",
+                                    "strategy_version": "v1",
+                                    "priority": 1,
+                                    "route_action": "FAK",
+                                    "size": "10",
+                                    "min_edge_bps": 500,
+                                }
+                            ],
+                            "snapshot_ids": ["snap_yes", "snap_hold"],
+                        },
+                        observed_at=datetime(2026, 3, 10, 10, 6, tzinfo=UTC),
+                    )
+                finally:
+                    con.close()
+
+            self.assertEqual(result.metadata["selected_snapshot_ids"], ["snap_yes", "snap_hold"])
+            self.assertEqual(result.metadata["decision_count"], 1)
+            self.assertEqual(result.metadata["ticket_count"], 1)
+            self.assertEqual(result.metadata["execution_context_count"], 1)
+
+            allow_tables = ",".join(
+                [
+                    "runtime.strategy_runs",
+                    "runtime.trade_tickets",
+                    "capability.execution_contexts",
+                ]
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                },
+                clear=False,
+            ):
+                while process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False):
+                    pass
+
+            with patch.dict("os.environ", reader_env, clear=False):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.strategy_runs").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.trade_tickets").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM capability.execution_contexts").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.gate_decisions").fetchone()[0], 0)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.orders").fetchone()[0], 0)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.fills").fetchone()[0], 0)
+                    row = con.execute(
+                        """
+                        SELECT wallet_id, token_id, route_action, risk_gate_result
+                        FROM capability.execution_contexts
+                        """
+                    ).fetchone()
+                finally:
+                    con.close()
+            self.assertEqual(tuple(row), ("wallet_weather_1", "tok_yes", "fak", "pending_gate"))
+
     def test_paper_chain_persists_runtime_and_trading_ledgers(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "asterion.duckdb")

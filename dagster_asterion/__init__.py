@@ -4,10 +4,12 @@ import importlib.util
 
 from .handlers import (
     ColdPathHandlerResult,
+    PaperExecutionBatchRequest,
     SettlementVerificationInput,
     run_weather_data_qa_review_job,
     run_weather_forecast_refresh,
     run_weather_forecast_replay_job,
+    run_weather_paper_execution_job,
     run_weather_resolution_review_job,
     run_weather_resolution_reconciliation,
     run_weather_rule2spec_review_job,
@@ -67,6 +69,7 @@ __all__ = [
     "DuckDBResource",
     "ForecastRuntimeResource",
     "HttpJsonClient",
+    "PaperExecutionBatchRequest",
     "SettlementVerificationInput",
     "WatcherRpcPoolResource",
     "WriteQueueResource",
@@ -86,6 +89,7 @@ __all__ = [
     "run_weather_data_qa_review_job",
     "run_weather_forecast_refresh",
     "run_weather_forecast_replay_job",
+    "run_weather_paper_execution_job",
     "run_weather_resolution_review_job",
     "run_weather_resolution_reconciliation",
     "run_weather_rule2spec_review_job",

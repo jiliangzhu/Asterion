@@ -1,7 +1,7 @@
 # Asterion Documentation Index
 
-**版本**: v1.1  
-**更新日期**: 2026-03-10  
+**版本**: v1.2
+**更新日期**: 2026-03-11
 **目标**: 统一 Asterion 文档的目录结构、分类规则和 source-of-truth，避免后续开发中出现重复文档、重复接口定义和失效导航。
 
 ---
@@ -55,6 +55,7 @@ source-of-truth：
 - `phase-plans/P0_Implementation_Plan.md`
 - `phase-plans/P1_Implementation_Plan.md`
 - `phase-plans/P2_Implementation_Plan.md`
+- `phase-plans/P3_Implementation_Plan.md`
 - `checklists/P0_Closeout_Checklist.md`
 - `checklists/P1_Closeout_Checklist.md`
 - `checklists/P2_Closeout_Checklist.md`
@@ -82,8 +83,6 @@ source-of-truth：
 
 后续建议新增：
 
-- `phase-plans/P2_Implementation_Plan.md`
-- `phase-plans/P3_Implementation_Plan.md`
 - `checklists/<Topic>_Checklist.md`
 - `runbooks/P<Phase>_<Topic>_Runbook.md`
 - `module-notes/AlphaDesk_<Module>_Module_Note.md`
@@ -256,8 +255,10 @@ source-of-truth：
 3. `docs/00-overview/Asterion_Project_Plan.md`
 4. `docs/00-overview/DEVELOPMENT_ROADMAP.md`
 5. `docs/10-implementation/Implementation_Index.md`
-6. `docs/10-implementation/phase-plans/P2_Implementation_Plan.md`
-7. 进入对应模块设计文档
+6. `docs/10-implementation/phase-plans/P3_Implementation_Plan.md`
+7. `docs/10-implementation/checklists/P2_Closeout_Checklist.md`
+8. `docs/10-implementation/phase-plans/P2_Implementation_Plan.md`
+9. 进入对应模块设计文档
 
 ---
 

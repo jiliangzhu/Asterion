@@ -90,6 +90,89 @@ def load_watch_only_snapshots(
     return snapshots, signal_ts_ms
 
 
+def load_selected_watch_only_snapshots(
+    con,
+    *,
+    snapshot_ids: list[str] | None = None,
+    market_ids: list[str] | None = None,
+    limit: int | None = None,
+) -> tuple[list[WatchOnlySnapshotRecord], dict[str, int], dict[str, datetime | None]]:
+    has_snapshot_selector = bool(snapshot_ids)
+    has_market_selector = bool(market_ids)
+    if has_snapshot_selector == has_market_selector:
+        raise ValueError("exactly one of snapshot_ids or market_ids must be provided")
+
+    if has_snapshot_selector:
+        ordered_snapshot_ids = _stable_unique_ids(snapshot_ids or [])
+        placeholders = ",".join(["?"] * len(ordered_snapshot_ids))
+        rows = con.execute(
+            f"""
+            SELECT
+                snapshot_id,
+                fair_value_id,
+                run_id,
+                market_id,
+                condition_id,
+                token_id,
+                outcome,
+                reference_price,
+                fair_value,
+                edge_bps,
+                threshold_bps,
+                decision,
+                side,
+                rationale,
+                pricing_context_json,
+                created_at
+            FROM weather.weather_watch_only_snapshots
+            WHERE snapshot_id IN ({placeholders})
+            """,
+            ordered_snapshot_ids,
+        ).fetchall()
+        row_by_snapshot_id = {str(row[0]): row for row in rows}
+        missing = [snapshot_id for snapshot_id in ordered_snapshot_ids if snapshot_id not in row_by_snapshot_id]
+        if missing:
+            raise LookupError(f"watch-only snapshots not found: {missing}")
+        ordered_rows = [row_by_snapshot_id[snapshot_id] for snapshot_id in ordered_snapshot_ids]
+        return _selected_snapshot_bundle(ordered_rows)
+
+    ordered_market_ids = _stable_unique_ids(market_ids or [])
+    if limit is None:
+        raise ValueError("limit is required when selecting snapshots by market_ids")
+    if int(limit) <= 0:
+        raise ValueError("limit must be positive")
+    placeholders = ",".join(["?"] * len(ordered_market_ids))
+    rows = con.execute(
+        f"""
+        SELECT
+            snapshot_id,
+            fair_value_id,
+            run_id,
+            market_id,
+            condition_id,
+            token_id,
+            outcome,
+            reference_price,
+            fair_value,
+            edge_bps,
+            threshold_bps,
+            decision,
+            side,
+            rationale,
+            pricing_context_json,
+            created_at
+        FROM weather.weather_watch_only_snapshots
+        WHERE market_id IN ({placeholders})
+        ORDER BY created_at ASC, snapshot_id ASC
+        LIMIT ?
+        """,
+        [*ordered_market_ids, int(limit)],
+    ).fetchall()
+    if not rows:
+        raise LookupError(f"watch-only snapshots not found for market_ids={ordered_market_ids}")
+    return _selected_snapshot_bundle(rows)
+
+
 def run_strategy_engine(
     *,
     ctx: StrategyContext,
@@ -211,3 +294,55 @@ def _json_dict(value: object) -> dict[str, object]:
     if not isinstance(decoded, dict):
         raise ValueError("pricing_context_json must decode to an object")
     return {str(key): decoded[key] for key in decoded}
+
+
+def _selected_snapshot_bundle(
+    rows: list[tuple[object, ...]],
+) -> tuple[list[WatchOnlySnapshotRecord], dict[str, int], dict[str, datetime | None]]:
+    snapshots: list[WatchOnlySnapshotRecord] = []
+    signal_ts_ms: dict[str, int] = {}
+    created_at_lookup: dict[str, datetime | None] = {}
+    for row in rows:
+        snapshot = WatchOnlySnapshotRecord(
+            snapshot_id=str(row[0]),
+            fair_value_id=str(row[1]),
+            run_id=str(row[2]),
+            market_id=str(row[3]),
+            condition_id=str(row[4]),
+            token_id=str(row[5]),
+            outcome=str(row[6]),
+            reference_price=float(row[7]),
+            fair_value=float(row[8]),
+            edge_bps=int(row[9]),
+            threshold_bps=int(row[10]),
+            decision=str(row[11]),
+            side=str(row[12]),
+            rationale=str(row[13]),
+            pricing_context=_json_dict(row[14]),
+        )
+        snapshots.append(snapshot)
+        created_at = row[15] if isinstance(row[15], datetime) else None
+        created_at_lookup[snapshot.snapshot_id] = created_at
+        raw_signal_ts_ms = snapshot.pricing_context.get("signal_ts_ms")
+        try:
+            signal_ts_ms[snapshot.snapshot_id] = max(0, int(raw_signal_ts_ms))
+            continue
+        except Exception:  # noqa: BLE001
+            pass
+        if created_at is not None:
+            signal_ts_ms[snapshot.snapshot_id] = int(created_at.replace(tzinfo=UTC).timestamp() * 1000)
+        else:
+            signal_ts_ms[snapshot.snapshot_id] = 0
+    return snapshots, signal_ts_ms, created_at_lookup
+
+
+def _stable_unique_ids(values: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = str(raw)
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered

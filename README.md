@@ -1,7 +1,7 @@
 # Asterion（星枢）项目
 
-**版本**: v1.1
-**更新日期**: 2026-03-10
+**版本**: v1.2
+**更新日期**: 2026-03-11
 **状态**: P2 已关闭，P3 可开工
 
 ---
@@ -29,7 +29,8 @@ Asterion/
     │   ├── phase-plans/
     │   │   ├── P0_Implementation_Plan.md
     │   │   ├── P1_Implementation_Plan.md
-    │   │   └── P2_Implementation_Plan.md
+    │   │   ├── P2_Implementation_Plan.md
+    │   │   └── P3_Implementation_Plan.md
     │   ├── checklists/
     │   │   ├── P0_Closeout_Checklist.md
     │   │   ├── P1_Closeout_Checklist.md
@@ -73,18 +74,20 @@ Asterion/
    - 重点看其中的 `AlphaDesk Migration Track`，这里已经按实际代码语义区分了“直接迁入 / 保留壳重写 / 禁止迁入”
 5. 阅读 [Implementation_Index.md](./docs/10-implementation/Implementation_Index.md)
    - 这是所有实施文档的统一入口，后续阶段文档都从这里找
-6. 阅读 [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./docs/10-implementation/checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+6. 阅读 [P3_Implementation_Plan.md](./docs/10-implementation/phase-plans/P3_Implementation_Plan.md)
+   - 这是 `P3 paper execution` 当前唯一实施入口，后续开发以本文件为准
+7. 阅读 [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./docs/10-implementation/checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
    - 如果目标是“彻底脱离 AlphaDesk 后再建独立 Git 仓库”，这份清单是当前唯一判断依据
-7. 阅读 [P2_Closeout_Checklist.md](./docs/10-implementation/checklists/P2_Closeout_Checklist.md)
+8. 阅读 [P2_Closeout_Checklist.md](./docs/10-implementation/checklists/P2_Closeout_Checklist.md)
    - 这是 `P2` 是否已经关闭、`P3` 是否可以开工、AlphaDesk Exit Gate 是否通过的唯一关闭依据
-8. 阅读 [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./docs/10-implementation/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
+9. 阅读 [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./docs/10-implementation/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
    - 这是 `watch-only / replay / cold path` 当前 canonical 入口和 operator 读路径
-9. 阅读 [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./docs/10-implementation/runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+10. 阅读 [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./docs/10-implementation/runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
    - 这是 `P2-07` 到 `P2-09` 的 canonical job map、schedule 和 handler 入口
-10. 如需回看 `P2` 的实施顺序，再阅读 [P2_Implementation_Plan.md](./docs/10-implementation/phase-plans/P2_Implementation_Plan.md)
-11. 如需回看 `P1` 阶段计划，再阅读 [P1_Implementation_Plan.md](./docs/10-implementation/phase-plans/P1_Implementation_Plan.md)
-12. 如需回看底座建设，再阅读 [P0_Implementation_Plan.md](./docs/10-implementation/phase-plans/P0_Implementation_Plan.md)
-13. 深入阅读详细设计文档（按需）
+11. 如需回看 `P2` 的实施顺序，再阅读 [P2_Implementation_Plan.md](./docs/10-implementation/phase-plans/P2_Implementation_Plan.md)
+12. 如需回看 `P1` 阶段计划，再阅读 [P1_Implementation_Plan.md](./docs/10-implementation/phase-plans/P1_Implementation_Plan.md)
+13. 如需回看底座建设，再阅读 [P0_Implementation_Plan.md](./docs/10-implementation/phase-plans/P0_Implementation_Plan.md)
+14. 深入阅读详细设计文档（按需）
 
 ### 1.1 文档归档规则
 
@@ -137,30 +140,39 @@ python3 -m unittest discover -s tests -v
 
 ## 🏗️ 技术架构
 
-### 核心模块
+### 当前已落地模块（P2 closeout）
 
 ```
 asterion_core/              # 平台核心
 ├── clients/                # Polymarket API 客户端
-├── execution/              # 执行层 ⭐
-│   ├── order_router_v1.py
-│   ├── liquidity_estimator.py
-│   ├── fee_calculator.py
-│   └── slippage_model.py
-└── risk/                   # 风控层 ⭐
-    ├── position_limiter.py
-    └── circuit_breaker.py
+├── contracts/              # canonical contracts / IDs
+├── execution/              # execution foundation
+│   ├── trade_ticket_v1.py
+│   ├── signal_to_order_v1.py
+│   ├── execution_gate_v1.py
+│   └── watch_only_gate_v3.py
+├── runtime/                # strategy runtime
+│   ├── strategy_base.py
+│   └── strategy_engine_v3.py
+├── risk/                   # reservation / inventory foundation
+│   └── portfolio_v3.py
+├── journal/                # runtime / trading journal
+│   └── journal_v3.py
+├── monitoring/             # readiness / health
+│   ├── health_monitor_v1.py
+│   └── readiness_checker_v1.py
+├── ui/                     # replica / lite read model
+│   ├── ui_db_replica.py
+│   └── ui_lite_db.py
+├── storage/                # DB / queue / determinism
+└── ws/                     # WS ingest / agg
 
 domains/weather/            # Weather 领域
 ├── scout/                  # 市场发现
 ├── spec/                   # 规则解析
 ├── forecast/               # 预测服务
 ├── pricing/                # 定价引擎
-└── resolution/             # 结算监控 ⭐
-    ├── uma_watcher.py
-    ├── settlement_verifier.py
-    ├── dispute_analyzer.py
-    └── redeem_scheduler.py
+└── resolution/             # watcher / verification / backfill
 
 dagster_asterion/           # Cold-path orchestration 壳
 ├── job_map.py              # canonical job/schedule map
@@ -172,9 +184,14 @@ agents/                     # AI Agent
 └── weather/
     ├── rule2spec_agent.py
     ├── data_qa_agent.py
-    ├── resolution_agent.py
-    └── daily_review_agent.py
+    └── resolution_agent.py
 ```
+
+说明：
+
+- 上面只列当前仓库**已经落地**的主干模块
+- `order_router_v1.py`、paper adapter、quote-based fill simulator、`daily_review_agent.py` 属于 `P3` 计划内容，不应在 README 中被当作已存在代码
+- `P3` 的 canonical 开发入口见 [P3_Implementation_Plan.md](./docs/10-implementation/phase-plans/P3_Implementation_Plan.md)
 
 ---
 
@@ -267,6 +284,7 @@ agents/                     # AI Agent
 - ⏳ Paper submitter / paper exchange 行为
 - ⏳ readiness 驱动的 operator 联调
 - ⏳ Daily Review Agent
+- 当前实施入口：[P3_Implementation_Plan.md](./docs/10-implementation/phase-plans/P3_Implementation_Plan.md)
 
 ### Phase 4: Live Prerequisites
 - ⏳ signer / KMS / Vault / HSM

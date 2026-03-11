@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from agents.common import build_agent_client_from_env, enqueue_agent_artifact_upserts
@@ -13,7 +14,30 @@ from agents.weather import (
     run_resolution_agent_review,
     run_rule2spec_agent_review,
 )
-from asterion_core.contracts import ForecastReplayRequest, ProposalStatus, ResolutionSpec, UMAProposal, new_request_id
+from asterion_core.contracts import (
+    ForecastReplayRequest,
+    ProposalStatus,
+    ResolutionSpec,
+    RouteAction,
+    UMAProposal,
+    stable_object_id,
+    new_request_id,
+)
+from asterion_core.execution import (
+    build_execution_context,
+    build_execution_context_record,
+    build_trade_ticket,
+    enqueue_execution_context_upserts,
+    load_account_trading_capability,
+    load_market_capability,
+)
+from asterion_core.journal import enqueue_strategy_run_upserts, enqueue_trade_ticket_upserts
+from asterion_core.runtime import (
+    StrategyContext,
+    StrategyRegistration,
+    load_selected_watch_only_snapshots,
+    run_strategy_engine,
+)
 from asterion_core.storage.write_queue import WriteQueueConfig
 from domains.weather.forecast import (
     AdapterRouter,
@@ -69,6 +93,38 @@ class SettlementVerificationInput:
     sources_checked: list[str]
     evidence_payload: dict[str, Any]
     discrepancy_details: str | None = None
+
+
+@dataclass(frozen=True)
+class PaperExecutionBatchRequest:
+    wallet_id: str
+    strategy_registrations: list[StrategyRegistration]
+    snapshot_ids: list[str] | None
+    market_ids: list[str] | None
+    snapshot_limit: int | None
+    dq_level: str
+    data_snapshot_id: str | None
+    universe_snapshot_id: str | None
+    asof_ts_ms: int | None
+    quote_snapshot_refs: list[str]
+
+    def __post_init__(self) -> None:
+        if not self.wallet_id:
+            raise ValueError("wallet_id is required")
+        if not self.strategy_registrations:
+            raise ValueError("strategy_registrations are required")
+        has_snapshot_selector = bool(self.snapshot_ids)
+        has_market_selector = bool(self.market_ids)
+        if has_snapshot_selector == has_market_selector:
+            raise ValueError("exactly one of snapshot_ids or market_ids must be provided")
+        if has_market_selector and self.snapshot_limit is None:
+            raise ValueError("snapshot_limit is required when selecting by market_ids")
+        if self.snapshot_limit is not None and int(self.snapshot_limit) <= 0:
+            raise ValueError("snapshot_limit must be positive")
+        if self.universe_snapshot_id == "":
+            raise ValueError("universe_snapshot_id must be None or non-empty")
+        if self.asof_ts_ms is not None and int(self.asof_ts_ms) < 0:
+            raise ValueError("asof_ts_ms must be non-negative")
 
 
 def run_weather_spec_sync(
@@ -319,6 +375,109 @@ def run_weather_resolution_reconciliation(
     )
 
 
+def run_weather_paper_execution_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    params_json: dict[str, Any],
+    run_id: str | None = None,
+    observed_at: datetime | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    batch_request = _normalize_paper_execution_request(params_json)
+    if batch_request.snapshot_ids:
+        snapshots, signal_ts_lookup, created_at_lookup = load_selected_watch_only_snapshots(
+            con,
+            snapshot_ids=batch_request.snapshot_ids,
+        )
+    else:
+        snapshots, signal_ts_lookup, created_at_lookup = load_selected_watch_only_snapshots(
+            con,
+            market_ids=batch_request.market_ids,
+            limit=batch_request.snapshot_limit,
+        )
+
+    selected_snapshot_ids = [snapshot.snapshot_id for snapshot in snapshots]
+    selected_market_ids = _stable_unique_values([snapshot.market_id for snapshot in snapshots])
+    resolved_asof_ts_ms = batch_request.asof_ts_ms
+    if resolved_asof_ts_ms is None:
+        resolved_asof_ts_ms = _resolve_paper_execution_asof_ts_ms(
+            snapshot_ids=selected_snapshot_ids,
+            signal_ts_lookup=signal_ts_lookup,
+            created_at_lookup=created_at_lookup,
+        )
+    ctx = StrategyContext(
+        data_snapshot_id=batch_request.data_snapshot_id
+        or stable_object_id("dsnap", {"snapshot_ids": selected_snapshot_ids}),
+        universe_snapshot_id=batch_request.universe_snapshot_id
+        or stable_object_id("usnap", {"market_ids": selected_market_ids}),
+        asof_ts_ms=resolved_asof_ts_ms,
+        dq_level=batch_request.dq_level,
+        quote_snapshot_refs=list(batch_request.quote_snapshot_refs),
+    )
+
+    account_capability = load_account_trading_capability(con, wallet_id=batch_request.wallet_id)
+    strategy_run, decisions = run_strategy_engine(
+        ctx=ctx,
+        snapshots=snapshots,
+        strategies=list(batch_request.strategy_registrations),
+        snapshot_signal_ts_ms=signal_ts_lookup,
+        created_at=observed_at or datetime.now(UTC),
+    )
+
+    tickets = [build_trade_ticket(decision, created_at=observed_at or datetime.now(UTC)) for decision in decisions]
+    market_capabilities = {
+        token_id: load_market_capability(con, token_id=token_id)
+        for token_id in _stable_unique_values([ticket.token_id for ticket in tickets])
+    }
+    execution_context_records_by_id = {}
+    ticket_execution_context_ids: dict[str, str] = {}
+    for ticket in tickets:
+        execution_context = build_execution_context(
+            market_capability=market_capabilities[ticket.token_id],
+            account_capability=account_capability,
+            route_action=ticket.route_action,
+            risk_gate_result="pending_gate",
+        )
+        record = build_execution_context_record(
+            wallet_id=batch_request.wallet_id,
+            execution_context=execution_context,
+            created_at=observed_at or datetime.now(UTC),
+        )
+        execution_context_records_by_id.setdefault(record.execution_context_id, record)
+        ticket_execution_context_ids[ticket.ticket_id] = record.execution_context_id
+
+    task_ids: list[str] = []
+    task_ids.extend(_append_task_id(enqueue_strategy_run_upserts(queue_cfg, runs=[strategy_run], run_id=request_id)))
+    task_ids.extend(_append_task_id(enqueue_trade_ticket_upserts(queue_cfg, tickets=tickets, run_id=request_id)))
+    task_ids.extend(
+        _append_task_id(
+            enqueue_execution_context_upserts(
+                queue_cfg,
+                execution_contexts=list(execution_context_records_by_id.values()),
+                run_id=request_id,
+            )
+        )
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_paper_execution",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=len(tickets),
+        metadata={
+            "wallet_id": batch_request.wallet_id,
+            "selected_snapshot_ids": selected_snapshot_ids,
+            "selected_market_ids": selected_market_ids,
+            "strategy_ids": [item.strategy_id for item in batch_request.strategy_registrations],
+            "decision_count": len(decisions),
+            "ticket_count": len(tickets),
+            "execution_context_count": len(execution_context_records_by_id),
+            "ticket_execution_context_ids": ticket_execution_context_ids,
+            "strategy_run_id": strategy_run.run_id,
+        },
+    )
+
+
 def run_weather_rule2spec_review_job(
     con,
     queue_cfg: WriteQueueConfig,
@@ -545,3 +704,103 @@ def _normalize_datetime(value: datetime | None) -> datetime | None:
     if value.tzinfo is not None:
         return value.astimezone(UTC).replace(tzinfo=None)
     return value
+
+
+def _normalize_paper_execution_request(params_json: dict[str, Any]) -> PaperExecutionBatchRequest:
+    if not isinstance(params_json, dict):
+        raise ValueError("params_json must be a dictionary")
+    raw_strategies = params_json.get("strategy_registrations")
+    if not isinstance(raw_strategies, list) or not raw_strategies:
+        raise ValueError("strategy_registrations are required")
+    strategy_registrations = [_parse_strategy_registration(item) for item in raw_strategies]
+    raw_snapshot_ids = params_json.get("snapshot_ids")
+    raw_market_ids = params_json.get("market_ids")
+    snapshot_ids = _coerce_optional_str_list(raw_snapshot_ids)
+    market_ids = _coerce_optional_str_list(raw_market_ids)
+    snapshot_limit = params_json.get("snapshot_limit")
+    return PaperExecutionBatchRequest(
+        wallet_id=str(params_json.get("wallet_id") or ""),
+        strategy_registrations=strategy_registrations,
+        snapshot_ids=snapshot_ids,
+        market_ids=market_ids,
+        snapshot_limit=int(snapshot_limit) if snapshot_limit is not None else None,
+        dq_level=str(params_json.get("dq_level") or "PASS"),
+        data_snapshot_id=_coerce_optional_non_empty_string(params_json.get("data_snapshot_id")),
+        universe_snapshot_id=_coerce_optional_non_empty_string(params_json.get("universe_snapshot_id")),
+        asof_ts_ms=int(params_json["asof_ts_ms"]) if params_json.get("asof_ts_ms") is not None else None,
+        quote_snapshot_refs=_coerce_optional_str_list(params_json.get("quote_snapshot_refs")) or [],
+    )
+
+
+def _parse_strategy_registration(raw: Any) -> StrategyRegistration:
+    if not isinstance(raw, dict):
+        raise ValueError("each strategy registration must be a dictionary")
+    raw_route_action = raw.get("route_action")
+    return StrategyRegistration(
+        strategy_id=str(raw.get("strategy_id") or ""),
+        strategy_version=str(raw.get("strategy_version") or ""),
+        priority=int(raw.get("priority", 0)),
+        route_action=_coerce_route_action(raw_route_action),
+        size=Decimal(str(raw.get("size"))),
+        min_edge_bps=int(raw["min_edge_bps"]) if raw.get("min_edge_bps") is not None else None,
+        params=dict(raw.get("params") or {}),
+    )
+
+
+def _coerce_route_action(value: Any) -> RouteAction:
+    if isinstance(value, RouteAction):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("route_action is required")
+    try:
+        return RouteAction(text.lower())
+    except ValueError:
+        return RouteAction[text.upper()]
+
+
+def _resolve_paper_execution_asof_ts_ms(
+    *,
+    snapshot_ids: list[str],
+    signal_ts_lookup: dict[str, int],
+    created_at_lookup: dict[str, datetime | None],
+) -> int:
+    signal_values = [int(signal_ts_lookup[snapshot_id]) for snapshot_id in snapshot_ids if int(signal_ts_lookup.get(snapshot_id, 0)) > 0]
+    if signal_values:
+        return max(signal_values)
+    created_values = []
+    for snapshot_id in snapshot_ids:
+        created_at = created_at_lookup.get(snapshot_id)
+        if created_at is None:
+            continue
+        created_values.append(int(created_at.replace(tzinfo=UTC).timestamp() * 1000))
+    if created_values:
+        return max(created_values)
+    return 0
+
+
+def _coerce_optional_str_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("selector fields must be lists when provided")
+    ordered = _stable_unique_values([str(item) for item in value if str(item)])
+    return ordered or None
+
+
+def _coerce_optional_non_empty_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _stable_unique_values(values: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered

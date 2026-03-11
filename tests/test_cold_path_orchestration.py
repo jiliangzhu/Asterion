@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import unittest
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from unittest.mock import patch
 
 from agents.common import (
@@ -16,12 +17,17 @@ from agents.common import (
     build_agent_review_record,
 )
 from asterion_core.contracts import (
+    AccountTradingCapability,
     ForecastReplayResult,
     ForecastRunRecord,
     ForecastReplayRequest,
     ForecastResolutionContract,
+    MarketCapability,
     ProposalStatus,
     ResolutionSpec,
+    RouteAction,
+    StrategyRun,
+    TradeTicket,
     UMAProposal,
     WatchOnlySnapshotRecord,
     WeatherFairValueRecord,
@@ -38,6 +44,7 @@ from dagster_asterion import (
 )
 from dagster_asterion.handlers import (
     SettlementVerificationInput,
+    run_weather_paper_execution_job,
     run_weather_data_qa_review_job,
     run_weather_forecast_refresh,
     run_weather_forecast_replay_job,
@@ -248,6 +255,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_spec_sync",
             "weather_forecast_refresh",
             "weather_forecast_replay",
+            "weather_paper_execution",
             "weather_watcher_backfill",
             "weather_resolution_reconciliation",
             "weather_rule2spec_review",
@@ -256,6 +264,8 @@ class ColdPathJobMapTest(unittest.TestCase):
         })
         self.assertEqual(jobs["weather_forecast_refresh"].upstream_jobs, ["weather_spec_sync"])
         self.assertEqual(jobs["weather_watcher_backfill"].mode, "scheduled")
+        self.assertEqual(jobs["weather_paper_execution"].mode, "manual")
+        self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay"])
         self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
         self.assertEqual(jobs["weather_data_qa_review"].upstream_jobs, ["weather_forecast_replay"])
         self.assertEqual(jobs["weather_resolution_review"].upstream_jobs, ["weather_resolution_reconciliation"])
@@ -312,6 +322,185 @@ class ColdPathDefinitionsTest(unittest.TestCase):
 
 
 class ColdPathHandlersSmokeTest(unittest.TestCase):
+    def test_weather_paper_execution_rejects_invalid_selectors(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        with self.assertRaises(ValueError):
+            run_weather_paper_execution_job(
+                object(),
+                queue_cfg,
+                params_json={
+                    "wallet_id": "wallet_weather_1",
+                    "strategy_registrations": [],
+                    "snapshot_ids": ["snap_yes"],
+                },
+            )
+        with self.assertRaises(ValueError):
+            run_weather_paper_execution_job(
+                object(),
+                queue_cfg,
+                params_json={
+                    "wallet_id": "wallet_weather_1",
+                    "strategy_registrations": [
+                        {
+                            "strategy_id": "weather_primary",
+                            "strategy_version": "v1",
+                            "priority": 1,
+                            "route_action": "FAK",
+                            "size": "10",
+                        }
+                    ],
+                    "snapshot_ids": ["snap_yes"],
+                    "market_ids": ["mkt_weather_1"],
+                },
+            )
+        with self.assertRaises(ValueError):
+            run_weather_paper_execution_job(
+                object(),
+                queue_cfg,
+                params_json={
+                    "wallet_id": "wallet_weather_1",
+                    "strategy_registrations": [
+                        {
+                            "strategy_id": "weather_primary",
+                            "strategy_version": "v1",
+                            "priority": 1,
+                            "route_action": "FAK",
+                            "size": "10",
+                        }
+                    ],
+                    "market_ids": ["mkt_weather_1"],
+                },
+            )
+
+    def test_weather_paper_execution_routes_to_runtime_and_capability_persistence(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        account_capability = AccountTradingCapability(
+            wallet_id="wallet_weather_1",
+            wallet_type="eoa",
+            signature_type=1,
+            funder="0xfunder",
+            allowance_targets=["0xrelayer"],
+            can_use_relayer=True,
+            can_trade=True,
+            restricted_reason=None,
+        )
+        market_capability = MarketCapability(
+            market_id="mkt_weather_1",
+            condition_id="cond_weather_1",
+            token_id="tok_yes",
+            outcome="YES",
+            tick_size=Decimal("0.01"),
+            fee_rate_bps=30,
+            neg_risk=False,
+            min_order_size=Decimal("1"),
+            tradable=True,
+            fees_enabled=True,
+            data_sources=["gamma"],
+            updated_at=datetime(2026, 3, 10, 10, 0, tzinfo=timezone.utc),
+        )
+        strategy_run = StrategyRun(
+            run_id="srun_1",
+            data_snapshot_id="dsnap_1",
+            universe_snapshot_id="usnap_1",
+            asof_ts_ms=1710000000000,
+            dq_level="PASS",
+            strategy_ids=["weather_primary"],
+            decision_count=2,
+            created_at=datetime(2026, 3, 10, 10, 1, tzinfo=timezone.utc),
+        )
+        tickets = [
+            TradeTicket(
+                ticket_id="tt_1",
+                run_id="srun_1",
+                strategy_id="weather_primary",
+                strategy_version="v1",
+                market_id="mkt_weather_1",
+                token_id="tok_yes",
+                outcome="YES",
+                side="buy",
+                reference_price=Decimal("0.55"),
+                fair_value=Decimal("0.63"),
+                edge_bps=800,
+                threshold_bps=500,
+                route_action=RouteAction.FAK,
+                size=Decimal("10"),
+                signal_ts_ms=1710000000000,
+                forecast_run_id="frun_weather_1",
+                watch_snapshot_id="snap_yes",
+                request_id="req_1",
+                ticket_hash="thash_1",
+                provenance_json={"watch_snapshot_id": "snap_yes"},
+                created_at=datetime(2026, 3, 10, 10, 1, tzinfo=timezone.utc),
+            ),
+            TradeTicket(
+                ticket_id="tt_2",
+                run_id="srun_1",
+                strategy_id="weather_primary",
+                strategy_version="v1",
+                market_id="mkt_weather_1",
+                token_id="tok_yes",
+                outcome="YES",
+                side="buy",
+                reference_price=Decimal("0.56"),
+                fair_value=Decimal("0.64"),
+                edge_bps=900,
+                threshold_bps=500,
+                route_action=RouteAction.FAK,
+                size=Decimal("10"),
+                signal_ts_ms=1710000000001,
+                forecast_run_id="frun_weather_1",
+                watch_snapshot_id="snap_yes_2",
+                request_id="req_2",
+                ticket_hash="thash_2",
+                provenance_json={"watch_snapshot_id": "snap_yes_2"},
+                created_at=datetime(2026, 3, 10, 10, 1, tzinfo=timezone.utc),
+            ),
+        ]
+        fake_record = type("ExecutionContextRecordStub", (), {"execution_context_id": "ectx_1"})()
+        with (
+            patch(
+                "dagster_asterion.handlers.load_selected_watch_only_snapshots",
+                return_value=(
+                    [_snapshot(), _snapshot()],
+                    {"snap_yes": 1710000000000},
+                    {"snap_yes": datetime(2026, 3, 10, 10, 0, tzinfo=timezone.utc)},
+                ),
+            ),
+            patch("dagster_asterion.handlers.load_account_trading_capability", return_value=account_capability),
+            patch("dagster_asterion.handlers.load_market_capability", return_value=market_capability),
+            patch("dagster_asterion.handlers.run_strategy_engine", return_value=(strategy_run, [object(), object()])),
+            patch("dagster_asterion.handlers.build_trade_ticket", side_effect=tickets),
+            patch("dagster_asterion.handlers.build_execution_context", return_value=object()) as build_context,
+            patch("dagster_asterion.handlers.build_execution_context_record", return_value=fake_record) as build_record,
+            patch("dagster_asterion.handlers.enqueue_strategy_run_upserts", return_value="task_strategy"),
+            patch("dagster_asterion.handlers.enqueue_trade_ticket_upserts", return_value="task_ticket"),
+            patch("dagster_asterion.handlers.enqueue_execution_context_upserts", return_value="task_context") as enqueue_contexts,
+        ):
+            result = run_weather_paper_execution_job(
+                object(),
+                queue_cfg,
+                params_json={
+                    "wallet_id": "wallet_weather_1",
+                    "strategy_registrations": [
+                        {
+                            "strategy_id": "weather_primary",
+                            "strategy_version": "v1",
+                            "priority": 1,
+                            "route_action": "FAK",
+                            "size": "10",
+                        }
+                    ],
+                    "snapshot_ids": ["snap_yes", "snap_yes"],
+                },
+            )
+        self.assertEqual(result.task_ids, ["task_strategy", "task_ticket", "task_context"])
+        self.assertEqual(result.metadata["ticket_count"], 2)
+        self.assertEqual(result.metadata["execution_context_count"], 1)
+        self.assertEqual(result.metadata["ticket_execution_context_ids"], {"tt_1": "ectx_1", "tt_2": "ectx_1"})
+        self.assertEqual(build_context.call_count, 2)
+        build_record.assert_called()
+        enqueue_contexts.assert_called_once()
+
     def test_weather_spec_sync_routes_to_rule2spec_and_station_mapper(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")
         market = type("Market", (), {"market_id": "m1"})()

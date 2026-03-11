@@ -4,9 +4,10 @@
 
 > 一个建立在 AlphaDesk 底座之上的、面向 Polymarket 多领域事件市场的"研究、Agent、定价、执行、风控"统一平台
 
-**文档版本**: v1.1
+**文档版本**: v1.2
 **创建日期**: 2026-03-07
-**状态**: 详细设计完成，P1 已关闭
+**更新日期**: 2026-03-11
+**状态**: 详细设计完成，P2 已关闭，P3 可开工
 
 ---
 
@@ -25,6 +26,7 @@
 - [Documentation Index](./Documentation_Index.md)
 - [开发路线图](./DEVELOPMENT_ROADMAP.md)
 - [Implementation Index](../10-implementation/Implementation_Index.md)
+- [P3 实施文档](../10-implementation/phase-plans/P3_Implementation_Plan.md)
 - [P2 实施文档](../10-implementation/phase-plans/P2_Implementation_Plan.md)
 - [P1 实施文档](../10-implementation/phase-plans/P1_Implementation_Plan.md)
 - [P0 实施文档](../10-implementation/phase-plans/P0_Implementation_Plan.md)
@@ -268,21 +270,27 @@ alphadesk/pages/dashboard.py    → apps/operator_ui/pages/dashboard.py (重写)
 
 ## 3. Asterion 项目结构
 
-### 3.1 完整目录结构
+### 3.1 当前已落地代码骨架（截至 2026-03-11）
 
 ```
 Asterion/
-  asterion_core/                  # 平台核心（继承自 AlphaDesk）
+  asterion_core/                  # 平台核心
     clients/                      # Polymarket API 客户端
-      gamma_client.py
-      data_api_client.py
-      clob_client.py
-      ws_client.py
+      data_api.py
+      gamma.py
+      shared.py
+    contracts/                    # canonical contracts / IDs / shared objects
+      execution.py
+      ids.py
+      inventory.py
+      weather.py
     ingest/                       # 数据采集
       bronze.py
-      market_discovery.py
-    storage/                      # 数据存储
+    storage/                      # 数据存储 / queue / determinism
       database.py
+      db_migrate.py
+      determinism.py
+      os_queue.py
       write_queue.py
       writerd.py
       write_guard_audit.py
@@ -292,128 +300,84 @@ Asterion/
     runtime/                      # 策略运行时
       strategy_base.py
       strategy_engine_v3.py
+    execution/                    # 执行层
       trade_ticket_v1.py
       signal_to_order_v1.py
-    execution/                    # 执行层
-      order_router_v1.py          # 订单路由（动态费率）
-      liquidity_estimator.py      # 流动性评估
-      fee_calculator.py           # 费用计算（动态费率）
-      slippage_model.py           # 滑点模型
       execution_gate_v1.py        # 执行门禁
       watch_only_gate_v3.py       # Watch-only 模式
-      gas_manager.py              # Gas 管理
-      tx_batcher.py               # 交易批处理
-      nonce_manager.py            # Nonce 管理
     risk/                         # 风控层
-      portfolio_v3.py             # 组合管理
-      position_limiter.py         # 仓位限制
-      correlation_monitor.py      # 相关性监控
-      liquidity_guard.py          # 流动性保护
-      circuit_breaker.py          # 熔断机制
-    signer/                       # 签名服务
-      signer_service.py           # 签名服务主入口
-      key_manager.py              # L1 signer / L2 credential backend
-      order_signer.py             # 官方订单签名能力封装
-      transaction_signer.py       # 交易签名
-      audit_logger.py             # 审计日志
+      portfolio_v3.py
     journal/                      # 交易日志
       journal_v3.py
     monitoring/                   # 监控
       health_monitor_v1.py
       readiness_checker_v1.py
-    ui/                           # UI 组件
+    ui/                           # UI 只读面
       ui_db_replica.py
       ui_lite_db.py
 
   domains/                        # 领域模块
-    markets/                      # 市场能力管理
-      capability_registry.py      # 市场能力注册表
-      capability_fetcher.py       # 能力获取器（从链上/API 动态获取）
-      capability_cache.py         # 能力缓存
-    trading/                      # 交易管理
-      oms/                        # 订单管理系统
-        order_manager.py          # 订单管理器
-        order_state_machine.py    # 订单状态机
-        fill_tracker.py           # 成交追踪
-      inventory/                  # 库存管理
-        inventory_manager.py      # 库存管理器
-        inventory_ledger.py       # 库存账本
-        position_tracker.py       # 仓位追踪
-      ctf/                        # CTF 操作
-        ctf_operations_manager.py # CTF 操作管理器
-        split_handler.py          # Split 处理
-        merge_handler.py          # Merge 处理
-        redeem_handler.py         # Redeem 处理
-      reconciliation/             # 对账
-        reconciliation_engine.py  # 对账引擎
-        discrepancy_detector.py   # 差异检测
+    markets/
+      __init__.py
+    trading/
+      oms/
+        __init__.py
     weather/                      # 天气市场
       scout/                      # 市场发现
-        market_scout.py
+        market_discovery.py
       spec/                       # 规则解析
-        market_spec.py
-        resolution_spec.py        # 结算规范（升级版）
-        spec_versioning.py
-      forecast/                   # 预测服务
-        forecast_ensemble.py
-        openmeteo_adapter.py
-        nws_adapter.py
-        source_router.py
+        rule2spec.py
         station_mapper.py
-        timezone_normalizer.py
-        forecast_cache.py
+      forecast/                   # 预测服务
+        adapters.py
+        cache.py
+        persistence.py
+        replay.py
+        service.py
       pricing/                    # 定价引擎
-        pricing_engine.py
-        distribution_model.py
-      strategy/                   # 策略
-        weather_strategy_v1.py
+        engine.py
+        persistence.py
       resolution/                 # 结算监控
-        uma_watcher.py            # UMA 监控（链上状态机）
-        uma_monitor.py            # UMA 事件监控
-        settlement_verifier.py    # 结算验证（多数据源）
-        dispute_analyzer.py       # Dispute 分析（human-in-the-loop）
-        redeem_scheduler.py       # Redeem 调度
-      universe_v1.py              # Weather universe
+        backfill.py
+        continuity.py
+        persistence.py
+        rpc_fallback.py
+        verification.py
+        watcher_replay.py
 
   agents/                         # AI Agent
     common/
-      agent_evaluator.py          # Agent 评估
-      agent_monitor.py            # Agent 监控
-      human_feedback.py           # 人工反馈
+      client.py
+      persistence.py
+      runtime.py
     weather/
-      rule2spec_agent.py          # 规则解析 Agent
-      data_qa_agent.py            # 数据质量 Agent
-      resolution_agent.py         # 结算监控 Agent
-      daily_review_agent.py       # 日报 Agent
-
-  jobs/                           # 定时任务
-    discovery_job.py
-    forecast_job.py
-    pricing_job.py
-    execution_job.py
+      rule2spec_agent.py
+      data_qa_agent.py
+      resolution_agent.py
 
   dagster_asterion/               # Dagster 编排（冷路径）
-    resources/
-    assets/
-    schedules/
+    handlers.py
+    job_map.py
+    jobs.py
+    resources.py
+    schedules.py
 
   sql/                            # SQL 脚本
     migrations/
-    schemas/
+      0001_core_meta.sql
+      0002_market_and_capability.sql
+      0003_orders_inventory.sql
+      0004_weather_specs_and_forecasts.sql
+      0005_uma_watcher.sql
+      0006_runtime_execution.sql
+      0007_agent_runtime.sql
 
-  apps/                           # 应用
-    operator_ui/                  # 运营台
-      pages/
-        dashboard.py
-        markets.py
-        execution.py
-        risk.py
-        resolution.py
-
-  tests/                          # 测试
-    unit/
-    integration/
-    e2e/
+  tests/                          # 标准库 unittest 测试
+    test_execution_foundation.py
+    test_forecast_replay.py
+    test_cold_path_orchestration.py
+    test_weather_agents.py
+    ...
 
   docs/                           # 文档
     00-overview/
@@ -425,9 +389,16 @@ Asterion/
       phase-plans/
         P0_Implementation_Plan.md
         P1_Implementation_Plan.md
+        P2_Implementation_Plan.md
+        P3_Implementation_Plan.md
       checklists/
         P0_Closeout_Checklist.md
+        P1_Closeout_Checklist.md
+        P2_Closeout_Checklist.md
         P1_P2_AlphaDesk_Remaining_Migration_Checklist.md
+      runbooks/
+        P1_Watch_Only_Replay_Cold_Path_Runbook.md
+        P2_Cold_Path_Orchestration_Job_Map_Runbook.md
       migration-ledger/
         AlphaDesk_Migration_Ledger.md
       module-notes/
@@ -449,16 +420,59 @@ Asterion/
       Agent_Monitor_Design.md
 
   README.md                       # 项目导航（根目录唯一文档）
-  supervisord.conf                # 进程管理配置
   pyproject.toml                  # Python 项目配置
 ```
 
-### 3.2 为什么这么拆
+说明：
+
+- 上面这部分只描述**当前仓库中已经落地**的代码骨架
+- `domains/markets/`、`domains/trading/oms/` 当前只存在占位包，不应被误读为功能已闭合
+- execution foundation 已闭合到 `trade_ticket_v1 / signal_to_order_v1 / execution_gate_v1 / portfolio_v3 / journal_v3`
+- `paper execution` 仍属于 `P3` 范围，不应从这个现状代码骨架里推断为已完成
+
+### 3.2 未来规划模块（未落地）
+
+以下内容仍保留为设计与规划，不代表当前仓库已存在可运行实现：
+
+```
+asterion_core/execution/
+  order_router_v1.py
+  liquidity_estimator.py
+  fee_calculator.py
+  slippage_model.py
+
+asterion_core/signer/
+  signer_service.py
+  key_manager.py
+  order_signer.py
+  transaction_signer.py
+
+domains/trading/
+  inventory/
+  reconciliation/
+  ctf/
+
+agents/weather/
+  daily_review_agent.py
+
+apps/operator_ui/
+  ...
+```
+
+这些模块在当前阶段的定位：
+
+- `order_router_v1.py`、paper adapter、quote-based fill simulator：`P3`
+- `daily_review_agent.py`：`P3`
+- signer / key management / transaction signing：`P4`
+- 更完整的 operator UI：后续 operator productization 范围
+
+### 3.3 为什么这么拆
 
 - **`asterion_core`** - 继承 AlphaDesk 底座，domain-neutral 的平台能力
 - **`domains/*`** - 每个垂类一套自己的 MarketSpec、外部数据适配器和策略
 - **`agents/*`** - 让 LLM/Agent 从第一天起就是"按领域拆"的，而不是一个通用大脑
-- **`apps/operator_ui`** - 运营台/监控台/复盘台
+- **`dagster_asterion` + `ui_lite_db`** - 当前 operator / orchestration 的最小可运行外壳
+- **`apps/operator_ui`** - 更完整的运营台产品形态，当前仍属于未来规划
 
 这样到后面接 Tech 或 Crypto 时，不会出现"整个项目都得翻修"的问题。
 

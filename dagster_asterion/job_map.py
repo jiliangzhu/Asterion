@@ -86,6 +86,24 @@ _JOB_SPECS = [
         default_schedule_key=None,
     ),
     ColdPathJobSpec(
+        job_name="weather_paper_execution",
+        description="Run the canonical manual paper execution batch from selected watch-only snapshots.",
+        mode="manual",
+        upstream_jobs=["weather_forecast_replay"],
+        input_tables=[
+            "weather.weather_watch_only_snapshots",
+            "capability.market_capabilities",
+            "capability.account_trading_capabilities",
+        ],
+        output_tables=[
+            "runtime.strategy_runs",
+            "runtime.trade_tickets",
+            "capability.execution_contexts",
+        ],
+        handler_name="run_weather_paper_execution_job",
+        default_schedule_key=None,
+    ),
+    ColdPathJobSpec(
         job_name="weather_watcher_backfill",
         description="Backfill finalized UMA watcher state using block watermarks and RPC fallback.",
         mode="scheduled",

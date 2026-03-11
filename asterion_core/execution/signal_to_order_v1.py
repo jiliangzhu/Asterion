@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -18,6 +19,42 @@ from asterion_core.contracts import (
     stable_object_id,
     time_in_force_for_route_action,
 )
+from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
+from asterion_core.storage.write_queue import WriteQueueConfig
+
+
+CAPABILITY_EXECUTION_CONTEXT_COLUMNS = [
+    "execution_context_id",
+    "wallet_id",
+    "token_id",
+    "route_action",
+    "fee_rate_bps",
+    "tick_size",
+    "signature_type",
+    "funder",
+    "risk_gate_result",
+    "market_capability_ref",
+    "account_capability_ref",
+    "created_at",
+]
+
+
+@dataclass(frozen=True)
+class ExecutionContextRecord:
+    execution_context_id: str
+    wallet_id: str
+    execution_context: ExecutionContext
+    market_capability_ref: str
+    account_capability_ref: str
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if not self.execution_context_id or not self.wallet_id:
+            raise ValueError("execution_context_id and wallet_id are required")
+        if not self.market_capability_ref or not self.account_capability_ref:
+            raise ValueError("capability refs are required")
+        if self.wallet_id != self.execution_context.account_capability.wallet_id:
+            raise ValueError("wallet_id must match execution_context.account_capability.wallet_id")
 
 
 def load_market_capability(con, *, token_id: str) -> MarketCapability:
@@ -110,6 +147,41 @@ def build_execution_context(
     )
 
 
+def build_execution_context_record(
+    *,
+    wallet_id: str,
+    execution_context: ExecutionContext,
+    created_at: datetime | None = None,
+    market_capability_ref: str | None = None,
+    account_capability_ref: str | None = None,
+) -> ExecutionContextRecord:
+    resolved_market_ref = market_capability_ref or execution_context.market_capability.token_id
+    resolved_account_ref = account_capability_ref or wallet_id
+    execution_context_id = stable_object_id(
+        "ectx",
+        {
+            "wallet_id": wallet_id,
+            "token_id": execution_context.token_id,
+            "route_action": execution_context.route_action.value,
+            "fee_rate_bps": execution_context.fee_rate_bps,
+            "tick_size": str(execution_context.tick_size),
+            "signature_type": execution_context.signature_type,
+            "funder": execution_context.funder,
+            "risk_gate_result": execution_context.risk_gate_result,
+            "market_capability_ref": resolved_market_ref,
+            "account_capability_ref": resolved_account_ref,
+        },
+    )
+    return ExecutionContextRecord(
+        execution_context_id=execution_context_id,
+        wallet_id=wallet_id,
+        execution_context=execution_context,
+        market_capability_ref=resolved_market_ref,
+        account_capability_ref=resolved_account_ref,
+        created_at=created_at or datetime.now(UTC),
+    )
+
+
 def build_signal_order_intent(
     ticket: TradeTicket,
     *,
@@ -193,6 +265,42 @@ def build_order_from_intent(
     )
 
 
+def enqueue_execution_context_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    execution_contexts: list[ExecutionContextRecord],
+    run_id: str | None = None,
+) -> str | None:
+    if not execution_contexts:
+        return None
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="capability.execution_contexts",
+        pk_cols=["execution_context_id"],
+        columns=list(CAPABILITY_EXECUTION_CONTEXT_COLUMNS),
+        rows=[execution_context_record_to_row(item) for item in execution_contexts],
+        run_id=run_id,
+    )
+
+
+def execution_context_record_to_row(record: ExecutionContextRecord) -> list[object]:
+    ctx = record.execution_context
+    return [
+        record.execution_context_id,
+        record.wallet_id,
+        ctx.token_id,
+        ctx.route_action.value,
+        ctx.fee_rate_bps,
+        format(ctx.tick_size, "f"),
+        ctx.signature_type,
+        ctx.funder,
+        ctx.risk_gate_result,
+        record.market_capability_ref,
+        record.account_capability_ref,
+        _sql_timestamp(record.created_at),
+    ]
+
+
 def _json_list(value: object) -> list[str]:
     if value is None:
         return []
@@ -202,3 +310,12 @@ def _json_list(value: object) -> list[str]:
     if not isinstance(decoded, list):
         raise ValueError("expected JSON list")
     return [str(item) for item in decoded]
+
+
+def _sql_timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value
+    if normalized.tzinfo is not None:
+        normalized = normalized.astimezone(UTC).replace(tzinfo=None)
+    return normalized.isoformat(sep=" ", timespec="seconds")
