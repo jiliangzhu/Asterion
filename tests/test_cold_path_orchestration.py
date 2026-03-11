@@ -53,6 +53,7 @@ from dagster_asterion.handlers import (
     run_weather_market_discovery_job,
     run_weather_forecast_refresh,
     run_weather_forecast_replay_job,
+    run_weather_signer_audit_smoke_job,
     run_weather_wallet_state_refresh_job,
     run_weather_resolution_review_job,
     run_weather_resolution_reconciliation,
@@ -65,6 +66,7 @@ from dagster_asterion.resources import (
     CapabilityRefreshRuntimeResource,
     ForecastRuntimeResource,
     GammaDiscoveryRuntimeResource,
+    SignerRuntimeResource,
     WalletStateObservationRuntimeResource,
     WatcherRpcPoolResource,
     WriteQueueResource,
@@ -97,6 +99,8 @@ def _settings() -> AsterionColdPathSettings:
         chain_registry_path="config/chain_registry.polygon.json",
         capability_chain_id=137,
         capability_rpc_urls=[],
+        signer_backend_kind="disabled",
+        signer_rpc_url=None,
         forecast_primary_source="openmeteo",
         forecast_fallback_sources=["nws", "openmeteo"],
         watcher_chain_id=137,
@@ -280,6 +284,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_spec_sync",
             "weather_capability_refresh",
             "weather_wallet_state_refresh",
+            "weather_signer_audit_smoke",
             "weather_forecast_refresh",
             "weather_forecast_replay",
             "weather_paper_execution",
@@ -292,10 +297,12 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_spec_sync"].upstream_jobs, ["weather_market_discovery"])
         self.assertEqual(jobs["weather_capability_refresh"].upstream_jobs, ["weather_market_discovery"])
         self.assertEqual(jobs["weather_wallet_state_refresh"].upstream_jobs, ["weather_capability_refresh"])
+        self.assertEqual(jobs["weather_signer_audit_smoke"].upstream_jobs, ["weather_capability_refresh"])
         self.assertEqual(jobs["weather_forecast_refresh"].upstream_jobs, ["weather_spec_sync"])
         self.assertEqual(jobs["weather_market_discovery"].mode, "scheduled")
         self.assertEqual(jobs["weather_watcher_backfill"].mode, "scheduled")
         self.assertEqual(jobs["weather_paper_execution"].mode, "manual")
+        self.assertEqual(jobs["weather_signer_audit_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
         self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
         self.assertEqual(jobs["weather_data_qa_review"].upstream_jobs, ["weather_forecast_replay"])
@@ -324,6 +331,7 @@ class ColdPathResourcesTest(unittest.TestCase):
         gamma_runtime = GammaDiscoveryRuntimeResource(settings=settings)
         capability_runtime = CapabilityRefreshRuntimeResource(settings=settings)
         wallet_state_runtime = WalletStateObservationRuntimeResource(settings=settings)
+        signer_runtime = SignerRuntimeResource(settings=settings)
         forecast_runtime = ForecastRuntimeResource(settings=settings)
         watcher_rpc = WatcherRpcPoolResource(settings=settings)
         reader = object()
@@ -337,6 +345,7 @@ class ColdPathResourcesTest(unittest.TestCase):
         self.assertIsNotNone(capability_runtime.build_clob_client(client=object()))
         self.assertEqual(wallet_state_runtime.resolve_chain_registry_path(), settings.chain_registry_path)
         self.assertIs(wallet_state_runtime.build_wallet_state_reader(reader=reader), reader)
+        self.assertEqual(signer_runtime.build_signer_service()._backend.__class__.__name__, "DisabledSignerBackend")
         self.assertIsInstance(forecast_runtime.build_cache(), InMemoryForecastCache)
         with self.assertRaises(ValueError):
             watcher_rpc.build_rpc_pool()
@@ -344,6 +353,7 @@ class ColdPathResourcesTest(unittest.TestCase):
     def test_build_dagster_resource_defs_is_safe_without_optional_dep(self) -> None:
         resource_defs = build_dagster_resource_defs(_settings())
         self.assertIn("duckdb", resource_defs)
+        self.assertIn("signer_runtime", resource_defs)
         if HAS_DAGSTER:
             self.assertNotIsInstance(resource_defs["duckdb"], DuckDBResource)
         else:
@@ -609,6 +619,62 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                 )
         enqueue_observations.assert_not_called()
         enqueue_journal.assert_called_once()
+
+    def test_weather_signer_audit_smoke_routes_to_signature_audit_and_journal(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        account_capability = AccountTradingCapability(
+            wallet_id="wallet_weather_1",
+            wallet_type="eoa",
+            signature_type=1,
+            funder="0x1111111111111111111111111111111111111111",
+            allowance_targets=["0x2222222222222222222222222222222222222222"],
+            can_use_relayer=True,
+            can_trade=True,
+            restricted_reason=None,
+        )
+        signer_service = type(
+            "SignerServiceStub",
+            (),
+            {
+                "sign_order": lambda self, request, *, queue_cfg, run_id=None: type(
+                    "InvocationResultStub",
+                    (),
+                    {
+                        "payload_hash": "phash_1",
+                        "task_ids": ["task_sig_audit", "task_sig_journal"],
+                        "response": type(
+                            "SignerResponseStub",
+                            (),
+                            {"status": "rejected", "error": "signer_backend_disabled"},
+                        )(),
+                    },
+                )()
+            },
+        )()
+        with patch("dagster_asterion.handlers.load_account_trading_capability", return_value=account_capability) as load_account:
+            result = run_weather_signer_audit_smoke_job(
+                object(),
+                queue_cfg,
+                signer_service=signer_service,
+                chain_id=137,
+                params_json={
+                    "wallet_id": "wallet_weather_1",
+                    "requester": "operator",
+                    "signing_purpose": "order",
+                    "token_id": "tok_yes",
+                    "fee_rate_bps": 30,
+                    "payload_json": {"kind": "signer_smoke", "order_id": "ordr_test"},
+                },
+                run_id="run_signer_smoke",
+                observed_at=datetime(2026, 3, 10, 10, 5, tzinfo=timezone.utc),
+            )
+        load_account.assert_called_once()
+        self.assertEqual(result.task_ids, ["task_sig_audit", "task_sig_journal"])
+        self.assertEqual(result.metadata["request_id"], "run_signer_smoke")
+        self.assertEqual(result.metadata["wallet_id"], "wallet_weather_1")
+        self.assertEqual(result.metadata["signing_purpose"], "order")
+        self.assertEqual(result.metadata["payload_hash"], "phash_1")
+        self.assertEqual(result.metadata["status"], "rejected")
 
     def test_weather_paper_execution_rejects_invalid_selectors(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")

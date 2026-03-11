@@ -101,6 +101,16 @@ _JOB_SPECS = [
         default_schedule_key="weather_wallet_state_refresh_hourly",
     ),
     ColdPathJobSpec(
+        job_name="weather_signer_audit_smoke",
+        description="Run the canonical manual signer shell smoke and persist signature audit records without real signing side effects.",
+        mode="manual",
+        upstream_jobs=["weather_capability_refresh"],
+        input_tables=["capability.account_trading_capabilities", "meta.signature_audit_logs"],
+        output_tables=["meta.signature_audit_logs", "runtime.journal_events"],
+        handler_name="run_weather_signer_audit_smoke_job",
+        default_schedule_key=None,
+    ),
+    ColdPathJobSpec(
         job_name="weather_forecast_replay",
         description="Replay persisted forecast/pricing outputs from canonical replay keys.",
         mode="manual",

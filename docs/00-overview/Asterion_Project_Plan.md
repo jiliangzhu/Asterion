@@ -7,7 +7,7 @@
 **文档版本**: v1.2
 **创建日期**: 2026-03-07
 **更新日期**: 2026-03-11
-**状态**: 详细设计完成，P3 已关闭，P4 implementation in progress（`P4-01` / `P4-02` / `P4-03` 已完成）
+**状态**: 详细设计完成，P3 已关闭，P4 implementation in progress（`P4-01` / `P4-02` / `P4-03` / `P4-04` 已完成）
 
 ---
 
@@ -437,13 +437,11 @@ Asterion/
 
 ```
 asterion_core/execution/
-  order_router_v1.py
   liquidity_estimator.py
   fee_calculator.py
   slippage_model.py
 
 asterion_core/signer/
-  signer_service.py
   key_manager.py
   order_signer.py
   transaction_signer.py
@@ -463,7 +461,7 @@ apps/operator_ui/
 这些模块在当前阶段的定位：
 
 - `daily_review_agent.py`：后续 review automation / agent 化范围
-- signer / key management / transaction signing：`P4`
+- signer shell：`P4-04` 已落地；official signer backend / key management / transaction signing：后续 `P4`
 - 更完整的 operator UI：后续 operator productization 范围
 
 ### 3.3 为什么这么拆

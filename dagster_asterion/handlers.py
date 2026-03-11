@@ -88,6 +88,12 @@ from asterion_core.risk import (
     reconciliation_journal_payload,
     release_reservation_to_inventory,
 )
+from asterion_core.signer import (
+    SignerRequest,
+    SignerServiceShell,
+    SigningPurpose,
+    build_signing_context_from_account_capability,
+)
 from asterion_core.contracts import OrderStatus
 from asterion_core.runtime import (
     StrategyContext,
@@ -183,6 +189,27 @@ class PaperExecutionBatchRequest:
             raise ValueError("universe_snapshot_id must be None or non-empty")
         if self.asof_ts_ms is not None and int(self.asof_ts_ms) < 0:
             raise ValueError("asof_ts_ms must be non-negative")
+
+
+@dataclass(frozen=True)
+class SignerAuditSmokeRequest:
+    wallet_id: str
+    requester: str
+    signing_purpose: SigningPurpose
+    payload_json: dict[str, Any]
+    token_id: str | None
+    fee_rate_bps: int | None
+
+    def __post_init__(self) -> None:
+        if not self.wallet_id or not self.requester:
+            raise ValueError("wallet_id and requester are required")
+        if not isinstance(self.payload_json, dict) or not self.payload_json:
+            raise ValueError("payload_json must be a non-empty object")
+        if self.signing_purpose is SigningPurpose.ORDER:
+            if not self.token_id:
+                raise ValueError("token_id is required for order signing")
+            if self.fee_rate_bps is None or self.fee_rate_bps < 0:
+                raise ValueError("fee_rate_bps is required for order signing")
 
 
 def run_weather_market_discovery_job(
@@ -381,6 +408,55 @@ def run_weather_wallet_state_refresh_job(
             "wallet_ids": sorted(wallet_ids),
             "funder_addresses": sorted(funder_addresses),
             "allowance_target_count": allowance_target_count,
+        },
+    )
+
+
+def run_weather_signer_audit_smoke_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    signer_service: SignerServiceShell,
+    chain_id: int,
+    params_json: dict[str, Any],
+    run_id: str | None = None,
+    observed_at: datetime | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    normalized_request = _normalize_signer_audit_smoke_request(params_json)
+    normalized_observed_at = _normalize_datetime(observed_at) or datetime.now(UTC).replace(tzinfo=None)
+    account_capability = load_account_trading_capability(con, wallet_id=normalized_request.wallet_id)
+    signing_context = build_signing_context_from_account_capability(
+        account_capability,
+        signing_purpose=normalized_request.signing_purpose,
+        chain_id=chain_id,
+        token_id=normalized_request.token_id,
+        fee_rate_bps=normalized_request.fee_rate_bps,
+    )
+    signer_request = SignerRequest(
+        request_id=request_id,
+        requester=normalized_request.requester,
+        timestamp=normalized_observed_at,
+        context=signing_context,
+        payload=normalized_request.payload_json,
+    )
+    if normalized_request.signing_purpose is SigningPurpose.ORDER:
+        invocation = signer_service.sign_order(signer_request, queue_cfg=queue_cfg, run_id=request_id)
+    elif normalized_request.signing_purpose is SigningPurpose.TRANSACTION:
+        invocation = signer_service.sign_transaction(signer_request, queue_cfg=queue_cfg, run_id=request_id)
+    else:
+        invocation = signer_service.derive_api_credentials(signer_request, queue_cfg=queue_cfg, run_id=request_id)
+    return ColdPathHandlerResult(
+        job_name="weather_signer_audit_smoke",
+        run_id=request_id,
+        task_ids=list(invocation.task_ids),
+        item_count=1,
+        metadata={
+            "request_id": signer_request.request_id,
+            "wallet_id": normalized_request.wallet_id,
+            "signing_purpose": normalized_request.signing_purpose.value,
+            "payload_hash": invocation.payload_hash,
+            "status": invocation.response.status,
         },
     )
 
@@ -1456,6 +1532,26 @@ def _normalize_paper_execution_request(params_json: dict[str, Any]) -> PaperExec
         universe_snapshot_id=_coerce_optional_non_empty_string(params_json.get("universe_snapshot_id")),
         asof_ts_ms=int(params_json["asof_ts_ms"]) if params_json.get("asof_ts_ms") is not None else None,
         quote_snapshot_refs=_coerce_optional_str_list(params_json.get("quote_snapshot_refs")) or [],
+    )
+
+
+def _normalize_signer_audit_smoke_request(params_json: dict[str, Any]) -> SignerAuditSmokeRequest:
+    if not isinstance(params_json, dict):
+        raise ValueError("params_json must be a dictionary")
+    raw_signing_purpose = str(params_json.get("signing_purpose") or "").strip().lower()
+    if raw_signing_purpose not in {"order", "transaction", "l2_auth"}:
+        raise ValueError("signing_purpose must be one of order, transaction, or l2_auth")
+    raw_payload = params_json.get("payload_json")
+    if not isinstance(raw_payload, dict) or not raw_payload:
+        raise ValueError("payload_json must be a non-empty object")
+    fee_rate_bps = params_json.get("fee_rate_bps")
+    return SignerAuditSmokeRequest(
+        wallet_id=str(params_json.get("wallet_id") or ""),
+        requester=str(params_json.get("requester") or ""),
+        signing_purpose=SigningPurpose(raw_signing_purpose),
+        payload_json=dict(raw_payload),
+        token_id=_coerce_optional_non_empty_string(params_json.get("token_id")),
+        fee_rate_bps=int(fee_rate_bps) if fee_rate_bps is not None else None,
     )
 
 

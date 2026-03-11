@@ -23,6 +23,7 @@ _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 DEFAULT_ALLOWED_TABLES = {
     "meta.ingest_runs",
+    "meta.signature_audit_logs",
     "meta.watermarks",
 }
 

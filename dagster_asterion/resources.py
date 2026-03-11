@@ -9,6 +9,7 @@ from typing import Any
 from asterion_core.blockchain import PolygonWalletStateReader
 from asterion_core.clients import ClobPublicClient
 from asterion_core.execution import SafeDefaultChainAccountCapabilityReader
+from asterion_core.signer import DisabledSignerBackend, SignerServiceShell
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.write_queue import WriteQueueConfig, default_write_queue_path
 from domains.weather.forecast import AdapterRouter, ForecastService, InMemoryForecastCache, NWSAdapter, OpenMeteoAdapter
@@ -41,6 +42,8 @@ class AsterionColdPathSettings:
     chain_registry_path: str
     capability_chain_id: int
     capability_rpc_urls: list[str]
+    signer_backend_kind: str
+    signer_rpc_url: str | None
     forecast_primary_source: str
     forecast_fallback_sources: list[str]
     watcher_chain_id: int
@@ -82,6 +85,8 @@ class AsterionColdPathSettings:
             chain_registry_path=os.getenv("ASTERION_CHAIN_REGISTRY_PATH", "config/chain_registry.polygon.json"),
             capability_chain_id=int(os.getenv("ASTERION_CAPABILITY_CHAIN_ID", "137")),
             capability_rpc_urls=capability_rpc_urls,
+            signer_backend_kind=os.getenv("ASTERION_SIGNER_BACKEND_KIND", "disabled"),
+            signer_rpc_url=os.getenv("ASTERION_SIGNER_RPC_URL") or None,
             forecast_primary_source=os.getenv("ASTERION_FORECAST_PRIMARY_SOURCE", "openmeteo"),
             forecast_fallback_sources=fallback,
             watcher_chain_id=int(os.getenv("ASTERION_WATCHER_CHAIN_ID", "137")),
@@ -176,6 +181,18 @@ class WalletStateObservationRuntimeResource:
 
 
 @dataclass(frozen=True)
+class SignerRuntimeResource:
+    settings: AsterionColdPathSettings
+
+    def build_signer_service(self, *, service: Any | None = None) -> SignerServiceShell:
+        if service is not None:
+            return service
+        if self.settings.signer_backend_kind != "disabled":
+            raise ValueError("P4-04 only supports signer_backend_kind=disabled")
+        return SignerServiceShell(DisabledSignerBackend())
+
+
+@dataclass(frozen=True)
 class ForecastRuntimeResource:
     settings: AsterionColdPathSettings
 
@@ -246,6 +263,8 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 chain_registry_path=settings.chain_registry_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
+                signer_backend_kind=settings.signer_backend_kind,
+                signer_rpc_url=settings.signer_rpc_url,
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
@@ -278,6 +297,8 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 chain_registry_path=settings.chain_registry_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
+                signer_backend_kind=settings.signer_backend_kind,
+                signer_rpc_url=settings.signer_rpc_url,
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
@@ -317,6 +338,8 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 chain_registry_path=settings.chain_registry_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
+                signer_backend_kind=settings.signer_backend_kind,
+                signer_rpc_url=settings.signer_rpc_url,
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
@@ -354,6 +377,8 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 chain_registry_path=settings.chain_registry_path,
                 capability_chain_id=int(self.capability_chain_id),
                 capability_rpc_urls=list(self.capability_rpc_urls),
+                signer_backend_kind=settings.signer_backend_kind,
+                signer_rpc_url=settings.signer_rpc_url,
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
@@ -388,6 +413,8 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 chain_registry_path=self.chain_registry_path,
                 capability_chain_id=int(self.capability_chain_id),
                 capability_rpc_urls=list(self.capability_rpc_urls),
+                signer_backend_kind=settings.signer_backend_kind,
+                signer_rpc_url=settings.signer_rpc_url,
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
@@ -420,6 +447,8 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 chain_registry_path=settings.chain_registry_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
+                signer_backend_kind=settings.signer_backend_kind,
+                signer_rpc_url=settings.signer_rpc_url,
                 forecast_primary_source=self.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
@@ -452,12 +481,49 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 chain_registry_path=settings.chain_registry_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
+                signer_backend_kind=settings.signer_backend_kind,
+                signer_rpc_url=settings.signer_rpc_url,
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=int(self.watcher_chain_id),
                 watcher_rpc_urls=list(settings.watcher_rpc_urls),
             )
             return WatcherRpcPoolResource(settings=settings)
+
+
+    class DagsterSignerRuntimeResource(ConfigurableResource):
+        signer_backend_kind: str = "disabled"
+        signer_rpc_url: str | None = None
+
+        def build_runtime(self) -> SignerRuntimeResource:
+            settings = AsterionColdPathSettings.from_env()
+            settings = AsterionColdPathSettings(
+                db_path=settings.db_path,
+                ddl_path=settings.ddl_path,
+                write_queue_path=settings.write_queue_path,
+                gamma_base_url=settings.gamma_base_url,
+                gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_page_limit=settings.gamma_page_limit,
+                gamma_max_pages=settings.gamma_max_pages,
+                gamma_sleep_s=settings.gamma_sleep_s,
+                gamma_active_only=settings.gamma_active_only,
+                gamma_closed=settings.gamma_closed,
+                gamma_archived=settings.gamma_archived,
+                clob_base_url=settings.clob_base_url,
+                clob_book_endpoint=settings.clob_book_endpoint,
+                clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
+                wallet_registry_path=settings.wallet_registry_path,
+                chain_registry_path=settings.chain_registry_path,
+                capability_chain_id=settings.capability_chain_id,
+                capability_rpc_urls=list(settings.capability_rpc_urls),
+                signer_backend_kind=self.signer_backend_kind,
+                signer_rpc_url=self.signer_rpc_url,
+                forecast_primary_source=settings.forecast_primary_source,
+                forecast_fallback_sources=list(settings.forecast_fallback_sources),
+                watcher_chain_id=settings.watcher_chain_id,
+                watcher_rpc_urls=list(settings.watcher_rpc_urls),
+            )
+            return SignerRuntimeResource(settings=settings)
 
 
 def build_runtime_resources(settings: AsterionColdPathSettings | None = None) -> dict[str, Any]:
@@ -469,6 +535,7 @@ def build_runtime_resources(settings: AsterionColdPathSettings | None = None) ->
         "gamma_discovery_runtime": GammaDiscoveryRuntimeResource(settings=active),
         "capability_refresh_runtime": CapabilityRefreshRuntimeResource(settings=active),
         "wallet_state_observation_runtime": WalletStateObservationRuntimeResource(settings=active),
+        "signer_runtime": SignerRuntimeResource(settings=active),
         "forecast_runtime": ForecastRuntimeResource(settings=active),
         "watcher_rpc_pool": WatcherRpcPoolResource(settings=active),
     }
@@ -504,6 +571,10 @@ def build_dagster_resource_defs(settings: AsterionColdPathSettings | None = None
             chain_registry_path=active.chain_registry_path,
             capability_chain_id=active.capability_chain_id,
             capability_rpc_urls=list(active.capability_rpc_urls),
+        ),
+        "signer_runtime": DagsterSignerRuntimeResource(
+            signer_backend_kind=active.signer_backend_kind,
+            signer_rpc_url=active.signer_rpc_url,
         ),
         "forecast_runtime": DagsterForecastRuntimeResource(forecast_primary_source=active.forecast_primary_source),
         "watcher_rpc_pool": DagsterWatcherRpcPoolResource(watcher_chain_id=active.watcher_chain_id),

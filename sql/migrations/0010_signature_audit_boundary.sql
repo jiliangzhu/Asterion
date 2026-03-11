@@ -1,0 +1,9 @@
+ALTER TABLE meta.signature_audit_logs ADD COLUMN IF NOT EXISTS wallet_type TEXT;
+ALTER TABLE meta.signature_audit_logs ADD COLUMN IF NOT EXISTS signer_address TEXT;
+ALTER TABLE meta.signature_audit_logs ADD COLUMN IF NOT EXISTS funder TEXT;
+ALTER TABLE meta.signature_audit_logs ADD COLUMN IF NOT EXISTS api_key_ref TEXT;
+ALTER TABLE meta.signature_audit_logs ADD COLUMN IF NOT EXISTS chain_id INTEGER;
+ALTER TABLE meta.signature_audit_logs ADD COLUMN IF NOT EXISTS token_id TEXT;
+ALTER TABLE meta.signature_audit_logs ADD COLUMN IF NOT EXISTS fee_rate_bps INTEGER;
+ALTER TABLE meta.signature_audit_logs ADD COLUMN IF NOT EXISTS signing_purpose TEXT;
+ALTER TABLE meta.signature_audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP;
