@@ -1,9 +1,9 @@
 # Asterion P3 Implementation Plan
 
 **版本**: v1.1
-**更新日期**: 2026-03-11  
+**更新日期**: 2026-03-11
 **阶段**: `P3`  
-**状态**: 可开工  
+**状态**: 已关闭
 **目标**: 在 `P2` 已关闭的 deterministic `watch-only / replay / cold path / execution foundation` 底座之上，打通 `paper execution` 主链、operator 读面、审计与回放闭环，并为后续 `P4 live prerequisites` 建立明确的进入条件。
 
 ---
@@ -59,7 +59,7 @@
 在当前仓库内，以下结论已经由代码与测试支撑：
 
 - `P2` closeout 已真实落地，不再只是文档口径
-- `.venv/bin/python -m unittest discover -s tests -v` 当前通过 `117` 个测试
+- `.venv/bin/python -m unittest discover -s tests -v` 当前通过 `138` 个测试
 - system Python 可能缺少 `duckdb`，但仓库内 `.venv` 是 canonical 验证环境
 - `P2` 已有真实实现的关键落点包括：
   - replay / continuity: `domains/weather/forecast/replay.py`、`domains/weather/resolution/backfill.py`、`domains/weather/resolution/watcher_replay.py`
@@ -74,12 +74,13 @@
 
 #### Drift A Closed: README 已按当前代码树收口
 
-- `README.md` 已把“当前已落地模块”与“P3 计划内容”分开
-- `order_router_v1.py`、paper adapter、quote-based fill simulator、`daily_review_agent.py` 不再被写成已存在代码
+- `README.md` 已把“当前已落地模块”与“未来规划内容”分开
+- `order_router_v1.py`、paper adapter、quote-based fill simulator、OMS state machine 已同步为已落地代码
+- `daily_review_agent.py` 继续保留为后续 automation / agent 化范围
 
 #### Drift B Closed: Project Plan 已拆分 current / planned
 
-- [Asterion_Project_Plan.md](../../00-overview/Asterion_Project_Plan.md) 顶部状态已同步到当前 `P2 closeout / P3 可开工`
+- [Asterion_Project_Plan.md](../../00-overview/Asterion_Project_Plan.md) 顶部状态已同步到当前 `P3 已关闭 / P4 planning 可开始`
 - 项目结构已拆成“当前已落地代码骨架”与“未来规划模块（未落地）”
 - 未来设计仍保留，但不再与当前代码事实混写
 
@@ -99,7 +100,7 @@
 当前结论是：
 
 - 文档已不再把这些表误写成“已经 fully operational”
-- 代码闭环仍是 `P3` 实施任务本体
+- 代码闭环已在 `P3` 中完成，并已进入 closeout / runbook / readiness 口径
 - `P3` 的重点仍然是把这些现有 canonical 表真正接入 paper execution 主链，而不是发明平行新表
 
 ### 2.3 冲突处理顺序

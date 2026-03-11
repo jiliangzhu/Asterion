@@ -2,7 +2,7 @@
 
 **版本**: v1.2
 **更新日期**: 2026-03-11
-**状态**: P3 实现已收口，closeout in progress
+**状态**: P3 已关闭，P4 planning 可开始
 
 ---
 
@@ -146,7 +146,7 @@ python3 -m unittest discover -s tests -v
 
 ## 🏗️ 技术架构
 
-### 当前已落地模块（P2 closeout）
+### 当前已落地模块（P3 closeout）
 
 ```
 asterion_core/              # 平台核心
@@ -156,18 +156,22 @@ asterion_core/              # 平台核心
 │   ├── trade_ticket_v1.py
 │   ├── signal_to_order_v1.py
 │   ├── execution_gate_v1.py
+│   ├── order_router_v1.py
+│   ├── paper_adapter_v1.py
+│   ├── paper_fill_simulator_v1.py
+│   ├── oms_state_machine_v1.py
 │   └── watch_only_gate_v3.py
 ├── runtime/                # strategy runtime
 │   ├── strategy_base.py
 │   └── strategy_engine_v3.py
-├── risk/                   # reservation / inventory foundation
+├── risk/                   # reservation / inventory / reconciliation
 │   └── portfolio_v3.py
 ├── journal/                # runtime / trading journal
 │   └── journal_v3.py
 ├── monitoring/             # readiness / health
 │   ├── health_monitor_v1.py
 │   └── readiness_checker_v1.py
-├── ui/                     # replica / lite read model
+├── ui/                     # replica / lite read model / operator surfaces
 │   ├── ui_db_replica.py
 │   └── ui_lite_db.py
 ├── storage/                # DB / queue / determinism
@@ -196,8 +200,9 @@ agents/                     # AI Agent
 说明：
 
 - 上面只列当前仓库**已经落地**的主干模块
-- `order_router_v1.py`、paper adapter、quote-based fill simulator、`daily_review_agent.py` 属于 `P3` 计划内容，不应在 README 中被当作已存在代码
-- `P3` 的 canonical 开发入口见 [P3_Implementation_Plan.md](./docs/10-implementation/phase-plans/P3_Implementation_Plan.md)
+- `order_router_v1.py`、paper adapter、quote-based fill simulator、OMS state machine 已在 `P3` 落地
+- `daily_review_agent.py` 仍未落地；当前只完成 `ui.daily_review_input` 等 review input surface
+- `P3` 的 canonical 实施与 closeout 入口见 [P3_Implementation_Plan.md](./docs/10-implementation/phase-plans/P3_Implementation_Plan.md)、[P3_Closeout_Checklist.md](./docs/10-implementation/checklists/P3_Closeout_Checklist.md)、[P3_Paper_Execution_Runbook.md](./docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md)
 
 ---
 
@@ -286,11 +291,12 @@ agents/                     # AI Agent
 - ✅ Execution foundation
 - ✅ Readiness / UI lite / AlphaDesk Exit Gate
 
-### Phase 3: Paper Execution
-- ⏳ Paper submitter / paper exchange 行为
-- ⏳ readiness 驱动的 operator 联调
-- ⏳ Daily Review Agent
-- 当前实施入口：[P3_Implementation_Plan.md](./docs/10-implementation/phase-plans/P3_Implementation_Plan.md)
+### Phase 3: Paper Execution（已完成）
+- ✅ Canonical handoff / order router / paper adapter / quote-based fill simulator
+- ✅ OMS state machine / reservation / inventory / exposure / reconciliation
+- ✅ operator read model / paper run journal / daily ops / review input
+- ✅ readiness / closeout / `P4 planning only` entry gates
+- closeout 入口：[P3_Closeout_Checklist.md](./docs/10-implementation/checklists/P3_Closeout_Checklist.md)
 
 ### Phase 4: Live Prerequisites
 - ⏳ signer / KMS / Vault / HSM

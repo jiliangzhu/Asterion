@@ -7,7 +7,7 @@
 **文档版本**: v1.2
 **创建日期**: 2026-03-07
 **更新日期**: 2026-03-11
-**状态**: 详细设计完成，P2 已关闭，P3 可开工
+**状态**: 详细设计完成，P3 已关闭，P4 planning 可开始
 
 ---
 
@@ -427,8 +427,8 @@ Asterion/
 
 - 上面这部分只描述**当前仓库中已经落地**的代码骨架
 - `domains/markets/`、`domains/trading/oms/` 当前只存在占位包，不应被误读为功能已闭合
-- execution foundation 已闭合到 `trade_ticket_v1 / signal_to_order_v1 / execution_gate_v1 / portfolio_v3 / journal_v3`
-- `paper execution` 仍属于 `P3` 范围，不应从这个现状代码骨架里推断为已完成
+- paper execution 已闭合到 `order_router_v1 / paper_adapter_v1 / paper_fill_simulator_v1 / oms_state_machine_v1 / portfolio_v3 / journal_v3 / ui_lite_db`
+- `daily_review_agent.py` 仍属于后续规划；当前只落地了 daily review input surface
 
 ### 3.2 未来规划模块（未落地）
 
@@ -461,8 +461,7 @@ apps/operator_ui/
 
 这些模块在当前阶段的定位：
 
-- `order_router_v1.py`、paper adapter、quote-based fill simulator：`P3`
-- `daily_review_agent.py`：`P3`
+- `daily_review_agent.py`：后续 review automation / agent 化范围
 - signer / key management / transaction signing：`P4`
 - 更完整的 operator UI：后续 operator productization 范围
 
@@ -2246,19 +2245,20 @@ class CircuitBreaker:
 
 ---
 
-### Phase 3: Paper execution（下一阶段）
+### Phase 3: Paper execution（已完成）
 
-**目标**: 在 deterministic / watch-only / replay 底座之上接入 paper submitter、paper exchange 和 operator 联调
+**目标**: 在 deterministic / watch-only / replay 底座之上打通 `paper execution` 主链、operator 读面、daily ops / review input 与 readiness / closeout 闭环
 
 **任务**:
-- [ ] Paper submitter / paper exchange 行为
-- [ ] readiness 驱动的 operator 联调
-- [ ] Daily Review Agent
-- [ ] paper execution runbook
+- [x] Canonical handoff / order router / paper adapter / quote-based fill simulator
+- [x] OMS state machine / reservation / inventory / exposure / reconciliation
+- [x] operator read model / paper run journal / daily ops / review input
+- [x] readiness gate / closeout checklist / paper execution runbook
+- [ ] Daily Review Agent（后续 automation / agent 化范围）
 
 **交付物**:
 - paper execution 主链路
-- operator / readiness / journal 联调闭环
+- operator / readiness / journal / closeout 联调闭环
 
 ---
 
