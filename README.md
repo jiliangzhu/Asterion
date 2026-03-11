@@ -2,7 +2,7 @@
 
 **版本**: v1.2
 **更新日期**: 2026-03-11
-**状态**: P4 planning in progress
+**状态**: P4 implementation in progress (`P4-01` / `P4-02` completed)
 
 ---
 
@@ -152,11 +152,12 @@ python3 -m unittest discover -s tests -v
 
 ```
 asterion_core/              # 平台核心
-├── clients/                # Polymarket API 客户端
+├── clients/                # Polymarket / CLOB public API 客户端
 ├── contracts/              # canonical contracts / IDs
 ├── execution/              # execution foundation
 │   ├── trade_ticket_v1.py
 │   ├── signal_to_order_v1.py
+│   ├── capability_refresh_v1.py
 │   ├── execution_gate_v1.py
 │   ├── order_router_v1.py
 │   ├── paper_adapter_v1.py
@@ -203,6 +204,7 @@ agents/                     # AI Agent
 
 - 上面只列当前仓库**已经落地**的主干模块
 - `order_router_v1.py`、paper adapter、quote-based fill simulator、OMS state machine 已在 `P3` 落地
+- `capability_refresh_v1.py` 与 `clients/clob_public.py` 已在 `P4-02` 落地，用于 canonical capability refresh
 - `daily_review_agent.py` 仍未落地；当前只完成 `ui.daily_review_input` 等 review input surface
 - `P4` 当前 canonical 实施入口见 [P4_Implementation_Plan.md](./docs/10-implementation/phase-plans/P4_Implementation_Plan.md)
 - `P3` 的 canonical closeout 与 runbook 入口见 [P3_Closeout_Checklist.md](./docs/10-implementation/checklists/P3_Closeout_Checklist.md)、[P3_Paper_Execution_Runbook.md](./docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md)

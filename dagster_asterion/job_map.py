@@ -51,14 +51,34 @@ class ColdPathRunRequest:
 
 _JOB_SPECS = [
     ColdPathJobSpec(
+        job_name="weather_market_discovery",
+        description="Discover canonical weather markets from Gamma ingress and persist weather.weather_markets.",
+        mode="scheduled",
+        upstream_jobs=[],
+        input_tables=[],
+        output_tables=["weather.weather_markets"],
+        handler_name="run_weather_market_discovery_job",
+        default_schedule_key="weather_market_discovery_daily",
+    ),
+    ColdPathJobSpec(
         job_name="weather_spec_sync",
         description="Parse weather markets into station-first specs via Rule2Spec and StationMapper.",
         mode="scheduled",
-        upstream_jobs=[],
+        upstream_jobs=["weather_market_discovery"],
         input_tables=["weather.weather_markets", "weather.weather_station_map"],
         output_tables=["weather.weather_market_specs"],
         handler_name="run_weather_spec_sync",
         default_schedule_key="weather_spec_sync_daily",
+    ),
+    ColdPathJobSpec(
+        job_name="weather_capability_refresh",
+        description="Refresh canonical weather market/account capabilities from Gamma, CLOB public, wallet registry, and overrides.",
+        mode="scheduled",
+        upstream_jobs=["weather_market_discovery"],
+        input_tables=["weather.weather_markets", "capability.capability_overrides"],
+        output_tables=["capability.market_capabilities", "capability.account_trading_capabilities"],
+        handler_name="run_weather_capability_refresh_job",
+        default_schedule_key="weather_capability_refresh_hourly",
     ),
     ColdPathJobSpec(
         job_name="weather_forecast_refresh",
@@ -89,7 +109,7 @@ _JOB_SPECS = [
         job_name="weather_paper_execution",
         description="Run the canonical manual paper execution batch from selected watch-only snapshots.",
         mode="manual",
-        upstream_jobs=["weather_forecast_replay"],
+        upstream_jobs=["weather_forecast_replay", "weather_capability_refresh"],
         input_tables=[
             "weather.weather_watch_only_snapshots",
             "capability.market_capabilities",
@@ -200,9 +220,23 @@ _JOB_SPECS = [
 
 _SCHEDULE_SPECS = [
     ColdPathScheduleSpec(
+        schedule_key="weather_market_discovery_daily",
+        job_name="weather_market_discovery",
+        cron_schedule="0 0 * * *",
+        execution_timezone="UTC",
+        enabled_by_default=True,
+    ),
+    ColdPathScheduleSpec(
         schedule_key="weather_spec_sync_daily",
         job_name="weather_spec_sync",
         cron_schedule="15 0 * * *",
+        execution_timezone="UTC",
+        enabled_by_default=True,
+    ),
+    ColdPathScheduleSpec(
+        schedule_key="weather_capability_refresh_hourly",
+        job_name="weather_capability_refresh",
+        cron_schedule="25 * * * *",
         execution_timezone="UTC",
         enabled_by_default=True,
     ),

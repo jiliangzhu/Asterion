@@ -45,8 +45,10 @@ from dagster_asterion import (
 )
 from dagster_asterion.handlers import (
     SettlementVerificationInput,
+    run_weather_capability_refresh_job,
     run_weather_paper_execution_job,
     run_weather_data_qa_review_job,
+    run_weather_market_discovery_job,
     run_weather_forecast_refresh,
     run_weather_forecast_replay_job,
     run_weather_resolution_review_job,
@@ -57,7 +59,9 @@ from dagster_asterion.handlers import (
 )
 from dagster_asterion.resources import (
     DuckDBResource,
+    CapabilityRefreshRuntimeResource,
     ForecastRuntimeResource,
+    GammaDiscoveryRuntimeResource,
     WatcherRpcPoolResource,
     WriteQueueResource,
     build_dagster_resource_defs,
@@ -74,6 +78,20 @@ def _settings() -> AsterionColdPathSettings:
         db_path="data/asterion.duckdb",
         ddl_path=None,
         write_queue_path="data/meta/write_queue.sqlite",
+        gamma_base_url="https://gamma-api.polymarket.com",
+        gamma_markets_endpoint="/markets",
+        gamma_page_limit=100,
+        gamma_max_pages=5,
+        gamma_sleep_s=0.0,
+        gamma_active_only=True,
+        gamma_closed=False,
+        gamma_archived=False,
+        clob_base_url="https://clob.polymarket.com",
+        clob_book_endpoint="/book",
+        clob_fee_rate_endpoint="/fee-rate",
+        wallet_registry_path="config/wallet_registry.json",
+        capability_chain_id=137,
+        capability_rpc_urls=[],
         forecast_primary_source="openmeteo",
         forecast_fallback_sources=["nws", "openmeteo"],
         watcher_chain_id=137,
@@ -253,7 +271,9 @@ class ColdPathJobMapTest(unittest.TestCase):
     def test_job_map_contains_agent_manual_jobs(self) -> None:
         jobs = build_weather_cold_path_job_map()
         self.assertEqual(set(jobs), {
+            "weather_market_discovery",
             "weather_spec_sync",
+            "weather_capability_refresh",
             "weather_forecast_refresh",
             "weather_forecast_replay",
             "weather_paper_execution",
@@ -263,10 +283,13 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_data_qa_review",
             "weather_resolution_review",
         })
+        self.assertEqual(jobs["weather_spec_sync"].upstream_jobs, ["weather_market_discovery"])
+        self.assertEqual(jobs["weather_capability_refresh"].upstream_jobs, ["weather_market_discovery"])
         self.assertEqual(jobs["weather_forecast_refresh"].upstream_jobs, ["weather_spec_sync"])
+        self.assertEqual(jobs["weather_market_discovery"].mode, "scheduled")
         self.assertEqual(jobs["weather_watcher_backfill"].mode, "scheduled")
         self.assertEqual(jobs["weather_paper_execution"].mode, "manual")
-        self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay"])
+        self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
         self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
         self.assertEqual(jobs["weather_data_qa_review"].upstream_jobs, ["weather_forecast_replay"])
         self.assertEqual(jobs["weather_resolution_review"].upstream_jobs, ["weather_resolution_reconciliation"])
@@ -276,7 +299,9 @@ class ColdPathJobMapTest(unittest.TestCase):
         schedules = {item.schedule_key: item for item in list_weather_cold_path_schedules()}
         self.assertFalse(schedules["weather_forecast_replay_manual"].enabled_by_default)
         self.assertEqual(list_enabled_schedule_keys(), [
+            "weather_market_discovery_daily",
             "weather_spec_sync_daily",
+            "weather_capability_refresh_hourly",
             "weather_forecast_refresh_hourly",
             "weather_watcher_backfill_bihourly",
             "weather_resolution_reconciliation_bihourly",
@@ -288,11 +313,18 @@ class ColdPathResourcesTest(unittest.TestCase):
         settings = _settings()
         duckdb_resource = DuckDBResource(settings=settings)
         write_queue_resource = WriteQueueResource(settings=settings)
+        gamma_runtime = GammaDiscoveryRuntimeResource(settings=settings)
+        capability_runtime = CapabilityRefreshRuntimeResource(settings=settings)
         forecast_runtime = ForecastRuntimeResource(settings=settings)
         watcher_rpc = WatcherRpcPoolResource(settings=settings)
 
         self.assertEqual(duckdb_resource.get_config().db_path, settings.db_path)
         self.assertEqual(write_queue_resource.get_config().path, settings.write_queue_path)
+        self.assertEqual(gamma_runtime.build_config()["markets_endpoint"], "/markets")
+        self.assertIsNotNone(gamma_runtime.build_client(client=object()))
+        self.assertEqual(capability_runtime.resolve_wallet_registry_path(), settings.wallet_registry_path)
+        self.assertIsNotNone(capability_runtime.build_chain_reader())
+        self.assertIsNotNone(capability_runtime.build_clob_client(client=object()))
         self.assertIsInstance(forecast_runtime.build_cache(), InMemoryForecastCache)
         with self.assertRaises(ValueError):
             watcher_rpc.build_rpc_pool()
@@ -323,6 +355,90 @@ class ColdPathDefinitionsTest(unittest.TestCase):
 
 
 class ColdPathHandlersSmokeTest(unittest.TestCase):
+    def test_weather_market_discovery_routes_to_discovery_persistence(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        fake_market = type("WeatherMarketStub", (), {"market_id": "mkt_weather_1"})()
+        fake_result = type(
+            "DiscoveryResultStub",
+            (),
+            {"discovered_count": 1, "task_id": "task_discovery", "discovered_markets": [fake_market]},
+        )()
+        with patch("dagster_asterion.handlers.run_weather_market_discovery", return_value=fake_result) as run_discovery:
+            result = run_weather_market_discovery_job(
+                object(),
+                queue_cfg,
+                client=object(),
+                base_url="https://gamma.example",
+                markets_endpoint="/markets",
+                page_limit=100,
+                max_pages=2,
+                sleep_s=0.0,
+                active_only=True,
+                closed=False,
+                archived=False,
+            )
+        run_discovery.assert_called_once()
+        self.assertEqual(result.task_ids, ["task_discovery"])
+        self.assertEqual(result.metadata["market_ids"], ["mkt_weather_1"])
+
+    def test_weather_capability_refresh_routes_to_capability_persistence(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        market_capability = MarketCapability(
+            market_id="mkt_weather_1",
+            condition_id="cond_weather_1",
+            token_id="tok_yes",
+            outcome="YES",
+            tick_size=Decimal("0.01"),
+            fee_rate_bps=30,
+            neg_risk=False,
+            min_order_size=Decimal("1"),
+            tradable=True,
+            fees_enabled=True,
+            data_sources=["gamma", "clob_public"],
+            updated_at=datetime(2026, 3, 10, 10, 0, tzinfo=timezone.utc),
+        )
+        account_capability = AccountTradingCapability(
+            wallet_id="wallet_weather_1",
+            wallet_type="eoa",
+            signature_type=1,
+            funder="0xfunder",
+            allowance_targets=["0xrelayer"],
+            can_use_relayer=True,
+            can_trade=True,
+            restricted_reason=None,
+        )
+        with ExitStack() as stack:
+            refresh_market = stack.enter_context(
+                patch("dagster_asterion.handlers.refresh_market_capabilities", return_value=[market_capability])
+            )
+            refresh_account = stack.enter_context(
+                patch("dagster_asterion.handlers.refresh_account_capabilities", return_value=[account_capability])
+            )
+            enqueue_market = stack.enter_context(
+                patch("dagster_asterion.handlers.enqueue_market_capability_upserts", return_value="task_market_capability")
+            )
+            enqueue_account = stack.enter_context(
+                patch("dagster_asterion.handlers.enqueue_account_capability_upserts", return_value="task_account_capability")
+            )
+            result = run_weather_capability_refresh_job(
+                object(),
+                queue_cfg,
+                clob_client=object(),
+                wallet_registry_path="config/wallet_registry.json",
+                chain_reader=object(),
+                run_id="run_capability_refresh",
+            )
+        refresh_market.assert_called_once()
+        refresh_account.assert_called_once()
+        enqueue_market.assert_called_once()
+        enqueue_account.assert_called_once()
+        self.assertEqual(result.task_ids, ["task_market_capability", "task_account_capability"])
+        self.assertEqual(result.metadata["market_capability_count"], 1)
+        self.assertEqual(result.metadata["account_capability_count"], 1)
+        self.assertEqual(result.metadata["market_ids"], ["mkt_weather_1"])
+        self.assertEqual(result.metadata["token_ids"], ["tok_yes"])
+        self.assertEqual(result.metadata["wallet_ids"], ["wallet_weather_1"])
+
     def test_weather_paper_execution_rejects_invalid_selectors(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")
         with self.assertRaises(ValueError):

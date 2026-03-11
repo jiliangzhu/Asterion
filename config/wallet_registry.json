@@ -1,0 +1,15 @@
+{
+  "wallets": [
+    {
+      "wallet_id": "wallet_weather_1",
+      "wallet_type": "eoa",
+      "signature_type": 1,
+      "funder": "0xfunder",
+      "can_use_relayer": true,
+      "allowance_targets": [
+        "0xrelayer"
+      ],
+      "enabled": true
+    }
+  ]
+}

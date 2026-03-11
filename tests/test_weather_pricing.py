@@ -6,13 +6,22 @@ import os
 import tempfile
 import unittest
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
 from asterion_core.contracts import ResolutionSpec
+from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.db_migrate import MigrationConfig, apply_migrations
 from asterion_core.storage.write_queue import WriteQueueConfig
 from asterion_core.storage.writerd import process_one
+from dagster_asterion.handlers import (
+    run_weather_capability_refresh_job,
+    run_weather_forecast_refresh,
+    run_weather_market_discovery_job,
+    run_weather_paper_execution_job,
+    run_weather_spec_sync,
+)
 from domains.weather.forecast import (
     AdapterRouter,
     ForecastService,
@@ -66,6 +75,33 @@ class _GammaClient:
     def get_json(self, url: str, *, context: dict) -> dict:
         page = int(context["page"])
         return {"markets": self._pages[page] if page < len(self._pages) else []}
+
+
+class _ClobClient:
+    def fetch_book_summary(self, token_id: str) -> dict:
+        if token_id == "tok_yes":
+            return {"tick_size": "0.01", "min_order_size": "1", "neg_risk": False}
+        if token_id == "tok_no":
+            return {"tick_size": "0.01", "min_order_size": "1", "neg_risk": False}
+        raise AssertionError(f"unexpected token_id: {token_id}")
+
+    def fetch_fee_rate(self, token_id: str) -> dict:
+        if token_id in {"tok_yes", "tok_no"}:
+            return {"fee_rate_bps": 30}
+        raise AssertionError(f"unexpected token_id: {token_id}")
+
+
+class _ChainReader:
+    def read_account_state(self, wallet_entry) -> object:
+        return type(
+            "ChainStateStub",
+            (),
+            {
+                "approved_targets": list(wallet_entry.allowance_targets),
+                "can_trade": True,
+                "restricted_reason": None,
+            },
+        )()
 
 
 def _raw_weather_market() -> dict:
@@ -354,6 +390,394 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
             self.assertEqual(snap_rows[1][0], "YES")
             self.assertEqual(snap_rows[1][1], "TAKE")
             self.assertEqual(snap_rows[1][2], "BUY")
+
+    def test_real_ingress_chain_can_feed_weather_paper_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "asterion.duckdb")
+            queue_path = str(Path(tmpdir) / "write_queue.sqlite")
+            migrations_dir = str(Path(__file__).resolve().parents[1] / "sql" / "migrations")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_STRICT_SINGLE_WRITER": "1",
+                    "ASTERION_DB_ROLE": "writer",
+                    "WRITERD": "1",
+                },
+                clear=False,
+            ):
+                apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=migrations_dir))
+
+            allow_tables = ",".join(
+                [
+                    "weather.weather_markets",
+                    "weather.weather_station_map",
+                    "weather.weather_market_specs",
+                    "weather.weather_forecast_runs",
+                    "weather.weather_fair_values",
+                    "weather.weather_watch_only_snapshots",
+                    "capability.market_capabilities",
+                    "capability.account_trading_capabilities",
+                    "capability.execution_contexts",
+                    "runtime.strategy_runs",
+                    "runtime.trade_tickets",
+                    "runtime.gate_decisions",
+                    "runtime.journal_events",
+                    "trading.orders",
+                    "trading.order_state_transitions",
+                    "trading.reservations",
+                    "trading.fills",
+                    "trading.inventory_positions",
+                    "trading.exposure_snapshots",
+                    "trading.reconciliation_results",
+                ]
+            )
+            queue_cfg = WriteQueueConfig(path=queue_path)
+
+            gamma_client = _GammaClient([[_raw_weather_market()]])
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                },
+                clear=False,
+            ):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    discovery_result = run_weather_market_discovery_job(
+                        con,
+                        queue_cfg,
+                        client=gamma_client,
+                        base_url="https://gamma.example",
+                        markets_endpoint="/markets",
+                        page_limit=100,
+                        max_pages=1,
+                        sleep_s=0.0,
+                        active_only=True,
+                        closed=False,
+                        archived=False,
+                        run_id="run_market_discovery",
+                    )
+                finally:
+                    con.close()
+                self.assertEqual(discovery_result.item_count, 1)
+                self.assertTrue(process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False))
+
+            station_mapping = build_station_mapping_record(
+                market_id="mkt_weather_1",
+                location_name="New York City",
+                station_id="KNYC",
+                station_name="Central Park",
+                latitude=40.7128,
+                longitude=-74.0060,
+                timezone="America/New_York",
+                source="operator_override",
+                authoritative_source="unknown",
+                is_override=True,
+                metadata={"kind": "manual"},
+            )
+            enqueue_station_mapping_upserts(queue_cfg, mappings=[station_mapping], run_id="run_station_map")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                    "ASTERION_STRICT_SINGLE_WRITER": "1",
+                    "ASTERION_DB_ROLE": "reader",
+                    "WRITERD": "0",
+                },
+                clear=False,
+            ):
+                self.assertTrue(process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False))
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    spec_result = run_weather_spec_sync(con, queue_cfg, run_id="run_spec_sync")
+                finally:
+                    con.close()
+                self.assertEqual(spec_result.item_count, 1)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                },
+                clear=False,
+            ):
+                self.assertTrue(process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False))
+
+            forecast_client = _RoutingClient(
+                {
+                    "api.open-meteo.com": {
+                        "daily": {
+                            "temperature_2m_max": [55.0],
+                        }
+                    }
+                }
+            )
+            service = ForecastService(
+                adapter_router=AdapterRouter([OpenMeteoAdapter(client=forecast_client)]),
+                cache=InMemoryForecastCache(),
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                    "ASTERION_STRICT_SINGLE_WRITER": "1",
+                    "ASTERION_DB_ROLE": "reader",
+                    "WRITERD": "0",
+                },
+                clear=False,
+            ):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    forecast_result = run_weather_forecast_refresh(
+                        con,
+                        queue_cfg,
+                        forecast_service=service,
+                        source="openmeteo",
+                        model_run="2026-03-07T12:00Z",
+                        forecast_target_time=datetime(2026, 3, 7, 12, 0, tzinfo=timezone.utc),
+                        run_id="run_forecast_refresh",
+                    )
+                finally:
+                    con.close()
+                self.assertEqual(forecast_result.item_count, 1)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                },
+                clear=False,
+            ):
+                self.assertTrue(process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False))
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_STRICT_SINGLE_WRITER": "1",
+                    "ASTERION_DB_ROLE": "reader",
+                    "WRITERD": "0",
+                },
+                clear=False,
+            ):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    loaded_market = load_weather_market(con, market_id="mkt_weather_1")
+                    loaded_spec = load_weather_market_spec(con, market_id="mkt_weather_1")
+                    forecast_run_id = con.execute(
+                        "SELECT run_id FROM weather.weather_forecast_runs WHERE market_id = ? ORDER BY created_at DESC, run_id DESC LIMIT 1",
+                        ["mkt_weather_1"],
+                    ).fetchone()[0]
+                    loaded_run = load_forecast_run(con, run_id=forecast_run_id)
+                finally:
+                    con.close()
+
+            fair_values = build_binary_fair_values(
+                market=loaded_market,
+                spec=loaded_spec,
+                forecast_run=loaded_run,
+            )
+            snapshots = [
+                build_watch_only_snapshot(
+                    fair_value=next(item for item in fair_values if item.outcome == "YES"),
+                    reference_price=0.55,
+                    threshold_bps=300,
+                    pricing_context={"forecast_run_id": loaded_run.run_id},
+                )
+            ]
+            enqueue_fair_value_upserts(queue_cfg, fair_values=fair_values, run_id="run_fair_values")
+            enqueue_watch_only_snapshot_upserts(queue_cfg, snapshots=snapshots, run_id="run_watch_snapshots")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                },
+                clear=False,
+            ):
+                self.assertTrue(process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False))
+                self.assertTrue(process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False))
+
+            wallet_registry_path = Path(tmpdir) / "wallet_registry.json"
+            wallet_registry_path.write_text(
+                json.dumps(
+                    {
+                        "wallets": [
+                            {
+                                "wallet_id": "wallet_weather_1",
+                                "wallet_type": "eoa",
+                                "signature_type": 1,
+                                "funder": "0xfunder",
+                                "can_use_relayer": True,
+                                "allowance_targets": ["0xrelayer"],
+                                "enabled": True,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_STRICT_SINGLE_WRITER": "1",
+                    "ASTERION_DB_ROLE": "writer",
+                    "WRITERD": "1",
+                },
+                clear=False,
+            ):
+                writer_con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    writer_con.execute(
+                        "INSERT INTO trading.inventory_positions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [
+                            "wallet_weather_1",
+                            "usdc_e",
+                            "usdc_e",
+                            "cash",
+                            "cash",
+                            "available",
+                            100.0,
+                            "0xfunder",
+                            1,
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
+                finally:
+                    writer_con.close()
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                    "ASTERION_STRICT_SINGLE_WRITER": "1",
+                    "ASTERION_DB_ROLE": "reader",
+                    "WRITERD": "0",
+                },
+                clear=False,
+            ):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    refresh_result = run_weather_capability_refresh_job(
+                        con,
+                        queue_cfg,
+                        clob_client=_ClobClient(),
+                        wallet_registry_path=str(wallet_registry_path),
+                        chain_reader=_ChainReader(),
+                        run_id="run_capability_refresh",
+                        observed_at=datetime(2026, 3, 10, 10, 5, tzinfo=timezone.utc),
+                    )
+                finally:
+                    con.close()
+                self.assertEqual(refresh_result.metadata["market_capability_count"], 2)
+                self.assertEqual(refresh_result.metadata["account_capability_count"], 1)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                },
+                clear=False,
+            ):
+                self.assertTrue(process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False))
+                self.assertTrue(process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False))
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                    "ASTERION_STRICT_SINGLE_WRITER": "1",
+                    "ASTERION_DB_ROLE": "reader",
+                    "WRITERD": "0",
+                },
+                clear=False,
+            ):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    paper_result = run_weather_paper_execution_job(
+                        con,
+                        queue_cfg,
+                        params_json={
+                            "wallet_id": "wallet_weather_1",
+                            "strategy_registrations": [
+                                {
+                                    "strategy_id": "weather_primary",
+                                    "strategy_version": "v1",
+                                    "priority": 1,
+                                    "route_action": "FAK",
+                                    "size": "10",
+                                    "min_edge_bps": 100,
+                                }
+                            ],
+                            "snapshot_ids": [snapshots[0].snapshot_id],
+                        },
+                        observed_at=datetime(2026, 3, 10, 10, 6, tzinfo=timezone.utc),
+                    )
+                finally:
+                    con.close()
+                self.assertEqual(paper_result.metadata["ticket_count"], 1)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                },
+                clear=False,
+            ):
+                while process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False):
+                    pass
+
+            import duckdb
+
+            con = duckdb.connect(db_path, read_only=True)
+            try:
+                counts = con.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM weather.weather_markets),
+                        (SELECT COUNT(*) FROM weather.weather_market_specs),
+                        (SELECT COUNT(*) FROM weather.weather_forecast_runs),
+                        (SELECT COUNT(*) FROM weather.weather_watch_only_snapshots),
+                        (SELECT COUNT(*) FROM capability.market_capabilities),
+                        (SELECT COUNT(*) FROM capability.account_trading_capabilities),
+                        (SELECT COUNT(*) FROM runtime.strategy_runs),
+                        (SELECT COUNT(*) FROM trading.orders)
+                    """
+                ).fetchone()
+                capability_row = con.execute(
+                    """
+                    SELECT tick_size, fee_rate_bps, data_sources
+                    FROM capability.market_capabilities
+                    WHERE token_id = 'tok_yes'
+                    """
+                ).fetchone()
+            finally:
+                con.close()
+
+            self.assertEqual(counts[0], 1)
+            self.assertEqual(counts[1], 1)
+            self.assertEqual(counts[2], 1)
+            self.assertEqual(counts[3], 1)
+            self.assertEqual(counts[4], 2)
+            self.assertEqual(counts[5], 1)
+            self.assertEqual(counts[6], 1)
+            self.assertEqual(counts[7], 1)
+            self.assertEqual(capability_row[0], Decimal("0.01000000"))
+            self.assertEqual(capability_row[1], 30)
+            self.assertEqual(json.loads(capability_row[2]), ["gamma", "clob_public"])
 
 
 if __name__ == "__main__":

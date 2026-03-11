@@ -3,7 +3,7 @@
 **版本**: v1.0
 **更新日期**: 2026-03-11
 **阶段**: `P4`
-**状态**: planning active
+**状态**: implementation active（`P4-01` / `P4-02` 已完成）
 **目标**: 在 `P3 paper execution` 已关闭的基础上，补齐 `live prerequisites`：真实外部只读数据、capability refresh、signer boundary、submitter dry-run/shadow path、chain transaction scaffolding、external reconciliation、operator/readiness/ops hardening，并保持默认安全边界。
 
 ---
@@ -81,6 +81,13 @@
   - real forecast adapters: `domains/weather/forecast/adapters.py`
   - real HTTP client/resource shell: `dagster_asterion/resources.py`
   - watcher replay/backfill contract: `domains/weather/resolution/backfill.py`、`domains/weather/resolution/rpc_fallback.py`
+- `P4-01` 已完成：
+  - `weather_market_discovery` 已成为 canonical cold-path ingress job
+  - `Gamma + OpenMeteo/NWS` 已可生成真实 `weather.weather_watch_only_snapshots`
+- `P4-02` 已完成：
+  - `weather_capability_refresh` 已成为 canonical capability refresh job
+  - `capability.market_capabilities` 已可由 `weather.weather_markets + CLOB public + overrides` 刷新
+  - `capability.account_trading_capabilities` 已可由 `wallet_registry.json + minimal chain read + overrides` 刷新
 
 ### 2.2 P4 Start-State Register
 
@@ -323,13 +330,13 @@ Gamma / CLOB public / Open-Meteo / NWS / Polygon RPC
 
 ### P4-01 Real Weather / Gamma Ingress Entry Closure
 
-- **goal**: 把真实 market discovery、forecast refresh 与 watcher read path 收口成 canonical real-data ingress，确保 `paper_real_data` 可稳定驱动现有 `P3` 链路。
-- **code landing area**: `asterion_core/clients/`、`domains/weather/scout/`、`domains/weather/forecast/`、`domains/weather/resolution/`、`dagster_asterion/resources.py`
-- **input tables**: `meta.watermarks`、`weather.weather_markets`、`weather.weather_market_specs`
-- **output tables**: `weather.weather_markets`、`weather.weather_market_specs`、`weather.weather_forecast_runs`、`weather.weather_watch_only_snapshots`、`resolution.*`
-- **contracts consumed**: `ResolutionSpec`、forecast adapters、watch-only snapshot contract
-- **tests required**: HTTP client contract tests、forecast refresh integration tests、real-data config smoke tests
-- **exit criteria**: 使用真实只读源时，能不改 execution contract 地生成 watch-only snapshot，并可继续驱动 `weather_paper_execution`
+- **goal**: 把真实 `Gamma` market discovery 与 `OpenMeteo / NWS` forecast refresh 收口成 canonical real-data ingress，确保 `paper_real_data` 可稳定驱动现有 `P3` 链路；明确不包含 watcher real RPC。
+- **code landing area**: `asterion_core/clients/`、`domains/weather/scout/`、`domains/weather/forecast/`、`dagster_asterion/resources.py`、`dagster_asterion/job_map.py`、`dagster_asterion/handlers.py`
+- **input tables**: `weather.weather_markets`、`weather.weather_market_specs`
+- **output tables**: `weather.weather_markets`、`weather.weather_market_specs`、`weather.weather_forecast_runs`、`weather.weather_watch_only_snapshots`
+- **contracts consumed**: `WeatherMarket`、`ResolutionSpec`、forecast adapters、watch-only snapshot contract
+- **tests required**: HTTP client contract tests、forecast refresh integration tests、cold-path orchestration tests、real-ingress-to-paper smoke tests
+- **exit criteria**: 使用真实只读 `Gamma + OpenMeteo / NWS` 源时，能不改 execution contract 地生成 watch-only snapshot，并可继续驱动 `weather_paper_execution`
 
 ### P4-02 Capability Refresh From Gamma / CLOB / Chain
 

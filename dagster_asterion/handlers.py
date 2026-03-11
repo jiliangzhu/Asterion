@@ -24,6 +24,7 @@ from asterion_core.contracts import (
     new_request_id,
 )
 from asterion_core.execution import (
+    SafeDefaultChainAccountCapabilityReader,
     apply_fills_to_order,
     bind_trade_ticket_handoff,
     build_execution_context,
@@ -35,12 +36,16 @@ from asterion_core.execution import (
     canonical_order_router_hash,
     canonical_order_router_payload,
     canonical_order_handoff_payload,
+    enqueue_account_capability_upserts,
     enqueue_execution_context_upserts,
+    enqueue_market_capability_upserts,
     evaluate_execution_gate,
     fill_journal_payload,
     gate_rejection_journal_payload,
     load_account_trading_capability,
     load_market_capability,
+    refresh_account_capabilities,
+    refresh_market_capabilities,
     order_status_journal_payload,
     paper_order_journal_payload_with_status,
     route_trade_ticket,
@@ -99,6 +104,7 @@ from domains.weather.forecast import (
 )
 from domains.weather.forecast.service import ForecastCache
 from domains.weather.pricing import enqueue_fair_value_upserts, enqueue_watch_only_snapshot_upserts, load_weather_market_spec
+from domains.weather.scout import run_weather_market_discovery
 from domains.weather.resolution import (
     RedeemScheduler,
     build_evidence_package_link,
@@ -172,6 +178,108 @@ class PaperExecutionBatchRequest:
             raise ValueError("asof_ts_ms must be non-negative")
 
 
+def run_weather_market_discovery_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    client,
+    base_url: str,
+    markets_endpoint: str,
+    page_limit: int,
+    max_pages: int,
+    sleep_s: float,
+    active_only: bool,
+    closed: bool | None,
+    archived: bool | None,
+    run_id: str | None = None,
+) -> ColdPathHandlerResult:
+    del con
+    request_id = run_id or new_request_id()
+    result = run_weather_market_discovery(
+        base_url=base_url,
+        markets_endpoint=markets_endpoint,
+        page_limit=int(page_limit),
+        max_pages=int(max_pages),
+        sleep_s=float(sleep_s),
+        active_only=bool(active_only),
+        closed=closed,
+        archived=archived,
+        client=client,
+        queue_cfg=queue_cfg,
+        run_id=request_id,
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_market_discovery",
+        run_id=request_id,
+        task_ids=_append_task_id(result.task_id),
+        item_count=result.discovered_count,
+        metadata={
+            "discovered_count": result.discovered_count,
+            "market_ids": [market.market_id for market in result.discovered_markets],
+        },
+    )
+
+
+def run_weather_capability_refresh_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    clob_client,
+    wallet_registry_path: str,
+    chain_reader=None,
+    run_id: str | None = None,
+    observed_at: datetime | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    normalized_observed_at = _normalize_datetime(observed_at) or datetime.now(UTC).replace(tzinfo=None)
+    market_capabilities = refresh_market_capabilities(
+        con,
+        clob_client=clob_client,
+        observed_at=normalized_observed_at,
+    )
+    account_capabilities = refresh_account_capabilities(
+        con,
+        wallet_registry_path=wallet_registry_path,
+        chain_reader=chain_reader or SafeDefaultChainAccountCapabilityReader(),
+    )
+    task_ids: list[str] = []
+    task_ids.extend(
+        _append_task_id(
+            enqueue_market_capability_upserts(
+                queue_cfg,
+                capabilities=market_capabilities,
+                run_id=request_id,
+            )
+        )
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_account_capability_upserts(
+                queue_cfg,
+                capabilities=account_capabilities,
+                observed_at=normalized_observed_at,
+                run_id=request_id,
+            )
+        )
+    )
+    market_ids = sorted({item.market_id for item in market_capabilities})
+    token_ids = sorted({item.token_id for item in market_capabilities})
+    wallet_ids = sorted({item.wallet_id for item in account_capabilities})
+    return ColdPathHandlerResult(
+        job_name="weather_capability_refresh",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=len(market_capabilities) + len(account_capabilities),
+        metadata={
+            "market_capability_count": len(market_capabilities),
+            "account_capability_count": len(account_capabilities),
+            "market_ids": market_ids,
+            "wallet_ids": wallet_ids,
+            "token_ids": token_ids,
+        },
+    )
+
+
 def run_weather_spec_sync(
     con,
     queue_cfg: WriteQueueConfig,
@@ -196,7 +304,7 @@ def run_weather_spec_sync(
     task_ids = _append_task_id(
         enqueue_weather_market_spec_upserts(
             queue_cfg,
-            market_specs=records,
+            specs=records,
             run_id=request_id,
             observed_at=observed_at,
         )

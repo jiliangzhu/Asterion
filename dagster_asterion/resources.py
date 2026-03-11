@@ -3,8 +3,11 @@ from __future__ import annotations
 import importlib.util
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from asterion_core.clients import ClobPublicClient
+from asterion_core.execution import SafeDefaultChainAccountCapabilityReader
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.write_queue import WriteQueueConfig, default_write_queue_path
 from domains.weather.forecast import AdapterRouter, ForecastService, InMemoryForecastCache, NWSAdapter, OpenMeteoAdapter
@@ -22,6 +25,20 @@ class AsterionColdPathSettings:
     db_path: str
     ddl_path: str | None
     write_queue_path: str
+    gamma_base_url: str
+    gamma_markets_endpoint: str
+    gamma_page_limit: int
+    gamma_max_pages: int
+    gamma_sleep_s: float
+    gamma_active_only: bool
+    gamma_closed: bool | None
+    gamma_archived: bool | None
+    clob_base_url: str
+    clob_book_endpoint: str
+    clob_fee_rate_endpoint: str
+    wallet_registry_path: str
+    capability_chain_id: int
+    capability_rpc_urls: list[str]
     forecast_primary_source: str
     forecast_fallback_sources: list[str]
     watcher_chain_id: int
@@ -39,10 +56,29 @@ class AsterionColdPathSettings:
             for item in os.getenv("ASTERION_WATCHER_RPC_URLS", "").split(",")
             if item.strip()
         ]
+        capability_rpc_urls = [
+            item.strip()
+            for item in os.getenv("ASTERION_CAPABILITY_RPC_URLS", "").split(",")
+            if item.strip()
+        ]
         return cls(
             db_path=os.getenv("ASTERION_DB_PATH", "data/asterion.duckdb"),
             ddl_path=os.getenv("ASTERION_DB_DDL_PATH") or None,
             write_queue_path=os.getenv("ASTERION_WRITE_QUEUE", default_write_queue_path()),
+            gamma_base_url=os.getenv("ASTERION_GAMMA_BASE_URL", "https://gamma-api.polymarket.com"),
+            gamma_markets_endpoint=os.getenv("ASTERION_GAMMA_MARKETS_ENDPOINT", "/markets"),
+            gamma_page_limit=int(os.getenv("ASTERION_GAMMA_PAGE_LIMIT", "100")),
+            gamma_max_pages=int(os.getenv("ASTERION_GAMMA_MAX_PAGES", "5")),
+            gamma_sleep_s=float(os.getenv("ASTERION_GAMMA_SLEEP_S", "0.0")),
+            gamma_active_only=_env_bool(os.getenv("ASTERION_GAMMA_ACTIVE_ONLY"), default=True),
+            gamma_closed=_env_optional_bool(os.getenv("ASTERION_GAMMA_CLOSED")),
+            gamma_archived=_env_optional_bool(os.getenv("ASTERION_GAMMA_ARCHIVED")),
+            clob_base_url=os.getenv("ASTERION_CLOB_BASE_URL", "https://clob.polymarket.com"),
+            clob_book_endpoint=os.getenv("ASTERION_CLOB_BOOK_ENDPOINT", "/book"),
+            clob_fee_rate_endpoint=os.getenv("ASTERION_CLOB_FEE_RATE_ENDPOINT", "/fee-rate"),
+            wallet_registry_path=os.getenv("ASTERION_WALLET_REGISTRY_PATH", "config/wallet_registry.json"),
+            capability_chain_id=int(os.getenv("ASTERION_CAPABILITY_CHAIN_ID", "137")),
+            capability_rpc_urls=capability_rpc_urls,
             forecast_primary_source=os.getenv("ASTERION_FORECAST_PRIMARY_SOURCE", "openmeteo"),
             forecast_fallback_sources=fallback,
             watcher_chain_id=int(os.getenv("ASTERION_WATCHER_CHAIN_ID", "137")),
@@ -81,6 +117,45 @@ class WriteQueueResource:
 
     def get_config(self) -> WriteQueueConfig:
         return WriteQueueConfig(path=self.settings.write_queue_path)
+
+
+@dataclass(frozen=True)
+class GammaDiscoveryRuntimeResource:
+    settings: AsterionColdPathSettings
+
+    def build_client(self, *, client: Any | None = None) -> Any:
+        return client or HttpJsonClient()
+
+    def build_config(self) -> dict[str, Any]:
+        return {
+            "base_url": self.settings.gamma_base_url,
+            "markets_endpoint": self.settings.gamma_markets_endpoint,
+            "page_limit": self.settings.gamma_page_limit,
+            "max_pages": self.settings.gamma_max_pages,
+            "sleep_s": self.settings.gamma_sleep_s,
+            "active_only": self.settings.gamma_active_only,
+            "closed": self.settings.gamma_closed,
+            "archived": self.settings.gamma_archived,
+        }
+
+
+@dataclass(frozen=True)
+class CapabilityRefreshRuntimeResource:
+    settings: AsterionColdPathSettings
+
+    def build_clob_client(self, *, client: Any | None = None) -> ClobPublicClient:
+        return ClobPublicClient(
+            client=client or HttpJsonClient(),
+            base_url=self.settings.clob_base_url,
+            book_endpoint=self.settings.clob_book_endpoint,
+            fee_rate_endpoint=self.settings.clob_fee_rate_endpoint,
+        )
+
+    def build_chain_reader(self, *, reader: Any | None = None) -> Any:
+        return reader or SafeDefaultChainAccountCapabilityReader()
+
+    def resolve_wallet_registry_path(self) -> str:
+        return str(Path(self.settings.wallet_registry_path))
 
 
 @dataclass(frozen=True)
@@ -139,6 +214,20 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 db_path=self.db_path,
                 ddl_path=self.ddl_path,
                 write_queue_path=settings.write_queue_path,
+                gamma_base_url=settings.gamma_base_url,
+                gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_page_limit=settings.gamma_page_limit,
+                gamma_max_pages=settings.gamma_max_pages,
+                gamma_sleep_s=settings.gamma_sleep_s,
+                gamma_active_only=settings.gamma_active_only,
+                gamma_closed=settings.gamma_closed,
+                gamma_archived=settings.gamma_archived,
+                clob_base_url=settings.clob_base_url,
+                clob_book_endpoint=settings.clob_book_endpoint,
+                clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
+                wallet_registry_path=settings.wallet_registry_path,
+                capability_chain_id=settings.capability_chain_id,
+                capability_rpc_urls=list(settings.capability_rpc_urls),
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
@@ -156,12 +245,100 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 db_path=settings.db_path,
                 ddl_path=settings.ddl_path,
                 write_queue_path=self.write_queue_path,
+                gamma_base_url=settings.gamma_base_url,
+                gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_page_limit=settings.gamma_page_limit,
+                gamma_max_pages=settings.gamma_max_pages,
+                gamma_sleep_s=settings.gamma_sleep_s,
+                gamma_active_only=settings.gamma_active_only,
+                gamma_closed=settings.gamma_closed,
+                gamma_archived=settings.gamma_archived,
+                clob_base_url=settings.clob_base_url,
+                clob_book_endpoint=settings.clob_book_endpoint,
+                clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
+                wallet_registry_path=settings.wallet_registry_path,
+                capability_chain_id=settings.capability_chain_id,
+                capability_rpc_urls=list(settings.capability_rpc_urls),
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
                 watcher_rpc_urls=list(settings.watcher_rpc_urls),
             )
             return WriteQueueResource(settings=settings)
+
+
+    class DagsterGammaDiscoveryRuntimeResource(ConfigurableResource):
+        gamma_base_url: str = "https://gamma-api.polymarket.com"
+        gamma_markets_endpoint: str = "/markets"
+        gamma_page_limit: int = 100
+        gamma_max_pages: int = 5
+        gamma_sleep_s: float = 0.0
+        gamma_active_only: bool = True
+        gamma_closed: bool | None = False
+        gamma_archived: bool | None = False
+
+        def build_runtime(self) -> GammaDiscoveryRuntimeResource:
+            settings = AsterionColdPathSettings.from_env()
+            settings = AsterionColdPathSettings(
+                db_path=settings.db_path,
+                ddl_path=settings.ddl_path,
+                write_queue_path=settings.write_queue_path,
+                gamma_base_url=self.gamma_base_url,
+                gamma_markets_endpoint=self.gamma_markets_endpoint,
+                gamma_page_limit=int(self.gamma_page_limit),
+                gamma_max_pages=int(self.gamma_max_pages),
+                gamma_sleep_s=float(self.gamma_sleep_s),
+                gamma_active_only=bool(self.gamma_active_only),
+                gamma_closed=self.gamma_closed,
+                gamma_archived=self.gamma_archived,
+                clob_base_url=settings.clob_base_url,
+                clob_book_endpoint=settings.clob_book_endpoint,
+                clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
+                wallet_registry_path=settings.wallet_registry_path,
+                capability_chain_id=settings.capability_chain_id,
+                capability_rpc_urls=list(settings.capability_rpc_urls),
+                forecast_primary_source=settings.forecast_primary_source,
+                forecast_fallback_sources=list(settings.forecast_fallback_sources),
+                watcher_chain_id=settings.watcher_chain_id,
+                watcher_rpc_urls=list(settings.watcher_rpc_urls),
+            )
+            return GammaDiscoveryRuntimeResource(settings=settings)
+
+
+    class DagsterCapabilityRefreshRuntimeResource(ConfigurableResource):
+        clob_base_url: str = "https://clob.polymarket.com"
+        clob_book_endpoint: str = "/book"
+        clob_fee_rate_endpoint: str = "/fee-rate"
+        wallet_registry_path: str = "config/wallet_registry.json"
+        capability_chain_id: int = 137
+        capability_rpc_urls: list[str] = []
+
+        def build_runtime(self) -> CapabilityRefreshRuntimeResource:
+            settings = AsterionColdPathSettings.from_env()
+            settings = AsterionColdPathSettings(
+                db_path=settings.db_path,
+                ddl_path=settings.ddl_path,
+                write_queue_path=settings.write_queue_path,
+                gamma_base_url=settings.gamma_base_url,
+                gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_page_limit=settings.gamma_page_limit,
+                gamma_max_pages=settings.gamma_max_pages,
+                gamma_sleep_s=settings.gamma_sleep_s,
+                gamma_active_only=settings.gamma_active_only,
+                gamma_closed=settings.gamma_closed,
+                gamma_archived=settings.gamma_archived,
+                clob_base_url=self.clob_base_url,
+                clob_book_endpoint=self.clob_book_endpoint,
+                clob_fee_rate_endpoint=self.clob_fee_rate_endpoint,
+                wallet_registry_path=self.wallet_registry_path,
+                capability_chain_id=int(self.capability_chain_id),
+                capability_rpc_urls=list(self.capability_rpc_urls),
+                forecast_primary_source=settings.forecast_primary_source,
+                forecast_fallback_sources=list(settings.forecast_fallback_sources),
+                watcher_chain_id=settings.watcher_chain_id,
+                watcher_rpc_urls=list(settings.watcher_rpc_urls),
+            )
+            return CapabilityRefreshRuntimeResource(settings=settings)
 
 
     class DagsterForecastRuntimeResource(ConfigurableResource):
@@ -173,6 +350,20 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 db_path=settings.db_path,
                 ddl_path=settings.ddl_path,
                 write_queue_path=settings.write_queue_path,
+                gamma_base_url=settings.gamma_base_url,
+                gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_page_limit=settings.gamma_page_limit,
+                gamma_max_pages=settings.gamma_max_pages,
+                gamma_sleep_s=settings.gamma_sleep_s,
+                gamma_active_only=settings.gamma_active_only,
+                gamma_closed=settings.gamma_closed,
+                gamma_archived=settings.gamma_archived,
+                clob_base_url=settings.clob_base_url,
+                clob_book_endpoint=settings.clob_book_endpoint,
+                clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
+                wallet_registry_path=settings.wallet_registry_path,
+                capability_chain_id=settings.capability_chain_id,
+                capability_rpc_urls=list(settings.capability_rpc_urls),
                 forecast_primary_source=self.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
@@ -190,6 +381,20 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 db_path=settings.db_path,
                 ddl_path=settings.ddl_path,
                 write_queue_path=settings.write_queue_path,
+                gamma_base_url=settings.gamma_base_url,
+                gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_page_limit=settings.gamma_page_limit,
+                gamma_max_pages=settings.gamma_max_pages,
+                gamma_sleep_s=settings.gamma_sleep_s,
+                gamma_active_only=settings.gamma_active_only,
+                gamma_closed=settings.gamma_closed,
+                gamma_archived=settings.gamma_archived,
+                clob_base_url=settings.clob_base_url,
+                clob_book_endpoint=settings.clob_book_endpoint,
+                clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
+                wallet_registry_path=settings.wallet_registry_path,
+                capability_chain_id=settings.capability_chain_id,
+                capability_rpc_urls=list(settings.capability_rpc_urls),
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=int(self.watcher_chain_id),
@@ -204,6 +409,8 @@ def build_runtime_resources(settings: AsterionColdPathSettings | None = None) ->
         "cold_path_settings": active,
         "duckdb": DuckDBResource(settings=active),
         "write_queue": WriteQueueResource(settings=active),
+        "gamma_discovery_runtime": GammaDiscoveryRuntimeResource(settings=active),
+        "capability_refresh_runtime": CapabilityRefreshRuntimeResource(settings=active),
         "forecast_runtime": ForecastRuntimeResource(settings=active),
         "watcher_rpc_pool": WatcherRpcPoolResource(settings=active),
     }
@@ -217,6 +424,39 @@ def build_dagster_resource_defs(settings: AsterionColdPathSettings | None = None
         "cold_path_settings": active,
         "duckdb": DagsterDuckDBResource(db_path=active.db_path, ddl_path=active.ddl_path),
         "write_queue": DagsterWriteQueueResource(write_queue_path=active.write_queue_path),
+        "gamma_discovery_runtime": DagsterGammaDiscoveryRuntimeResource(
+            gamma_base_url=active.gamma_base_url,
+            gamma_markets_endpoint=active.gamma_markets_endpoint,
+            gamma_page_limit=active.gamma_page_limit,
+            gamma_max_pages=active.gamma_max_pages,
+            gamma_sleep_s=active.gamma_sleep_s,
+            gamma_active_only=active.gamma_active_only,
+            gamma_closed=active.gamma_closed,
+            gamma_archived=active.gamma_archived,
+        ),
+        "capability_refresh_runtime": DagsterCapabilityRefreshRuntimeResource(
+            clob_base_url=active.clob_base_url,
+            clob_book_endpoint=active.clob_book_endpoint,
+            clob_fee_rate_endpoint=active.clob_fee_rate_endpoint,
+            wallet_registry_path=active.wallet_registry_path,
+            capability_chain_id=active.capability_chain_id,
+            capability_rpc_urls=list(active.capability_rpc_urls),
+        ),
         "forecast_runtime": DagsterForecastRuntimeResource(forecast_primary_source=active.forecast_primary_source),
         "watcher_rpc_pool": DagsterWatcherRpcPoolResource(watcher_chain_id=active.watcher_chain_id),
     }
+
+
+def _env_bool(value: str | None, *, default: bool) -> bool:
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_optional_bool(value: str | None) -> bool | None:
+    if value is None or not value.strip():
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"none", "null"}:
+        return None
+    return normalized not in {"0", "false", "no", "off"}
