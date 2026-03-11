@@ -1558,6 +1558,24 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     """
                 ).fetchone()
                 exception_count = con.execute("SELECT COUNT(*) FROM ui.execution_exception_summary").fetchone()[0]
+                journal_row = con.execute(
+                    """
+                    SELECT event_count, ticket_count, fill_ticket_count, mismatch_event_count
+                    FROM ui.paper_run_journal_summary
+                    """
+                ).fetchone()
+                ops_row = con.execute(
+                    """
+                    SELECT ticket_count, filled_count, rejected_count, reconciliation_mismatch_count, attention_required_count
+                    FROM ui.daily_ops_summary
+                    """
+                ).fetchone()
+                review_row = con.execute(
+                    """
+                    SELECT execution_result, operator_attention_required, summary_json
+                    FROM ui.daily_review_input
+                    """
+                ).fetchone()
             finally:
                 con.close()
             self.assertEqual(
@@ -1566,6 +1584,11 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             )
             self.assertEqual(run_row, (1, 1, 1, 1, 0))
             self.assertEqual(exception_count, 0)
+            self.assertEqual(journal_row, (14, 1, 1, 0))
+            self.assertEqual(ops_row, (1, 1, 0, 0, 0))
+            self.assertEqual(review_row[0], "filled")
+            self.assertFalse(review_row[1])
+            self.assertIn('"execution_result":"filled"', review_row[2])
 
     def test_ui_execution_exception_summary_surfaces_reconciliation_mismatches(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1690,11 +1713,35 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     FROM ui.execution_run_summary
                     """
                 ).fetchone()
+                journal_row = con.execute(
+                    """
+                    SELECT mismatch_event_count
+                    FROM ui.paper_run_journal_summary
+                    """
+                ).fetchone()
+                ops_row = con.execute(
+                    """
+                    SELECT rejected_count, reconciliation_mismatch_count, attention_required_count
+                    FROM ui.daily_ops_summary
+                    """
+                ).fetchone()
+                review_row = con.execute(
+                    """
+                    SELECT execution_result, operator_attention_required, summary_json
+                    FROM ui.daily_review_input
+                    WHERE operator_attention_required
+                    """
+                ).fetchone()
             finally:
                 con.close()
             self.assertEqual(ticket_row, ("reconciliation_mismatch", True))
             self.assertEqual(exception_row, ("reconciliation_mismatch", "inventory_mismatch", Decimal("1.00000000")))
             self.assertEqual(run_row, (1, 1))
+            self.assertEqual(journal_row, (0,))
+            self.assertEqual(ops_row, (0, 1, 1))
+            self.assertEqual(review_row[0], "reconciliation_mismatch")
+            self.assertTrue(review_row[1])
+            self.assertIn('"reconciliation_status":"inventory_mismatch"', review_row[2])
 
     def test_weather_paper_execution_rerun_keeps_row_counts_and_latest_journal_stable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

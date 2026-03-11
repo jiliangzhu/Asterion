@@ -25,6 +25,9 @@ _REQUIRED_UI_TABLES = [
     "ui.execution_ticket_summary",
     "ui.execution_run_summary",
     "ui.execution_exception_summary",
+    "ui.paper_run_journal_summary",
+    "ui.daily_ops_summary",
+    "ui.daily_review_input",
     "ui.agent_review_summary",
     "ui.phase_readiness_summary",
 ]
@@ -812,6 +815,48 @@ def _build_ui_lite_contract(
         )
         _create_table_from_src(
             con,
+            target="ui.paper_run_journal_summary",
+            sql_body="""
+            WITH journal_agg AS (
+                SELECT
+                    run_id,
+                    COUNT(*) AS event_count,
+                    SUM(CASE WHEN entity_type = 'order' THEN 1 ELSE 0 END) AS order_event_count,
+                    SUM(CASE WHEN entity_type = 'fill' THEN 1 ELSE 0 END) AS fill_event_count,
+                    SUM(CASE WHEN event_type = 'reconciliation.mismatch' THEN 1 ELSE 0 END) AS mismatch_event_count,
+                    MAX(created_at) AS latest_event_at
+                FROM src.runtime.journal_events
+                WHERE run_id IS NOT NULL
+                GROUP BY run_id
+            )
+            SELECT
+                run_summary.run_id,
+                run_summary.wallet_id,
+                COALESCE(journal.event_count, 0) AS event_count,
+                run_summary.ticket_count,
+                SUM(CASE WHEN ticket.order_id IS NOT NULL THEN 1 ELSE 0 END) AS order_count,
+                SUM(CASE WHEN COALESCE(ticket.fill_count, 0) > 0 THEN 1 ELSE 0 END) AS fill_ticket_count,
+                COALESCE(journal.order_event_count, 0) AS order_event_count,
+                COALESCE(journal.fill_event_count, 0) AS fill_event_count,
+                COALESCE(journal.mismatch_event_count, 0) AS mismatch_event_count,
+                journal.latest_event_at
+            FROM ui.execution_run_summary run_summary
+            LEFT JOIN ui.execution_ticket_summary ticket ON ticket.run_id = run_summary.run_id
+            LEFT JOIN journal_agg journal ON journal.run_id = run_summary.run_id
+            GROUP BY
+                run_summary.run_id,
+                run_summary.wallet_id,
+                journal.event_count,
+                run_summary.ticket_count,
+                journal.order_event_count,
+                journal.fill_event_count,
+                journal.mismatch_event_count,
+                journal.latest_event_at
+            """,
+            table_row_counts=table_row_counts,
+        )
+        _create_table_from_src(
+            con,
             target="ui.agent_review_summary",
             sql_body="""
             WITH latest_invocation AS (
@@ -944,6 +989,87 @@ def _build_ui_lite_contract(
         _create_phase_readiness_summary(
             con,
             report_path=readiness_report_json_path,
+            table_row_counts=table_row_counts,
+        )
+        _create_table_from_src(
+            con,
+            target="ui.daily_ops_summary",
+            sql_body="""
+            WITH latest_readiness AS (
+                SELECT
+                    MAX(generated_at) AS generated_at
+                FROM ui.phase_readiness_summary
+            ),
+            readiness_summary AS (
+                SELECT
+                    MAX(go_decision) AS go_decision,
+                    MAX(decision_reason) AS decision_reason,
+                    MAX(generated_at) AS readiness_generated_at
+                FROM ui.phase_readiness_summary
+                WHERE generated_at = (SELECT generated_at FROM latest_readiness)
+            )
+            SELECT
+                run_summary.run_id,
+                run_summary.wallet_id,
+                readiness.go_decision,
+                readiness.decision_reason,
+                run_summary.ticket_count,
+                run_summary.filled_count,
+                run_summary.partial_filled_count,
+                run_summary.cancelled_count,
+                run_summary.gate_rejected_count AS rejected_count,
+                run_summary.reconciliation_mismatch_count,
+                run_summary.attention_required_count,
+                run_summary.latest_event_at,
+                readiness.readiness_generated_at
+            FROM ui.execution_run_summary run_summary
+            LEFT JOIN readiness_summary readiness ON TRUE
+            """,
+            table_row_counts=table_row_counts,
+        )
+        _create_table_from_src(
+            con,
+            target="ui.daily_review_input",
+            sql_body="""
+            SELECT
+                ticket.run_id,
+                ticket.ticket_id,
+                ticket.request_id,
+                ticket.wallet_id,
+                ticket.strategy_id,
+                ticket.strategy_version,
+                ticket.market_id,
+                ticket.order_id,
+                ticket.execution_result,
+                ticket.reconciliation_status,
+                ticket.reconciliation_discrepancy,
+                ticket.latest_transition_to_status,
+                ticket.latest_transition_reason,
+                ticket.latest_journal_event_type,
+                ticket.operator_attention_required,
+                ops.go_decision,
+                printf(
+                    '{"run_id":"%s","ticket_id":"%s","strategy_id":"%s","execution_result":"%s","reconciliation_status":%s,"latest_transition_to_status":%s,"operator_attention_required":%s}',
+                    ticket.run_id,
+                    ticket.ticket_id,
+                    ticket.strategy_id,
+                    ticket.execution_result,
+                    CASE
+                        WHEN ticket.reconciliation_status IS NULL THEN 'null'
+                        ELSE printf('"%s"', ticket.reconciliation_status)
+                    END,
+                    CASE
+                        WHEN ticket.latest_transition_to_status IS NULL THEN 'null'
+                        ELSE printf('"%s"', ticket.latest_transition_to_status)
+                    END,
+                    CASE
+                        WHEN ticket.operator_attention_required THEN 'true'
+                        ELSE 'false'
+                    END
+                ) AS summary_json
+            FROM ui.execution_ticket_summary ticket
+            LEFT JOIN ui.daily_ops_summary ops ON ops.run_id = ticket.run_id
+            """,
             table_row_counts=table_row_counts,
         )
         return table_row_counts
