@@ -23,6 +23,8 @@ _REQUIRED_UI_TABLES = [
     "ui.market_watch_summary",
     "ui.proposal_resolution_summary",
     "ui.execution_ticket_summary",
+    "ui.execution_run_summary",
+    "ui.execution_exception_summary",
     "ui.agent_review_summary",
     "ui.phase_readiness_summary",
 ]
@@ -544,6 +546,64 @@ def _build_ui_lite_contract(
                 )
                 WHERE rn = 1
             ),
+            fill_agg AS (
+                SELECT
+                    order_id,
+                    COUNT(*) AS fill_count,
+                    SUM(size) AS filled_size,
+                    SUM(price * size) AS filled_notional,
+                    CASE
+                        WHEN SUM(size) > 0 THEN SUM(price * size) / SUM(size)
+                        ELSE NULL
+                    END AS avg_fill_price,
+                    MAX(filled_at) AS last_fill_at
+                FROM src.trading.fills
+                GROUP BY order_id
+            ),
+            latest_transition AS (
+                SELECT
+                    order_id,
+                    from_status,
+                    to_status,
+                    reason,
+                    timestamp
+                FROM (
+                    SELECT
+                        order_id,
+                        from_status,
+                        to_status,
+                        reason,
+                        timestamp,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY order_id
+                            ORDER BY timestamp DESC, transition_id DESC
+                        ) AS rn
+                    FROM src.trading.order_state_transitions
+                )
+                WHERE rn = 1
+            ),
+            latest_transition_by_status AS (
+                SELECT
+                    order_id,
+                    from_status,
+                    to_status,
+                    reason,
+                    timestamp
+                FROM (
+                    SELECT
+                        order_id,
+                        from_status,
+                        to_status,
+                        reason,
+                        timestamp,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY order_id, to_status
+                            ORDER BY timestamp DESC, transition_id DESC
+                        ) AS rn
+                    FROM src.trading.order_state_transitions
+                )
+                WHERE rn = 1
+            ),
             latest_journal_by_ticket AS (
                 SELECT
                     ticket_id,
@@ -610,6 +670,7 @@ def _build_ui_lite_contract(
                 ticket.ticket_id,
                 ticket.run_id,
                 ticket.strategy_id,
+                ticket.strategy_version,
                 ticket.market_id,
                 ticket.token_id,
                 ticket.outcome,
@@ -618,6 +679,9 @@ def _build_ui_lite_contract(
                 ticket.size,
                 ticket.reference_price,
                 ticket.fair_value,
+                ticket.wallet_id,
+                ticket.request_id,
+                ticket.execution_context_id,
                 gate.gate_id,
                 gate.allowed AS gate_allowed,
                 gate.reason AS gate_reason,
@@ -625,10 +689,35 @@ def _build_ui_lite_contract(
                 ord.order_id,
                 ord.status AS order_status,
                 ord.reservation_id,
+                fill.fill_count,
+                fill.filled_size,
+                fill.filled_notional,
+                fill.avg_fill_price,
+                fill.last_fill_at,
                 reservation.status AS reservation_status,
+                COALESCE(transition_status.from_status, transition.from_status) AS latest_transition_from_status,
+                COALESCE(transition_status.to_status, transition.to_status, ord.status) AS latest_transition_to_status,
+                COALESCE(transition_status.reason, transition.reason) AS latest_transition_reason,
+                COALESCE(transition_status.timestamp, transition.timestamp) AS latest_transition_at,
                 reconciliation.reconciliation_id,
                 reconciliation.status AS reconciliation_status,
                 reconciliation.discrepancy AS reconciliation_discrepancy,
+                CASE
+                    WHEN reconciliation.status IS NOT NULL AND reconciliation.status <> 'ok' THEN 'reconciliation_mismatch'
+                    WHEN gate.allowed = FALSE THEN 'rejected_by_gate'
+                    WHEN ord.status = 'filled' THEN 'filled'
+                    WHEN ord.status = 'partial_filled' THEN 'partial_filled'
+                    WHEN ord.status = 'cancelled' THEN 'cancelled'
+                    WHEN ord.status = 'posted' THEN 'posted_resting'
+                    ELSE 'pending_gate'
+                END AS execution_result,
+                CASE
+                    WHEN reconciliation.status IS NOT NULL AND reconciliation.status <> 'ok' THEN TRUE
+                    WHEN gate.allowed = FALSE THEN TRUE
+                    WHEN ord.status IN ('cancelled', 'rejected') THEN TRUE
+                    ELSE FALSE
+                END AS operator_attention_required,
+                'quote_based' AS paper_fill_mode,
                 COALESCE(journal_ticket.event_id, journal_request.event_id) AS latest_journal_event_id,
                 COALESCE(journal_ticket.event_type, journal_request.event_type) AS latest_journal_event_type,
                 COALESCE(journal_ticket.created_at, journal_request.created_at) AS latest_journal_created_at
@@ -640,6 +729,7 @@ def _build_ui_lite_contract(
                AND order_event_ticket.order_id IS NULL
             LEFT JOIN src.trading.orders ord
                 ON ord.order_id = COALESCE(order_event_ticket.order_id, order_event_request.order_id)
+            LEFT JOIN fill_agg fill ON fill.order_id = ord.order_id
             LEFT JOIN latest_reservation_event_by_ticket reservation_event_ticket
                 ON reservation_event_ticket.ticket_id = ticket.ticket_id
             LEFT JOIN latest_reservation_event_by_request reservation_event_request
@@ -647,6 +737,10 @@ def _build_ui_lite_contract(
                AND reservation_event_ticket.reservation_id IS NULL
             LEFT JOIN src.trading.reservations reservation
                 ON reservation.reservation_id = COALESCE(reservation_event_ticket.reservation_id, reservation_event_request.reservation_id)
+            LEFT JOIN latest_transition transition ON transition.order_id = ord.order_id
+            LEFT JOIN latest_transition_by_status transition_status
+                ON transition_status.order_id = ord.order_id
+               AND transition_status.to_status = ord.status
             LEFT JOIN latest_reconciliation_event_by_ticket reconciliation_event_ticket
                 ON reconciliation_event_ticket.ticket_id = ticket.ticket_id
             LEFT JOIN latest_reconciliation_event_by_request reconciliation_event_request
@@ -661,6 +755,58 @@ def _build_ui_lite_contract(
             LEFT JOIN latest_journal_by_request journal_request
                 ON journal_request.request_id = ticket.request_id
                AND journal_ticket.event_id IS NULL
+            """,
+            table_row_counts=table_row_counts,
+        )
+        _create_table_from_src(
+            con,
+            target="ui.execution_run_summary",
+            sql_body="""
+            SELECT
+                run_id,
+                MAX(wallet_id) AS wallet_id,
+                COUNT(DISTINCT strategy_id) AS strategy_count,
+                COUNT(*) AS ticket_count,
+                SUM(CASE WHEN gate_allowed THEN 1 ELSE 0 END) AS gate_allowed_count,
+                SUM(CASE WHEN gate_allowed = FALSE THEN 1 ELSE 0 END) AS gate_rejected_count,
+                SUM(CASE WHEN order_status = 'posted' THEN 1 ELSE 0 END) AS posted_count,
+                SUM(CASE WHEN order_status = 'filled' THEN 1 ELSE 0 END) AS filled_count,
+                SUM(CASE WHEN order_status = 'partial_filled' THEN 1 ELSE 0 END) AS partial_filled_count,
+                SUM(CASE WHEN order_status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
+                SUM(CASE WHEN reconciliation_status = 'ok' THEN 1 ELSE 0 END) AS reconciliation_ok_count,
+                SUM(CASE WHEN reconciliation_status IS NOT NULL AND reconciliation_status <> 'ok' THEN 1 ELSE 0 END) AS reconciliation_mismatch_count,
+                SUM(CASE WHEN operator_attention_required THEN 1 ELSE 0 END) AS attention_required_count,
+                MAX(latest_journal_created_at) AS latest_event_at
+            FROM ui.execution_ticket_summary
+            GROUP BY run_id
+            """,
+            table_row_counts=table_row_counts,
+        )
+        _create_table_from_src(
+            con,
+            target="ui.execution_exception_summary",
+            sql_body="""
+            SELECT
+                ticket_id,
+                run_id,
+                request_id,
+                wallet_id,
+                strategy_id,
+                strategy_version,
+                market_id,
+                execution_context_id,
+                order_id,
+                reservation_id,
+                execution_result,
+                gate_reason,
+                reconciliation_status,
+                reconciliation_discrepancy,
+                latest_transition_to_status,
+                latest_transition_reason,
+                latest_journal_event_type,
+                operator_attention_required
+            FROM ui.execution_ticket_summary
+            WHERE operator_attention_required
             """,
             table_row_counts=table_row_counts,
         )

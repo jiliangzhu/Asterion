@@ -1532,15 +1532,169 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertTrue(built.ok, built.error)
             con = connect_duckdb(DuckDBConfig(db_path=lite_db, ddl_path=None))
             try:
-                row = con.execute(
+                ticket_row = con.execute(
                     """
-                    SELECT reconciliation_status, reconciliation_discrepancy
+                    SELECT
+                        reconciliation_status,
+                        reconciliation_discrepancy,
+                        execution_result,
+                        operator_attention_required,
+                        fill_count,
+                        filled_size,
+                        latest_transition_to_status,
+                        paper_fill_mode
                     FROM ui.execution_ticket_summary
+                    """
+                ).fetchone()
+                run_row = con.execute(
+                    """
+                    SELECT
+                        ticket_count,
+                        gate_allowed_count,
+                        filled_count,
+                        reconciliation_ok_count,
+                        attention_required_count
+                    FROM ui.execution_run_summary
+                    """
+                ).fetchone()
+                exception_count = con.execute("SELECT COUNT(*) FROM ui.execution_exception_summary").fetchone()[0]
+            finally:
+                con.close()
+            self.assertEqual(
+                ticket_row,
+                ("ok", Decimal("0E-8"), "filled", False, 1, Decimal("10.00000000"), "filled", "quote_based"),
+            )
+            self.assertEqual(run_row, (1, 1, 1, 1, 0))
+            self.assertEqual(exception_count, 0)
+
+    def test_ui_execution_exception_summary_surfaces_reconciliation_mismatches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "asterion.duckdb")
+            lite_db = str(Path(tmpdir) / "ui_lite.duckdb")
+            report_json = str(Path(tmpdir) / "readiness.json")
+            queue_path = str(Path(tmpdir) / "write_queue.sqlite")
+            migrations_dir = str(Path(__file__).resolve().parents[1] / "sql" / "migrations")
+            writer_env = {
+                "ASTERION_STRICT_SINGLE_WRITER": "1",
+                "ASTERION_DB_ROLE": "writer",
+                "WRITERD": "1",
+            }
+            with patch.dict("os.environ", writer_env, clear=False):
+                apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=migrations_dir))
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    con.execute(
+                        "INSERT INTO capability.market_capabilities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ["tok_yes", "mkt_weather_1", "cond_weather_1", "YES", Decimal("0.01"), 30, False, Decimal("1"), True, True, "[\"gamma\",\"clob_public\"]", datetime(2026, 3, 10, 10, 0)],
+                    )
+                    con.execute(
+                        "INSERT INTO capability.account_trading_capabilities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ["wallet_weather_1", "eoa", 1, "0xfunder", "[\"0xrelayer\"]", True, True, None, datetime(2026, 3, 10, 10, 0)],
+                    )
+                    con.execute(
+                        "INSERT INTO weather.weather_watch_only_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ["snap_yes", "fv_yes", "frun_weather_1", "mkt_weather_1", "cond_weather_1", "tok_yes", "YES", 0.55, 0.63, 800, 500, "TAKE", "BUY", "ui mismatch", "{\"signal_ts_ms\":1710000000000}", datetime(2026, 3, 10, 10, 0)],
+                    )
+                    con.execute(
+                        "INSERT INTO trading.inventory_positions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ["wallet_weather_1", "usdc_e", "usdc_e", "cash", "cash", "available", Decimal("100"), "0xfunder", 1, datetime(2026, 3, 10, 10, 0)],
+                    )
+                finally:
+                    con.close()
+            reader_env = {
+                "ASTERION_STRICT_SINGLE_WRITER": "1",
+                "ASTERION_DB_ROLE": "reader",
+                "WRITERD": "0",
+            }
+            queue_cfg = WriteQueueConfig(path=queue_path)
+            with patch.dict("os.environ", reader_env, clear=False):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    run_weather_paper_execution_job(
+                        con,
+                        queue_cfg,
+                        params_json={
+                            "wallet_id": "wallet_weather_1",
+                            "strategy_registrations": [
+                                {
+                                    "strategy_id": "weather_primary",
+                                    "strategy_version": "v1",
+                                    "priority": 1,
+                                    "route_action": "FAK",
+                                    "size": "10",
+                                    "min_edge_bps": 500,
+                                }
+                            ],
+                            "snapshot_ids": ["snap_yes"],
+                        },
+                        observed_at=datetime(2026, 3, 10, 10, 6, tzinfo=UTC),
+                    )
+                finally:
+                    con.close()
+            allow_tables = ",".join(
+                [
+                    "runtime.strategy_runs",
+                    "runtime.trade_tickets",
+                    "runtime.gate_decisions",
+                    "trading.orders",
+                    "trading.reservations",
+                    "trading.fills",
+                    "trading.inventory_positions",
+                    "trading.order_state_transitions",
+                    "trading.exposure_snapshots",
+                    "trading.reconciliation_results",
+                    "capability.execution_contexts",
+                    "runtime.journal_events",
+                ]
+            )
+            with patch.dict("os.environ", {"ASTERION_DB_PATH": db_path, "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables}, clear=False):
+                while process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False):
+                    pass
+            with patch.dict("os.environ", writer_env, clear=False):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    con.execute(
+                        """
+                        UPDATE trading.reconciliation_results
+                        SET status = 'inventory_mismatch',
+                            discrepancy = ?,
+                            resolution = 'manual_review_required'
+                        """,
+                        [Decimal("1.00000000")],
+                    )
+                finally:
+                    con.close()
+            built = build_ui_lite_db_once(
+                src_db_path=db_path,
+                dst_db_path=lite_db,
+                readiness_report_json_path=report_json,
+            )
+            self.assertTrue(built.ok, built.error)
+            con = connect_duckdb(DuckDBConfig(db_path=lite_db, ddl_path=None))
+            try:
+                ticket_row = con.execute(
+                    """
+                    SELECT execution_result, operator_attention_required
+                    FROM ui.execution_ticket_summary
+                    """
+                ).fetchone()
+                exception_row = con.execute(
+                    """
+                    SELECT execution_result, reconciliation_status, reconciliation_discrepancy
+                    FROM ui.execution_exception_summary
+                    """
+                ).fetchone()
+                run_row = con.execute(
+                    """
+                    SELECT reconciliation_mismatch_count, attention_required_count
+                    FROM ui.execution_run_summary
                     """
                 ).fetchone()
             finally:
                 con.close()
-            self.assertEqual(row, ("ok", Decimal("0E-8")))
+            self.assertEqual(ticket_row, ("reconciliation_mismatch", True))
+            self.assertEqual(exception_row, ("reconciliation_mismatch", "inventory_mismatch", Decimal("1.00000000")))
+            self.assertEqual(run_row, (1, 1))
 
     def test_weather_paper_execution_rerun_keeps_row_counts_and_latest_journal_stable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
