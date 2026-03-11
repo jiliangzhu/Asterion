@@ -11,6 +11,7 @@ from asterion_core.contracts import (
     InventoryPosition,
     JournalEvent,
     Order,
+    OrderStateTransition,
     Reservation,
     StrategyRun,
     TradeTicket,
@@ -120,6 +121,15 @@ TRADING_FILL_COLUMNS = [
     "trade_id",
     "exchange_order_id",
     "filled_at",
+]
+
+TRADING_ORDER_STATE_TRANSITION_COLUMNS = [
+    "transition_id",
+    "order_id",
+    "from_status",
+    "to_status",
+    "reason",
+    "timestamp",
 ]
 
 TRADING_RESERVATION_COLUMNS = [
@@ -292,6 +302,24 @@ def enqueue_fill_upserts(queue_cfg: WriteQueueConfig, *, fills: list[Fill], run_
     )
 
 
+def enqueue_order_state_transition_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    transitions: list[OrderStateTransition],
+    run_id: str | None = None,
+) -> str | None:
+    if not transitions:
+        return None
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="trading.order_state_transitions",
+        pk_cols=["transition_id"],
+        columns=list(TRADING_ORDER_STATE_TRANSITION_COLUMNS),
+        rows=[order_state_transition_to_row(item) for item in transitions],
+        run_id=run_id,
+    )
+
+
 def enqueue_reservation_upserts(
     queue_cfg: WriteQueueConfig,
     *,
@@ -456,6 +484,17 @@ def fill_to_row(record: Fill) -> list[Any]:
         record.trade_id,
         record.exchange_order_id,
         _sql_timestamp(record.filled_at),
+    ]
+
+
+def order_state_transition_to_row(record: OrderStateTransition) -> list[Any]:
+    return [
+        record.transition_id,
+        record.order_id,
+        _enum_value(record.from_status),
+        _enum_value(record.to_status),
+        record.reason,
+        _sql_timestamp(record.timestamp),
     ]
 
 

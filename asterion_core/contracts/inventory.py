@@ -96,6 +96,22 @@ class Order:
 
 
 @dataclass(frozen=True)
+class OrderStateTransition:
+    transition_id: str
+    order_id: str
+    from_status: OrderStatus
+    to_status: OrderStatus
+    reason: str | None
+    timestamp: datetime
+
+    def __post_init__(self) -> None:
+        if not self.transition_id:
+            raise ValueError("transition_id is required")
+        if not self.order_id:
+            raise ValueError("order_id is required")
+
+
+@dataclass(frozen=True)
 class Fill:
     fill_id: str
     order_id: str
@@ -237,4 +253,3 @@ class ExposureSnapshot:
         )
         if any(value < 0 for value in numeric_fields):
             raise ValueError("exposure values must be non-negative")
-

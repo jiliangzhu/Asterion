@@ -26,6 +26,7 @@ from asterion_core.contracts.inventory import (
     InventoryPosition,
     Order,
     OrderSide,
+    OrderStateTransition,
     OrderStatus,
 )
 from asterion_core.contracts.weather import ForecastRequest, ResolutionSpec
@@ -195,6 +196,17 @@ class IdsAndContractsTest(unittest.TestCase):
             updated_at=datetime.now(timezone.utc),
         )
         self.assertEqual(position.wallet_id, order.wallet_id)
+
+    def test_order_state_transition_is_constructible(self) -> None:
+        transition = OrderStateTransition(
+            transition_id="otrans_1",
+            order_id="ordr_1",
+            from_status=OrderStatus.CREATED,
+            to_status=OrderStatus.POSTED,
+            reason="paper_adapter_posted",
+            timestamp=datetime.now(timezone.utc),
+        )
+        self.assertEqual(transition.order_id, "ordr_1")
 
 
 if __name__ == "__main__":

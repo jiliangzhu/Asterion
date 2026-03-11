@@ -27,22 +27,33 @@ from asterion_core.execution import (
     bind_trade_ticket_handoff,
     build_execution_context,
     build_execution_context_record,
+    build_order_state_transition,
+    build_paper_order,
     build_signal_order_intent_from_handoff,
     build_trade_ticket,
     canonical_order_router_hash,
     canonical_order_router_payload,
     canonical_order_handoff_payload,
     enqueue_execution_context_upserts,
+    evaluate_execution_gate,
+    gate_rejection_journal_payload,
     load_account_trading_capability,
     load_market_capability,
+    paper_order_journal_payload,
+    paper_order_journal_payload_with_status,
     route_trade_ticket,
+    reservation_required_quantity,
 )
 from asterion_core.journal import (
     build_journal_event,
+    enqueue_gate_decision_upserts,
     enqueue_journal_event_upserts,
+    enqueue_order_state_transition_upserts,
+    enqueue_order_upserts,
     enqueue_strategy_run_upserts,
     enqueue_trade_ticket_upserts,
 )
+from asterion_core.contracts import OrderStatus
 from asterion_core.runtime import (
     StrategyContext,
     StrategyRegistration,
@@ -465,6 +476,11 @@ def run_weather_paper_execution_job(
         enriched_tickets.append(enriched_ticket)
         ticket_execution_context_ids[enriched_ticket.ticket_id] = record.execution_context_id
 
+    gate_decisions = []
+    paper_orders = []
+    order_transitions = []
+    order_ids: list[str] = []
+    rejected_ticket_ids: list[str] = []
     journal_events = [
         build_journal_event(
             event_type="strategy_run.created",
@@ -477,11 +493,20 @@ def run_weather_paper_execution_job(
     ]
     for ticket in enriched_tickets:
         hydrated_execution_context = execution_context_records_by_id[ticket.execution_context_id or ""].execution_context
-        routed_order = route_trade_ticket(ticket, hydrated_execution_context)
         signal_order_intent = build_signal_order_intent_from_handoff(
             ticket,
             execution_context=hydrated_execution_context,
         )
+        gate_decision = evaluate_execution_gate(
+            ticket=ticket,
+            intent=signal_order_intent,
+            watch_only_active=batch_request.dq_level != "PASS",
+            degrade_active=False,
+            available_quantity=reservation_required_quantity(ticket),
+            created_at=observed_at or datetime.now(UTC),
+        )
+        gate_decisions.append(gate_decision)
+        routed_order = route_trade_ticket(ticket, hydrated_execution_context)
         journal_events.append(
             build_journal_event(
                 event_type="trade_ticket.created",
@@ -494,6 +519,23 @@ def run_weather_paper_execution_job(
                     "wallet_id": ticket.wallet_id,
                     "execution_context_id": ticket.execution_context_id,
                     "ticket_hash": ticket.ticket_hash,
+                },
+                created_at=observed_at or datetime.now(UTC),
+            )
+        )
+        journal_events.append(
+            build_journal_event(
+                event_type="gate.decision",
+                entity_type="gate_decision",
+                entity_id=gate_decision.gate_id,
+                run_id=strategy_run.run_id,
+                payload_json={
+                    "ticket_id": ticket.ticket_id,
+                    "request_id": ticket.request_id,
+                    "allowed": gate_decision.allowed,
+                    "reason": gate_decision.reason,
+                    "reason_codes": list(gate_decision.reason_codes),
+                    "metrics": dict(gate_decision.metrics_json),
                 },
                 created_at=observed_at or datetime.now(UTC),
             )
@@ -525,10 +567,81 @@ def run_weather_paper_execution_job(
                 created_at=observed_at or datetime.now(UTC),
             )
         )
+        if not gate_decision.allowed:
+            rejected_ticket_ids.append(ticket.ticket_id)
+            journal_events.append(
+                build_journal_event(
+                    event_type="order.rejected_by_gate",
+                    entity_type="order",
+                    entity_id=ticket.request_id,
+                    run_id=strategy_run.run_id,
+                    payload_json=gate_rejection_journal_payload(
+                        ticket_id=ticket.ticket_id,
+                        request_id=ticket.request_id,
+                        wallet_id=ticket.wallet_id or "",
+                        gate_decision=gate_decision,
+                    ),
+                    created_at=observed_at or datetime.now(UTC),
+                )
+            )
+            continue
+        paper_order = build_paper_order(
+            intent=signal_order_intent,
+            wallet_id=ticket.wallet_id or "",
+            gate_decision=gate_decision,
+            created_at=observed_at or datetime.now(UTC),
+        )
+        paper_orders.append(paper_order)
+        order_ids.append(paper_order.order_id)
+        order_transitions.append(
+            build_order_state_transition(
+                order=paper_order,
+                from_status=OrderStatus.CREATED,
+                to_status=OrderStatus.POSTED,
+                reason="paper_adapter_posted",
+                timestamp=observed_at or datetime.now(UTC),
+            )
+        )
+        journal_events.append(
+            build_journal_event(
+                event_type="order.created",
+                entity_type="order",
+                entity_id=paper_order.order_id,
+                run_id=strategy_run.run_id,
+                payload_json=paper_order_journal_payload_with_status(
+                    order=paper_order,
+                    ticket_id=ticket.ticket_id,
+                    request_id=ticket.request_id,
+                    status=OrderStatus.CREATED,
+                ),
+                created_at=observed_at or datetime.now(UTC),
+            )
+        )
+        journal_events.append(
+            build_journal_event(
+                event_type="order.posted",
+                entity_type="order",
+                entity_id=paper_order.order_id,
+                run_id=strategy_run.run_id,
+                payload_json=paper_order_journal_payload(
+                    order=paper_order,
+                    ticket_id=ticket.ticket_id,
+                    request_id=ticket.request_id,
+                ),
+                created_at=observed_at or datetime.now(UTC),
+            )
+        )
 
     task_ids: list[str] = []
     task_ids.extend(_append_task_id(enqueue_strategy_run_upserts(queue_cfg, runs=[strategy_run], run_id=request_id)))
     task_ids.extend(_append_task_id(enqueue_trade_ticket_upserts(queue_cfg, tickets=enriched_tickets, run_id=request_id)))
+    task_ids.extend(_append_task_id(enqueue_gate_decision_upserts(queue_cfg, gate_decisions=gate_decisions, run_id=request_id)))
+    task_ids.extend(_append_task_id(enqueue_order_upserts(queue_cfg, orders=paper_orders, run_id=request_id)))
+    task_ids.extend(
+        _append_task_id(
+            enqueue_order_state_transition_upserts(queue_cfg, transitions=order_transitions, run_id=request_id)
+        )
+    )
     task_ids.extend(
         _append_task_id(
             enqueue_execution_context_upserts(
@@ -551,6 +664,10 @@ def run_weather_paper_execution_job(
             "strategy_ids": [item.strategy_id for item in batch_request.strategy_registrations],
             "decision_count": len(decisions),
             "ticket_count": len(enriched_tickets),
+            "gate_count": len(gate_decisions),
+            "allowed_order_count": len(paper_orders),
+            "order_ids": order_ids,
+            "rejected_ticket_ids": rejected_ticket_ids,
             "ticket_ids": [item.ticket_id for item in enriched_tickets],
             "execution_context_count": len(execution_context_records_by_id),
             "ticket_execution_context_ids": ticket_execution_context_ids,

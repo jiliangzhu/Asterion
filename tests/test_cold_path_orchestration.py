@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 import importlib.util
 import unittest
 from datetime import date, datetime, timezone
@@ -457,31 +458,54 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             ),
         ]
         fake_record = type("ExecutionContextRecordStub", (), {"execution_context_id": "ectx_1", "execution_context": object()})()
-        with (
-            patch(
-                "dagster_asterion.handlers.load_selected_watch_only_snapshots",
-                return_value=(
-                    [_snapshot(), _snapshot()],
-                    {"snap_yes": 1710000000000},
-                    {"snap_yes": datetime(2026, 3, 10, 10, 0, tzinfo=timezone.utc)},
-                ),
-            ),
-            patch("dagster_asterion.handlers.load_account_trading_capability", return_value=account_capability),
-            patch("dagster_asterion.handlers.load_market_capability", return_value=market_capability),
-            patch("dagster_asterion.handlers.run_strategy_engine", return_value=(strategy_run, [object(), object()])),
-            patch("dagster_asterion.handlers.build_trade_ticket", side_effect=tickets),
-            patch("dagster_asterion.handlers.build_execution_context", return_value=object()) as build_context,
-            patch("dagster_asterion.handlers.build_execution_context_record", return_value=fake_record) as build_record,
-            patch("dagster_asterion.handlers.route_trade_ticket", return_value=object()),
-            patch("dagster_asterion.handlers.canonical_order_router_payload", return_value={"route_action": "fak", "router_reason": "route_action_normalized"}),
-            patch("dagster_asterion.handlers.canonical_order_router_hash", return_value="coh_1"),
-            patch("dagster_asterion.handlers.build_signal_order_intent_from_handoff", return_value=object()),
-            patch("dagster_asterion.handlers.canonical_order_handoff_payload", return_value={"route_action": "fak", "post_only": False}),
-            patch("dagster_asterion.handlers.enqueue_strategy_run_upserts", return_value="task_strategy"),
-            patch("dagster_asterion.handlers.enqueue_trade_ticket_upserts", return_value="task_ticket"),
-            patch("dagster_asterion.handlers.enqueue_execution_context_upserts", return_value="task_context") as enqueue_contexts,
-            patch("dagster_asterion.handlers.enqueue_journal_event_upserts", return_value="task_journal"),
-        ):
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.load_selected_watch_only_snapshots",
+                    return_value=(
+                        [_snapshot(), _snapshot()],
+                        {"snap_yes": 1710000000000},
+                        {"snap_yes": datetime(2026, 3, 10, 10, 0, tzinfo=timezone.utc)},
+                    ),
+                )
+            )
+            stack.enter_context(patch("dagster_asterion.handlers.load_account_trading_capability", return_value=account_capability))
+            stack.enter_context(patch("dagster_asterion.handlers.load_market_capability", return_value=market_capability))
+            stack.enter_context(patch("dagster_asterion.handlers.run_strategy_engine", return_value=(strategy_run, [object(), object()])))
+            stack.enter_context(patch("dagster_asterion.handlers.build_trade_ticket", side_effect=tickets))
+            build_context = stack.enter_context(patch("dagster_asterion.handlers.build_execution_context", return_value=object()))
+            build_record = stack.enter_context(patch("dagster_asterion.handlers.build_execution_context_record", return_value=fake_record))
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.evaluate_execution_gate",
+                    return_value=type(
+                        "GateDecisionStub",
+                        (),
+                        {"gate_id": "gate_1", "allowed": True, "reason": "allowed", "reason_codes": [], "metrics_json": {}},
+                    )(),
+                )
+            )
+            stack.enter_context(patch("dagster_asterion.handlers.route_trade_ticket", return_value=object()))
+            stack.enter_context(patch("dagster_asterion.handlers.build_paper_order", return_value=type("OrderStub", (), {"order_id": "ordr_1"})()))
+            stack.enter_context(
+                patch("dagster_asterion.handlers.build_order_state_transition", return_value=type("TransitionStub", (), {"transition_id": "otrans_1"})())
+            )
+            stack.enter_context(patch("dagster_asterion.handlers.paper_order_journal_payload", return_value={"order_id": "ordr_1", "status": "posted"}))
+            stack.enter_context(patch("dagster_asterion.handlers.paper_order_journal_payload_with_status", return_value={"order_id": "ordr_1", "status": "created"}))
+            stack.enter_context(patch("dagster_asterion.handlers.gate_rejection_journal_payload", return_value={"reason": "blocked"}))
+            stack.enter_context(
+                patch("dagster_asterion.handlers.canonical_order_router_payload", return_value={"route_action": "fak", "router_reason": "route_action_normalized"})
+            )
+            stack.enter_context(patch("dagster_asterion.handlers.canonical_order_router_hash", return_value="coh_1"))
+            stack.enter_context(patch("dagster_asterion.handlers.build_signal_order_intent_from_handoff", return_value=object()))
+            stack.enter_context(patch("dagster_asterion.handlers.canonical_order_handoff_payload", return_value={"route_action": "fak", "post_only": False}))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_strategy_run_upserts", return_value="task_strategy"))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_trade_ticket_upserts", return_value="task_ticket"))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_gate_decision_upserts", return_value="task_gate"))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_order_upserts", return_value="task_order"))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_order_state_transition_upserts", return_value="task_transition"))
+            enqueue_contexts = stack.enter_context(patch("dagster_asterion.handlers.enqueue_execution_context_upserts", return_value="task_context"))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_journal_event_upserts", return_value="task_journal"))
             result = run_weather_paper_execution_job(
                 object(),
                 queue_cfg,
@@ -499,9 +523,16 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                     "snapshot_ids": ["snap_yes", "snap_yes"],
                 },
             )
-        self.assertEqual(result.task_ids, ["task_strategy", "task_ticket", "task_context", "task_journal"])
+        self.assertEqual(
+            result.task_ids,
+            ["task_strategy", "task_ticket", "task_gate", "task_order", "task_transition", "task_context", "task_journal"],
+        )
         self.assertEqual(result.metadata["ticket_count"], 2)
         self.assertEqual(result.metadata["ticket_ids"], ["tt_1", "tt_2"])
+        self.assertEqual(result.metadata["gate_count"], 2)
+        self.assertEqual(result.metadata["allowed_order_count"], 2)
+        self.assertEqual(result.metadata["order_ids"], ["ordr_1", "ordr_1"])
+        self.assertEqual(result.metadata["rejected_ticket_ids"], [])
         self.assertEqual(result.metadata["execution_context_count"], 1)
         self.assertEqual(result.metadata["ticket_execution_context_ids"], {"tt_1": "ectx_1", "tt_2": "ectx_1"})
         self.assertEqual(build_context.call_count, 2)

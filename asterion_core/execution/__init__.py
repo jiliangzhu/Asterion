@@ -7,6 +7,13 @@ from .order_router_v1 import (
     route_trade_ticket,
     route_trade_ticket_from_handoff,
 )
+from .paper_adapter_v1 import (
+    build_order_state_transition,
+    build_paper_order,
+    gate_rejection_journal_payload,
+    paper_order_journal_payload,
+    paper_order_journal_payload_with_status,
+)
 from .signal_to_order_v1 import (
     ExecutionContextRecord,
     PersistedExecutionContextRecord,
@@ -34,7 +41,9 @@ __all__ = [
     "bind_trade_ticket_handoff",
     "build_execution_context",
     "build_execution_context_record",
+    "build_order_state_transition",
     "build_order_from_intent",
+    "build_paper_order",
     "build_signal_order_intent",
     "build_signal_order_intent_from_handoff",
     "build_trade_ticket",
@@ -46,11 +55,14 @@ __all__ = [
     "enqueue_execution_context_upserts",
     "evaluate_execution_gate",
     "execution_context_record_to_row",
+    "gate_rejection_journal_payload",
     "hydrate_execution_context",
     "load_execution_context_record",
     "load_account_trading_capability",
     "load_market_capability",
     "load_trade_ticket",
+    "paper_order_journal_payload",
+    "paper_order_journal_payload_with_status",
     "route_trade_ticket",
     "route_trade_ticket_from_handoff",
     "reservation_required_quantity",
