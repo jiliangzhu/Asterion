@@ -56,6 +56,7 @@ source-of-truth：
 - `phase-plans/P1_Implementation_Plan.md`
 - `phase-plans/P2_Implementation_Plan.md`
 - `phase-plans/P3_Implementation_Plan.md`
+- `phase-plans/P4_Implementation_Plan.md`
 - `checklists/P0_Closeout_Checklist.md`
 - `checklists/P1_Closeout_Checklist.md`
 - `checklists/P2_Closeout_Checklist.md`
@@ -255,10 +256,11 @@ source-of-truth：
 3. `docs/00-overview/Asterion_Project_Plan.md`
 4. `docs/00-overview/DEVELOPMENT_ROADMAP.md`
 5. `docs/10-implementation/Implementation_Index.md`
-6. `docs/10-implementation/phase-plans/P3_Implementation_Plan.md`
-7. `docs/10-implementation/checklists/P2_Closeout_Checklist.md`
-8. `docs/10-implementation/phase-plans/P2_Implementation_Plan.md`
-9. 进入对应模块设计文档
+6. `docs/10-implementation/phase-plans/P4_Implementation_Plan.md`
+7. `docs/10-implementation/checklists/P3_Closeout_Checklist.md`
+8. `docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md`
+9. `docs/10-implementation/phase-plans/P3_Implementation_Plan.md`
+10. 进入对应模块设计文档
 
 ---
 

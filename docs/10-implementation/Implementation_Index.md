@@ -28,6 +28,7 @@ docs/10-implementation/
     P1_Implementation_Plan.md
     P2_Implementation_Plan.md
     P3_Implementation_Plan.md
+    P4_Implementation_Plan.md
   checklists/
     P0_Closeout_Checklist.md
     P1_Closeout_Checklist.md
@@ -66,6 +67,7 @@ docs/10-implementation/
 
 ### 3.1 当前阶段计划
 
+- [P4_Implementation_Plan.md](./phase-plans/P4_Implementation_Plan.md)
 - [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
 - [P0_Implementation_Plan.md](./phase-plans/P0_Implementation_Plan.md)
 - [P1_Implementation_Plan.md](./phase-plans/P1_Implementation_Plan.md)
@@ -177,16 +179,17 @@ docs/10-implementation/
 ## 5. 当前建议阅读顺序
 
 1. [Implementation_Index.md](./Implementation_Index.md)
-2. [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
+2. [P4_Implementation_Plan.md](./phase-plans/P4_Implementation_Plan.md)
 3. [P3_Closeout_Checklist.md](./checklists/P3_Closeout_Checklist.md)
 4. [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
-5. [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
-6. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
-7. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
-8. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
-9. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
-10. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
-11. 对应模块的 module note
+5. [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
+6. [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
+7. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
+8. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
+9. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+10. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+11. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
+12. 对应模块的 module note
 
 ---
 

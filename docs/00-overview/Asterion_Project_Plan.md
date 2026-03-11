@@ -7,7 +7,7 @@
 **文档版本**: v1.2
 **创建日期**: 2026-03-07
 **更新日期**: 2026-03-11
-**状态**: 详细设计完成，P3 已关闭，P4 planning 可开始
+**状态**: 详细设计完成，P3 已关闭，P4 planning in progress
 
 ---
 
@@ -26,6 +26,7 @@
 - [Documentation Index](./Documentation_Index.md)
 - [开发路线图](./DEVELOPMENT_ROADMAP.md)
 - [Implementation Index](../10-implementation/Implementation_Index.md)
+- [P4 实施文档](../10-implementation/phase-plans/P4_Implementation_Plan.md)
 - [P3 实施文档](../10-implementation/phase-plans/P3_Implementation_Plan.md)
 - [P2 实施文档](../10-implementation/phase-plans/P2_Implementation_Plan.md)
 - [P1 实施文档](../10-implementation/phase-plans/P1_Implementation_Plan.md)
