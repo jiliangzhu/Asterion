@@ -503,8 +503,21 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_trade_ticket_upserts", return_value="task_ticket"))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_gate_decision_upserts", return_value="task_gate"))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_order_upserts", return_value="task_order"))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_fill_upserts", return_value="task_fill"))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_order_state_transition_upserts", return_value="task_transition"))
             enqueue_contexts = stack.enter_context(patch("dagster_asterion.handlers.enqueue_execution_context_upserts", return_value="task_context"))
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.simulate_quote_based_fill",
+                    return_value=type(
+                        "PaperFillResultStub",
+                        (),
+                        {"updated_order": type("OrderStubFilled", (), {"order_id": "ordr_1", "status": "filled"})(), "fills": [], "transitions": [], "outcome_reason": "full_fill"},
+                    )(),
+                )
+            )
+            stack.enter_context(patch("dagster_asterion.handlers.fill_journal_payload", return_value={"fill_id": "fill_1"}))
+            stack.enter_context(patch("dagster_asterion.handlers.order_fill_status_journal_payload", return_value={"status": "filled"}))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_journal_event_upserts", return_value="task_journal"))
             result = run_weather_paper_execution_job(
                 object(),
@@ -525,12 +538,13 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             )
         self.assertEqual(
             result.task_ids,
-            ["task_strategy", "task_ticket", "task_gate", "task_order", "task_transition", "task_context", "task_journal"],
+            ["task_strategy", "task_ticket", "task_gate", "task_order", "task_fill", "task_transition", "task_context", "task_journal"],
         )
         self.assertEqual(result.metadata["ticket_count"], 2)
         self.assertEqual(result.metadata["ticket_ids"], ["tt_1", "tt_2"])
         self.assertEqual(result.metadata["gate_count"], 2)
         self.assertEqual(result.metadata["allowed_order_count"], 2)
+        self.assertEqual(result.metadata["fill_count"], 0)
         self.assertEqual(result.metadata["order_ids"], ["ordr_1", "ordr_1"])
         self.assertEqual(result.metadata["rejected_ticket_ids"], [])
         self.assertEqual(result.metadata["execution_context_count"], 1)

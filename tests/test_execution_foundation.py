@@ -38,18 +38,22 @@ from asterion_core.execution import (
     enqueue_execution_context_upserts,
     evaluate_execution_gate,
     execution_context_record_to_row,
+    fill_journal_payload,
     gate_rejection_journal_payload,
     hydrate_execution_context,
     load_execution_context_record,
     load_account_trading_capability,
     load_market_capability,
     load_trade_ticket,
+    order_fill_status_journal_payload,
     route_trade_ticket,
     route_trade_ticket_from_handoff,
+    simulate_quote_based_fill,
 )
 from asterion_core.journal import (
     build_journal_event,
     enqueue_exposure_snapshot_upserts,
+    enqueue_fill_upserts,
     enqueue_gate_decision_upserts,
     enqueue_inventory_position_upserts,
     enqueue_journal_event_upserts,
@@ -531,6 +535,100 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
         self.assertEqual(transition.to_status, OrderStatus.POSTED)
         self.assertEqual(rejection_payload["reason"], "market_not_tradable")
 
+    def test_quote_based_fill_simulator_full_partial_and_cancel_paths(self) -> None:
+        market_capability = _market_capability()
+        account_capability = _account_capability()
+
+        def _build_posted_order(route_action: RouteAction, edge_bps: int) -> tuple:
+            _, decisions = run_strategy_engine(
+                ctx=StrategyContext(
+                    data_snapshot_id="snap_weather_1",
+                    universe_snapshot_id=None,
+                    asof_ts_ms=1_710_000_000_000,
+                    dq_level="PASS",
+                    quote_snapshot_refs=[],
+                ),
+                snapshots=[_watch_snapshot(snapshot_id=f"snap_{route_action.value}_{edge_bps}", token_id="tok_yes", outcome="YES", side="BUY", edge_bps=edge_bps)],
+                strategies=[
+                    StrategyRegistration(
+                        strategy_id="weather_primary",
+                        strategy_version="v1",
+                        priority=1,
+                        route_action=route_action,
+                        size=Decimal("10"),
+                    )
+                ],
+            )
+            ticket = bind_trade_ticket_handoff(
+                build_trade_ticket(decisions[0]),
+                wallet_id="wallet_weather_1",
+                execution_context_id=f"ectx_{route_action.value}_{edge_bps}",
+            )
+            execution_context = build_execution_context(
+                market_capability=market_capability,
+                account_capability=account_capability,
+                route_action=route_action,
+            )
+            intent = build_signal_order_intent_from_handoff(ticket, execution_context=execution_context)
+            order = build_paper_order(
+                intent=intent,
+                wallet_id="wallet_weather_1",
+                gate_decision=GateDecision(
+                    gate_id=f"gate_{route_action.value}_{edge_bps}",
+                    ticket_id=ticket.ticket_id,
+                    allowed=True,
+                    reason="allowed",
+                    reason_codes=[],
+                    metrics_json={},
+                    created_at=datetime(2026, 3, 10, 10, 0, tzinfo=UTC),
+                ),
+                created_at=datetime(2026, 3, 10, 10, 1, tzinfo=UTC),
+            )
+            return ticket, order
+
+        full_ticket, full_order = _build_posted_order(RouteAction.FAK, 800)
+        full_result = simulate_quote_based_fill(
+            order=full_order,
+            ticket=full_ticket,
+            observed_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+        )
+        self.assertEqual(full_result.updated_order.status, OrderStatus.FILLED)
+        self.assertEqual(len(full_result.fills), 1)
+        self.assertEqual(full_result.updated_order.remaining_size, Decimal("0"))
+        self.assertEqual(full_result.transitions[0].to_status, OrderStatus.FILLED)
+
+        partial_ticket, partial_order = _build_posted_order(RouteAction.FAK, 600)
+        partial_result = simulate_quote_based_fill(
+            order=partial_order,
+            ticket=partial_ticket,
+            observed_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+        )
+        self.assertEqual(partial_result.updated_order.status, OrderStatus.PARTIAL_FILLED)
+        self.assertEqual(partial_result.fills[0].size, Decimal("5.00000000"))
+        self.assertEqual(partial_result.transitions[0].to_status, OrderStatus.PARTIAL_FILLED)
+        self.assertEqual(order_fill_status_journal_payload(order=partial_result.updated_order, ticket_id=partial_ticket.ticket_id, request_id=partial_ticket.request_id, reason=partial_result.outcome_reason)["status"], "partial_filled")
+
+        fok_ticket, fok_order = _build_posted_order(RouteAction.FOK, 600)
+        fok_result = simulate_quote_based_fill(
+            order=fok_order,
+            ticket=fok_ticket,
+            observed_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+        )
+        self.assertEqual(fok_result.updated_order.status, OrderStatus.CANCELLED)
+        self.assertEqual(fok_result.fills, [])
+        self.assertEqual(fok_result.transitions[0].to_status, OrderStatus.CANCELLED)
+
+        resting_ticket, resting_order = _build_posted_order(RouteAction.POST_ONLY_GTC, 900)
+        resting_result = simulate_quote_based_fill(
+            order=resting_order,
+            ticket=resting_ticket,
+            observed_at=datetime(2026, 3, 10, 10, 2, tzinfo=UTC),
+        )
+        self.assertEqual(resting_result.updated_order.status, OrderStatus.POSTED)
+        self.assertEqual(resting_result.fills, [])
+        self.assertEqual(resting_result.transitions, [])
+        self.assertIn("fill_id", fill_journal_payload(fill=full_result.fills[0], ticket_id=full_ticket.ticket_id, request_id=full_ticket.request_id))
+
 
 class ExecutionGateAndPortfolioTest(unittest.TestCase):
     def test_execution_gate_rejects_watch_only_and_inventory_failures(self) -> None:
@@ -843,6 +941,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertEqual(result.metadata["ticket_count"], 1)
             self.assertEqual(result.metadata["gate_count"], 1)
             self.assertEqual(result.metadata["allowed_order_count"], 1)
+            self.assertEqual(result.metadata["fill_count"], 1)
             self.assertEqual(result.metadata["execution_context_count"], 1)
 
             allow_tables = ",".join(
@@ -851,6 +950,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     "runtime.trade_tickets",
                     "runtime.gate_decisions",
                     "trading.orders",
+                    "trading.fills",
                     "trading.order_state_transitions",
                     "capability.execution_contexts",
                     "runtime.journal_events",
@@ -874,10 +974,10 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.trade_tickets").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.gate_decisions").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.orders").fetchone()[0], 1)
-                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.order_state_transitions").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.fills").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.order_state_transitions").fetchone()[0], 2)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM capability.execution_contexts").fetchone()[0], 1)
-                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 7)
-                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.fills").fetchone()[0], 0)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 9)
                     row = con.execute(
                         """
                         SELECT wallet_id, token_id, route_action, risk_gate_result
@@ -913,11 +1013,19 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                         WHERE event_type = 'order.posted'
                         """
                     ).fetchone()
+                    fill_event = con.execute(
+                        """
+                        SELECT payload_json
+                        FROM runtime.journal_events
+                        WHERE event_type = 'fill.created'
+                        """
+                    ).fetchone()
                 finally:
                     con.close()
             handoff_payload = json.loads(handoff_event[0])
             routed_payload = json.loads(routed_event[0])
             order_payload = json.loads(order_event[0])
+            fill_payload = json.loads(fill_event[0])
             self.assertEqual(tuple(row), ("wallet_weather_1", "tok_yes", "fak", "pending_gate"))
             self.assertEqual(ticket.wallet_id, "wallet_weather_1")
             self.assertIsNotNone(ticket.execution_context_id)
@@ -936,6 +1044,8 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertEqual(order_payload["ticket_id"], ticket.ticket_id)
             self.assertEqual(order_payload["request_id"], ticket.request_id)
             self.assertEqual(order_payload["status"], "posted")
+            self.assertEqual(fill_payload["ticket_id"], ticket.ticket_id)
+            self.assertEqual(fill_payload["request_id"], ticket.request_id)
             self.assertTrue(handoff_payload["canonical_order_hash"].startswith("coh_"))
 
     def test_weather_paper_execution_rerun_keeps_row_counts_and_latest_journal_stable(self) -> None:
@@ -1056,6 +1166,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                         "runtime.trade_tickets",
                         "runtime.gate_decisions",
                         "trading.orders",
+                        "trading.fills",
                         "trading.order_state_transitions",
                         "capability.execution_contexts",
                         "runtime.journal_events",
@@ -1094,9 +1205,10 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.trade_tickets").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.gate_decisions").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.orders").fetchone()[0], 1)
-                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.order_state_transitions").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.fills").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.order_state_transitions").fetchone()[0], 2)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM capability.execution_contexts").fetchone()[0], 1)
-                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 7)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 9)
                     by_type = dict(
                         con.execute(
                             """
@@ -1123,8 +1235,10 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                 by_type,
                 {
                     "canonical_order.routed": 1,
+                    "fill.created": 1,
                     "gate.decision": 1,
                     "order.created": 1,
+                    "order.filled": 1,
                     "order.posted": 1,
                     "signal_order_intent.created": 1,
                     "strategy_run.created": 1,
@@ -1249,6 +1363,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     "runtime.trade_tickets",
                     "runtime.gate_decisions",
                     "trading.orders",
+                    "trading.fills",
                     "trading.order_state_transitions",
                     "capability.execution_contexts",
                     "runtime.journal_events",
@@ -1266,6 +1381,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     pass
 
             self.assertEqual(result.metadata["allowed_order_count"], 0)
+            self.assertEqual(result.metadata["fill_count"], 0)
             self.assertEqual(len(result.metadata["rejected_ticket_ids"]), 1)
 
             with patch.dict("os.environ", reader_env, clear=False):
@@ -1273,6 +1389,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                 try:
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.gate_decisions").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.orders").fetchone()[0], 0)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.fills").fetchone()[0], 0)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.order_state_transitions").fetchone()[0], 0)
                     by_type = dict(
                         con.execute(

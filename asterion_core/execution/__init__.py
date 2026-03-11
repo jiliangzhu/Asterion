@@ -14,6 +14,13 @@ from .paper_adapter_v1 import (
     paper_order_journal_payload,
     paper_order_journal_payload_with_status,
 )
+from .paper_fill_simulator_v1 import (
+    PaperFillSimulationResult,
+    build_fill_transition,
+    fill_journal_payload,
+    order_fill_status_journal_payload,
+    simulate_quote_based_fill,
+)
 from .signal_to_order_v1 import (
     ExecutionContextRecord,
     PersistedExecutionContextRecord,
@@ -37,10 +44,12 @@ from .watch_only_gate_v3 import decide_watch_only
 __all__ = [
     "ExecutionContextRecord",
     "PersistedExecutionContextRecord",
+    "PaperFillSimulationResult",
     "RoutedCanonicalOrder",
     "bind_trade_ticket_handoff",
     "build_execution_context",
     "build_execution_context_record",
+    "build_fill_transition",
     "build_order_state_transition",
     "build_order_from_intent",
     "build_paper_order",
@@ -55,6 +64,7 @@ __all__ = [
     "enqueue_execution_context_upserts",
     "evaluate_execution_gate",
     "execution_context_record_to_row",
+    "fill_journal_payload",
     "gate_rejection_journal_payload",
     "hydrate_execution_context",
     "load_execution_context_record",
@@ -63,7 +73,9 @@ __all__ = [
     "load_trade_ticket",
     "paper_order_journal_payload",
     "paper_order_journal_payload_with_status",
+    "order_fill_status_journal_payload",
     "route_trade_ticket",
     "route_trade_ticket_from_handoff",
     "reservation_required_quantity",
+    "simulate_quote_based_fill",
 ]
