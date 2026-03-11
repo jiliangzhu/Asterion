@@ -41,15 +41,21 @@ _COLD_PATH_TABLES = [
     "resolution.redeem_readiness_suggestions",
 ]
 
-_EXECUTION_FOUNDATION_TABLES = [
+_PAPER_EXECUTION_TABLES = [
     "runtime.strategy_runs",
     "runtime.trade_tickets",
     "runtime.gate_decisions",
     "runtime.journal_events",
     "trading.orders",
+    "trading.fills",
+    "trading.order_state_transitions",
+]
+
+_PORTFOLIO_RECONCILIATION_TABLES = [
     "trading.reservations",
     "trading.inventory_positions",
     "trading.exposure_snapshots",
+    "trading.reconciliation_results",
 ]
 
 _AGENT_SURFACE_TABLES = [
@@ -64,6 +70,18 @@ _REQUIRED_AGENT_JOBS = {
     "weather_data_qa_review",
     "weather_resolution_review",
 }
+
+_OPERATOR_UI_TABLES = [
+    "ui.execution_ticket_summary",
+    "ui.execution_run_summary",
+    "ui.execution_exception_summary",
+]
+
+_DAILY_OPS_UI_TABLES = [
+    "ui.paper_run_journal_summary",
+    "ui.daily_ops_summary",
+    "ui.daily_review_input",
+]
 
 
 class ReadinessTarget(str, Enum):
@@ -182,14 +200,20 @@ class ReadinessConfig:
 def evaluate_p3_readiness(config: ReadinessConfig) -> ReadinessReport:
     gate_results = [
         _evaluate_cold_path_determinism(config),
-        _evaluate_execution_foundation(config),
+        _evaluate_paper_execution_chain(config),
+        _evaluate_portfolio_reconciliation(config),
         _evaluate_agent_review_surface(config),
         _evaluate_operator_surface(config),
+        _evaluate_daily_ops_surface(config),
     ]
     all_passed = all(item.passed for item in gate_results)
     go_decision = "GO" if all_passed else "NO-GO"
     failed = [item.gate_name for item in gate_results if not item.passed]
-    decision_reason = "all readiness gates passed" if all_passed else f"failed gates: {', '.join(failed)}"
+    decision_reason = (
+        "all readiness gates passed; ready for P4 planning only"
+        if all_passed
+        else f"failed gates: {', '.join(failed)}; P3 not ready to close"
+    )
     generated_at = datetime.now(UTC)
     hash_payload = {
         "target": ReadinessTarget.P3_PAPER_EXECUTION.value,
@@ -230,12 +254,22 @@ def _evaluate_cold_path_determinism(config: ReadinessConfig) -> ReadinessGateRes
     )
 
 
-def _evaluate_execution_foundation(config: ReadinessConfig) -> ReadinessGateResult:
+def _evaluate_paper_execution_chain(config: ReadinessConfig) -> ReadinessGateResult:
     return _evaluate_table_gate(
-        gate_name="execution_foundation",
+        gate_name="paper_execution_chain",
         db_path=config.db_path,
-        tables=_EXECUTION_FOUNDATION_TABLES,
+        tables=_PAPER_EXECUTION_TABLES,
         require_nonempty=True,
+    )
+
+
+def _evaluate_portfolio_reconciliation(config: ReadinessConfig) -> ReadinessGateResult:
+    return _evaluate_table_gate(
+        gate_name="portfolio_reconciliation",
+        db_path=config.db_path,
+        tables=_PORTFOLIO_RECONCILIATION_TABLES,
+        require_nonempty=True,
+        extra_check=_reconciliation_mismatch_check,
     )
 
 
@@ -317,8 +351,56 @@ def _evaluate_operator_surface(config: ReadinessConfig) -> ReadinessGateResult:
                 warnings.append(f"UI lite validation failed: {exc}")
     checks["ui_lite.validated"] = lite_valid
     metadata["ui_lite_validation"] = lite_validation
+    if lite_valid:
+        ui_gate = _evaluate_ui_table_gate(
+            config.ui_lite_db_path,
+            required_tables=_OPERATOR_UI_TABLES,
+            nonempty_tables=["ui.execution_ticket_summary", "ui.execution_run_summary"],
+        )
+        checks.update(ui_gate["checks"])
+        violations.extend(ui_gate["violations"])
+        warnings.extend(ui_gate["warnings"])
+        metadata.update(ui_gate["metadata"])
     return ReadinessGateResult(
         gate_name="operator_surface",
+        passed=not violations,
+        checks=checks,
+        violations=violations,
+        warnings=warnings,
+        metadata=metadata,
+    )
+
+
+def _evaluate_daily_ops_surface(config: ReadinessConfig) -> ReadinessGateResult:
+    checks: dict[str, bool] = {}
+    violations: list[str] = []
+    warnings: list[str] = []
+    metadata: dict[str, Any] = {}
+
+    lite_db_exists = Path(config.ui_lite_db_path).exists()
+    checks["ui_lite.db_exists"] = lite_db_exists
+    if not lite_db_exists:
+        violations.append(f"missing UI lite DB: {config.ui_lite_db_path}")
+        return ReadinessGateResult(
+            gate_name="daily_ops_surface",
+            passed=False,
+            checks=checks,
+            violations=violations,
+            warnings=warnings,
+            metadata=metadata,
+        )
+
+    ui_gate = _evaluate_ui_table_gate(
+        config.ui_lite_db_path,
+        required_tables=_DAILY_OPS_UI_TABLES,
+        nonempty_tables=list(_DAILY_OPS_UI_TABLES),
+    )
+    checks.update(ui_gate["checks"])
+    violations.extend(ui_gate["violations"])
+    warnings.extend(ui_gate["warnings"])
+    metadata.update(ui_gate["metadata"])
+    return ReadinessGateResult(
+        gate_name="daily_ops_surface",
         passed=not violations,
         checks=checks,
         violations=violations,
@@ -413,6 +495,56 @@ def _latest_continuity_check(con) -> dict[str, Any]:
     checks["watcher_continuity.latest_not_rpc_incomplete"] = status_ok
     if not status_ok:
         violations.append("latest continuity status is RPC_INCOMPLETE")
+    return {"checks": checks, "violations": violations, "warnings": warnings, "metadata": metadata}
+
+
+def _reconciliation_mismatch_check(con) -> dict[str, Any]:
+    checks: dict[str, bool] = {}
+    violations: list[str] = []
+    warnings: list[str] = []
+    metadata: dict[str, Any] = {}
+    row = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM trading.reconciliation_results
+        WHERE status <> 'ok'
+        """
+    ).fetchone()
+    mismatch_count = int(row[0]) if row is not None else 0
+    checks["trading.reconciliation_results.no_mismatches"] = mismatch_count == 0
+    metadata["reconciliation_mismatch_count"] = mismatch_count
+    if mismatch_count > 0:
+        violations.append(f"reconciliation mismatches present: {mismatch_count}")
+    return {"checks": checks, "violations": violations, "warnings": warnings, "metadata": metadata}
+
+
+def _evaluate_ui_table_gate(
+    db_path: str,
+    *,
+    required_tables: list[str],
+    nonempty_tables: list[str],
+) -> dict[str, Any]:
+    checks: dict[str, bool] = {}
+    violations: list[str] = []
+    warnings: list[str] = []
+    metadata: dict[str, Any] = {"ui_table_row_counts": {}}
+    con = _connect_duckdb(db_path, read_only=True)
+    try:
+        for table in required_tables:
+            exists = _table_exists(con, table)
+            checks[f"{table}.exists"] = exists
+            if not exists:
+                violations.append(f"missing UI table: {table}")
+                continue
+            row_count = _table_count(con, table)
+            metadata["ui_table_row_counts"][table] = row_count
+            if table in nonempty_tables:
+                nonempty = row_count > 0
+                checks[f"{table}.nonempty"] = nonempty
+                if not nonempty:
+                    violations.append(f"UI table is empty: {table}")
+    finally:
+        con.close()
     return {"checks": checks, "violations": violations, "warnings": warnings, "metadata": metadata}
 
 

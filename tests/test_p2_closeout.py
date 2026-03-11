@@ -307,6 +307,37 @@ def _seed_canonical_state(db_path: str) -> None:
         )
         con.execute(
             """
+            INSERT INTO trading.fills (
+                fill_id, order_id, wallet_id, market_id, token_id, outcome, side, price, size, fee,
+                fee_rate_bps, trade_id, exchange_order_id, filled_at
+            ) VALUES (
+                'fill_1', 'ordr_1', 'wallet_weather_1', 'mkt_weather_1', 'tok_yes', 'YES', 'buy',
+                0.50, 10.0, 0.15, 30, 'trade_1', 'paper_ordr_1', '2026-03-10 01:14:30'
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO trading.order_state_transitions (
+                transition_id, order_id, from_status, to_status, reason, timestamp
+            ) VALUES
+            ('otrans_1', 'ordr_1', 'created', 'posted', 'paper_adapter_posted', '2026-03-10 01:13:10'),
+            ('otrans_2', 'ordr_1', 'posted', 'filled', 'paper_fill_full', '2026-03-10 01:14:30')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO trading.reconciliation_results (
+                reconciliation_id, wallet_id, funder, signature_type, asset_type, token_id, market_id, balance_type,
+                local_quantity, remote_quantity, discrepancy, status, resolution, created_at
+            ) VALUES (
+                'recon_1', 'wallet_weather_1', '0xfunder', 1, 'outcome_token', 'tok_yes', 'mkt_weather_1', 'settled',
+                10.0, 10.0, 0.0, 'ok', 'paper_local_match', '2026-03-10 01:15:00'
+            )
+            """
+        )
+        con.execute(
+            """
             INSERT INTO runtime.journal_events (
                 event_id, event_type, entity_type, entity_id, run_id, payload_json, created_at
             ) VALUES
@@ -492,6 +523,43 @@ class ReadinessAndUiLiteIntegrationTest(unittest.TestCase):
             self.assertFalse(operator_gate.passed)
             self.assertTrue(any("UI lite" in item for item in operator_gate.violations))
 
+    def test_readiness_fails_when_reconciliation_mismatches_present(self) -> None:
+        import duckdb
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "asterion.duckdb")
+            _apply_schema(db_path)
+            _seed_canonical_state(db_path)
+            con = duckdb.connect(db_path)
+            try:
+                con.execute("UPDATE trading.reconciliation_results SET status = 'inventory_mismatch', discrepancy = 1.0")
+            finally:
+                con.close()
+            replica_db = str(Path(tmpdir) / "ui.duckdb")
+            replica_meta = str(Path(tmpdir) / "ui.meta.json")
+            lite_db = str(Path(tmpdir) / "ui_lite.duckdb")
+            lite_meta = str(Path(tmpdir) / "ui_lite.meta.json")
+            _prepare_replica_and_lite(
+                db_path=db_path,
+                replica_db_path=replica_db,
+                replica_meta_path=replica_meta,
+                lite_db_path=lite_db,
+                lite_meta_path=lite_meta,
+            )
+            report = evaluate_p3_readiness(
+                ReadinessConfig(
+                    db_path=db_path,
+                    ui_replica_db_path=replica_db,
+                    ui_replica_meta_path=replica_meta,
+                    ui_lite_db_path=lite_db,
+                    ui_lite_meta_path=lite_meta,
+                )
+            )
+            self.assertEqual(report.go_decision, "NO-GO")
+            portfolio_gate = next(item for item in report.gate_results if item.gate_name == "portfolio_reconciliation")
+            self.assertFalse(portfolio_gate.passed)
+            self.assertTrue(any("reconciliation mismatches present" in item for item in portfolio_gate.violations))
+
     def test_all_gates_pass_and_readiness_report_flows_into_ui_phase_summary(self) -> None:
         import duckdb
 
@@ -524,6 +592,7 @@ class ReadinessAndUiLiteIntegrationTest(unittest.TestCase):
                 )
             )
             self.assertEqual(report.go_decision, "GO")
+            self.assertIn("ready for P4 planning only", report.decision_reason)
             write_readiness_report(report, json_path=report_json, markdown_path=report_md)
             rebuilt = build_ui_lite_db_once(
                 src_db_path=replica_db,
@@ -540,7 +609,7 @@ class ReadinessAndUiLiteIntegrationTest(unittest.TestCase):
             self.assertGreaterEqual(lite_counts["ui.proposal_resolution_summary"], 1)
             self.assertEqual(lite_counts["ui.execution_ticket_summary"], 2)
             self.assertGreaterEqual(lite_counts["ui.agent_review_summary"], 1)
-            self.assertEqual(lite_counts["ui.phase_readiness_summary"], 4)
+            self.assertEqual(lite_counts["ui.phase_readiness_summary"], 6)
             con = duckdb.connect(lite_db, read_only=True)
             try:
                 self.assertEqual(
@@ -549,7 +618,7 @@ class ReadinessAndUiLiteIntegrationTest(unittest.TestCase):
                 )
                 self.assertEqual(
                     con.execute("SELECT COUNT(*) FROM ui.phase_readiness_summary WHERE go_decision = 'GO'").fetchone()[0],
-                    4,
+                    6,
                 )
                 rows = con.execute(
                     """
