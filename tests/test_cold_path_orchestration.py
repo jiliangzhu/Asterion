@@ -19,6 +19,8 @@ from agents.common import (
 )
 from asterion_core.contracts import (
     AccountTradingCapability,
+    ExternalBalanceObservation,
+    ExternalBalanceObservationKind,
     ForecastReplayResult,
     ForecastRunRecord,
     ForecastReplayRequest,
@@ -51,6 +53,7 @@ from dagster_asterion.handlers import (
     run_weather_market_discovery_job,
     run_weather_forecast_refresh,
     run_weather_forecast_replay_job,
+    run_weather_wallet_state_refresh_job,
     run_weather_resolution_review_job,
     run_weather_resolution_reconciliation,
     run_weather_rule2spec_review_job,
@@ -62,6 +65,7 @@ from dagster_asterion.resources import (
     CapabilityRefreshRuntimeResource,
     ForecastRuntimeResource,
     GammaDiscoveryRuntimeResource,
+    WalletStateObservationRuntimeResource,
     WatcherRpcPoolResource,
     WriteQueueResource,
     build_dagster_resource_defs,
@@ -90,6 +94,7 @@ def _settings() -> AsterionColdPathSettings:
         clob_book_endpoint="/book",
         clob_fee_rate_endpoint="/fee-rate",
         wallet_registry_path="config/wallet_registry.json",
+        chain_registry_path="config/chain_registry.polygon.json",
         capability_chain_id=137,
         capability_rpc_urls=[],
         forecast_primary_source="openmeteo",
@@ -274,6 +279,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_market_discovery",
             "weather_spec_sync",
             "weather_capability_refresh",
+            "weather_wallet_state_refresh",
             "weather_forecast_refresh",
             "weather_forecast_replay",
             "weather_paper_execution",
@@ -285,6 +291,7 @@ class ColdPathJobMapTest(unittest.TestCase):
         })
         self.assertEqual(jobs["weather_spec_sync"].upstream_jobs, ["weather_market_discovery"])
         self.assertEqual(jobs["weather_capability_refresh"].upstream_jobs, ["weather_market_discovery"])
+        self.assertEqual(jobs["weather_wallet_state_refresh"].upstream_jobs, ["weather_capability_refresh"])
         self.assertEqual(jobs["weather_forecast_refresh"].upstream_jobs, ["weather_spec_sync"])
         self.assertEqual(jobs["weather_market_discovery"].mode, "scheduled")
         self.assertEqual(jobs["weather_watcher_backfill"].mode, "scheduled")
@@ -303,6 +310,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_spec_sync_daily",
             "weather_capability_refresh_hourly",
             "weather_forecast_refresh_hourly",
+            "weather_wallet_state_refresh_hourly",
             "weather_watcher_backfill_bihourly",
             "weather_resolution_reconciliation_bihourly",
         ])
@@ -315,8 +323,10 @@ class ColdPathResourcesTest(unittest.TestCase):
         write_queue_resource = WriteQueueResource(settings=settings)
         gamma_runtime = GammaDiscoveryRuntimeResource(settings=settings)
         capability_runtime = CapabilityRefreshRuntimeResource(settings=settings)
+        wallet_state_runtime = WalletStateObservationRuntimeResource(settings=settings)
         forecast_runtime = ForecastRuntimeResource(settings=settings)
         watcher_rpc = WatcherRpcPoolResource(settings=settings)
+        reader = object()
 
         self.assertEqual(duckdb_resource.get_config().db_path, settings.db_path)
         self.assertEqual(write_queue_resource.get_config().path, settings.write_queue_path)
@@ -325,6 +335,8 @@ class ColdPathResourcesTest(unittest.TestCase):
         self.assertEqual(capability_runtime.resolve_wallet_registry_path(), settings.wallet_registry_path)
         self.assertIsNotNone(capability_runtime.build_chain_reader())
         self.assertIsNotNone(capability_runtime.build_clob_client(client=object()))
+        self.assertEqual(wallet_state_runtime.resolve_chain_registry_path(), settings.chain_registry_path)
+        self.assertIs(wallet_state_runtime.build_wallet_state_reader(reader=reader), reader)
         self.assertIsInstance(forecast_runtime.build_cache(), InMemoryForecastCache)
         with self.assertRaises(ValueError):
             watcher_rpc.build_rpc_pool()
@@ -438,6 +450,165 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         self.assertEqual(result.metadata["market_ids"], ["mkt_weather_1"])
         self.assertEqual(result.metadata["token_ids"], ["tok_yes"])
         self.assertEqual(result.metadata["wallet_ids"], ["wallet_weather_1"])
+
+    def test_weather_wallet_state_refresh_routes_to_runtime_observation_persistence(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        account_capability = AccountTradingCapability(
+            wallet_id="wallet_weather_1",
+            wallet_type="eoa",
+            signature_type=1,
+            funder="0x1111111111111111111111111111111111111111",
+            allowance_targets=["0x2222222222222222222222222222222222222222"],
+            can_use_relayer=True,
+            can_trade=True,
+            restricted_reason=None,
+        )
+        observations = [
+            ExternalBalanceObservation(
+                observation_id="obs_1",
+                wallet_id="wallet_weather_1",
+                funder=account_capability.funder,
+                signature_type=1,
+                asset_type="native_gas",
+                token_id=None,
+                market_id=None,
+                outcome=None,
+                observation_kind=ExternalBalanceObservationKind.WALLET_BALANCE,
+                allowance_target=None,
+                chain_id=137,
+                block_number=123,
+                observed_quantity=Decimal("1.5"),
+                source="polygon_rpc",
+                observed_at=datetime(2026, 3, 10, 10, 5, tzinfo=timezone.utc),
+                raw_observation_json={"method": "eth_getBalance"},
+            ),
+            ExternalBalanceObservation(
+                observation_id="obs_2",
+                wallet_id="wallet_weather_1",
+                funder=account_capability.funder,
+                signature_type=1,
+                asset_type="usdc_e",
+                token_id="usdc_e",
+                market_id=None,
+                outcome=None,
+                observation_kind=ExternalBalanceObservationKind.WALLET_BALANCE,
+                allowance_target=None,
+                chain_id=137,
+                block_number=123,
+                observed_quantity=Decimal("25"),
+                source="polygon_rpc",
+                observed_at=datetime(2026, 3, 10, 10, 5, tzinfo=timezone.utc),
+                raw_observation_json={"method": "erc20.balanceOf"},
+            ),
+            ExternalBalanceObservation(
+                observation_id="obs_3",
+                wallet_id="wallet_weather_1",
+                funder=account_capability.funder,
+                signature_type=1,
+                asset_type="usdc_e",
+                token_id="usdc_e",
+                market_id=None,
+                outcome=None,
+                observation_kind=ExternalBalanceObservationKind.TOKEN_ALLOWANCE,
+                allowance_target="0x2222222222222222222222222222222222222222",
+                chain_id=137,
+                block_number=123,
+                observed_quantity=Decimal("100"),
+                source="polygon_rpc",
+                observed_at=datetime(2026, 3, 10, 10, 5, tzinfo=timezone.utc),
+                raw_observation_json={"method": "erc20.allowance"},
+            ),
+        ]
+        with ExitStack() as stack:
+            load_accounts = stack.enter_context(
+                patch("dagster_asterion.handlers.load_observable_account_capabilities", return_value=[account_capability])
+            )
+            load_registry = stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.load_polygon_chain_registry",
+                    return_value=type(
+                        "RegistryStub",
+                        (),
+                        {"chain_id": 137, "allowance_targets": {"relayer": "0x2222222222222222222222222222222222222222"}},
+                    )(),
+                )
+            )
+            build_observations = stack.enter_context(
+                patch("dagster_asterion.handlers.build_wallet_state_observations", return_value=observations)
+            )
+            enqueue_observations = stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.enqueue_external_balance_observation_upserts",
+                    return_value="task_wallet_state_obs",
+                )
+            )
+            enqueue_journal = stack.enter_context(
+                patch("dagster_asterion.handlers.enqueue_journal_event_upserts", return_value="task_wallet_state_journal")
+            )
+            result = run_weather_wallet_state_refresh_job(
+                object(),
+                queue_cfg,
+                chain_registry_path="config/chain_registry.polygon.json",
+                wallet_state_reader=object(),
+                run_id="run_wallet_state_refresh",
+                observed_at=datetime(2026, 3, 10, 10, 5, tzinfo=timezone.utc),
+            )
+        load_accounts.assert_called_once()
+        load_registry.assert_called_once()
+        build_observations.assert_called_once()
+        enqueue_observations.assert_called_once()
+        enqueue_journal.assert_called_once()
+        self.assertEqual(result.task_ids, ["task_wallet_state_obs", "task_wallet_state_journal"])
+        self.assertEqual(result.metadata["wallet_count"], 1)
+        self.assertEqual(result.metadata["observation_count"], 3)
+        self.assertEqual(result.metadata["allowance_target_count"], 1)
+
+    def test_weather_wallet_state_refresh_fails_closed_and_only_enqueues_failure_journal(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        account_capability = AccountTradingCapability(
+            wallet_id="wallet_weather_1",
+            wallet_type="eoa",
+            signature_type=1,
+            funder="0x1111111111111111111111111111111111111111",
+            allowance_targets=["0x2222222222222222222222222222222222222222"],
+            can_use_relayer=True,
+            can_trade=True,
+            restricted_reason=None,
+        )
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("dagster_asterion.handlers.load_observable_account_capabilities", return_value=[account_capability])
+            )
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.load_polygon_chain_registry",
+                    return_value=type(
+                        "RegistryStub",
+                        (),
+                        {"chain_id": 137, "allowance_targets": {"relayer": "0x2222222222222222222222222222222222222222"}},
+                    )(),
+                )
+            )
+            stack.enter_context(
+                patch("dagster_asterion.handlers.build_wallet_state_observations", side_effect=RuntimeError("rpc unavailable"))
+            )
+            enqueue_observations = stack.enter_context(
+                patch("dagster_asterion.handlers.enqueue_external_balance_observation_upserts")
+            )
+            enqueue_journal = stack.enter_context(
+                patch("dagster_asterion.handlers.enqueue_journal_event_upserts", return_value="task_wallet_state_failure")
+            )
+            with self.assertRaises(RuntimeError):
+                run_weather_wallet_state_refresh_job(
+                    object(),
+                    queue_cfg,
+                    chain_registry_path="config/chain_registry.polygon.json",
+                    wallet_state_reader=object(),
+                    run_id="run_wallet_state_refresh",
+                    observed_at=datetime(2026, 3, 10, 10, 5, tzinfo=timezone.utc),
+                )
+        enqueue_observations.assert_not_called()
+        enqueue_journal.assert_called_once()
 
     def test_weather_paper_execution_rejects_invalid_selectors(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")

@@ -3,7 +3,7 @@
 **版本**: v1.0
 **更新日期**: 2026-03-11
 **阶段**: `P4`
-**状态**: implementation active（`P4-01` / `P4-02` 已完成）
+**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` 已完成）
 **目标**: 在 `P3 paper execution` 已关闭的基础上，补齐 `live prerequisites`：真实外部只读数据、capability refresh、signer boundary、submitter dry-run/shadow path、chain transaction scaffolding、external reconciliation、operator/readiness/ops hardening，并保持默认安全边界。
 
 ---
@@ -88,16 +88,20 @@
   - `weather_capability_refresh` 已成为 canonical capability refresh job
   - `capability.market_capabilities` 已可由 `weather.weather_markets + CLOB public + overrides` 刷新
   - `capability.account_trading_capabilities` 已可由 `wallet_registry.json + minimal chain read + overrides` 刷新
+- `P4-03` 已完成：
+  - `weather_wallet_state_refresh` 已成为 canonical external wallet state observation job
+  - `runtime.external_balance_observations` 已可持久化 native gas、`USDC.e` balance 与 `USDC.e` allowance observation
+  - `asterion_core/blockchain/` 已落地为 read-only chain observation helpers
 
 ### 2.2 P4 Start-State Register
 
 `P4` 不是从空白开始，但当前起点也不是“live path 已经实现”。以下差距必须作为 `P4` 起点显式登记：
 
-#### Register A: signer / blockchain 设计已冻结，但代码包尚未落地
+#### Register A: signer 设计已冻结，但 live blockchain path 仍未落地
 
 - [Signer_Service_Design.md](../../30-trading/Signer_Service_Design.md) 与 [Gas_Manager_Design.md](../../30-trading/Gas_Manager_Design.md) 已有接口冻结候选
 - 当前 repo 中还没有 `asterion_core/signer/`
-- 当前 repo 中还没有 `asterion_core/blockchain/`
+- 当前 repo 中的 `asterion_core/blockchain/` 仅包含 read-only wallet observation helpers，还没有 live submit / broadcast / nonce / gas management path
 
 #### Register B: `meta.signature_audit_logs` 已有 schema，但当前运行链路未消费
 

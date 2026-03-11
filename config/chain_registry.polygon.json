@@ -1,0 +1,17 @@
+{
+  "chain_id": 137,
+  "native_gas": {
+    "asset_type": "native_gas",
+    "symbol": "POL",
+    "decimals": 18
+  },
+  "usdc_e": {
+    "asset_type": "usdc_e",
+    "token_id": "usdc_e",
+    "contract_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+    "decimals": 6
+  },
+  "allowance_targets": {
+    "relayer": "0x2222222222222222222222222222222222222222"
+  }
+}

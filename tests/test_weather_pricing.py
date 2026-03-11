@@ -20,6 +20,7 @@ from dagster_asterion.handlers import (
     run_weather_forecast_refresh,
     run_weather_market_discovery_job,
     run_weather_paper_execution_job,
+    run_weather_wallet_state_refresh_job,
     run_weather_spec_sync,
 )
 from domains.weather.forecast import (
@@ -100,6 +101,55 @@ class _ChainReader:
                 "approved_targets": list(wallet_entry.allowance_targets),
                 "can_trade": True,
                 "restricted_reason": None,
+            },
+        )()
+
+
+class _WalletStateReader:
+    def read_native_balance(self, funder: str, *, decimals: int) -> object:
+        return type(
+            "ObservationReadStub",
+            (),
+            {
+                "observed_quantity": Decimal("1.5"),
+                "block_number": 123,
+                "raw_observation_json": {"method": "eth_getBalance", "funder": funder, "decimals": decimals},
+                "source": "polygon_rpc",
+            },
+        )()
+
+    def read_erc20_balance(self, funder: str, token_address: str, *, decimals: int) -> object:
+        return type(
+            "ObservationReadStub",
+            (),
+            {
+                "observed_quantity": Decimal("25"),
+                "block_number": 123,
+                "raw_observation_json": {
+                    "method": "erc20.balanceOf",
+                    "funder": funder,
+                    "token_address": token_address,
+                    "decimals": decimals,
+                },
+                "source": "polygon_rpc",
+            },
+        )()
+
+    def read_erc20_allowance(self, funder: str, spender: str, token_address: str, *, decimals: int) -> object:
+        return type(
+            "ObservationReadStub",
+            (),
+            {
+                "observed_quantity": Decimal("100"),
+                "block_number": 123,
+                "raw_observation_json": {
+                    "method": "erc20.allowance",
+                    "funder": funder,
+                    "spender": spender,
+                    "token_address": token_address,
+                    "decimals": decimals,
+                },
+                "source": "polygon_rpc",
             },
         )()
 
@@ -422,6 +472,7 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
                     "runtime.strategy_runs",
                     "runtime.trade_tickets",
                     "runtime.gate_decisions",
+                    "runtime.external_balance_observations",
                     "runtime.journal_events",
                     "trading.orders",
                     "trading.order_state_transitions",
@@ -615,12 +666,29 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
                                 "wallet_id": "wallet_weather_1",
                                 "wallet_type": "eoa",
                                 "signature_type": 1,
-                                "funder": "0xfunder",
+                                "funder": "0x1111111111111111111111111111111111111111",
                                 "can_use_relayer": True,
-                                "allowance_targets": ["0xrelayer"],
+                                "allowance_targets": ["0x2222222222222222222222222222222222222222"],
                                 "enabled": True,
                             }
                         ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            chain_registry_path = Path(tmpdir) / "chain_registry.polygon.json"
+            chain_registry_path.write_text(
+                json.dumps(
+                    {
+                        "chain_id": 137,
+                        "native_gas": {"asset_type": "native_gas", "symbol": "POL", "decimals": 18},
+                        "usdc_e": {
+                            "asset_type": "usdc_e",
+                            "token_id": "usdc_e",
+                            "contract_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+                            "decimals": 6,
+                        },
+                        "allowance_targets": {"relayer": "0x2222222222222222222222222222222222222222"},
                     }
                 ),
                 encoding="utf-8",
@@ -647,7 +715,7 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
                             "cash",
                             "available",
                             100.0,
-                            "0xfunder",
+                            "0x1111111111111111111111111111111111111111",
                             1,
                             datetime(2026, 3, 10, 10, 0),
                         ],
@@ -681,6 +749,43 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
                     con.close()
                 self.assertEqual(refresh_result.metadata["market_capability_count"], 2)
                 self.assertEqual(refresh_result.metadata["account_capability_count"], 1)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                },
+                clear=False,
+            ):
+                self.assertTrue(process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False))
+                self.assertTrue(process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False))
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                    "ASTERION_STRICT_SINGLE_WRITER": "1",
+                    "ASTERION_DB_ROLE": "reader",
+                    "WRITERD": "0",
+                },
+                clear=False,
+            ):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    wallet_state_result = run_weather_wallet_state_refresh_job(
+                        con,
+                        queue_cfg,
+                        chain_registry_path=str(chain_registry_path),
+                        wallet_state_reader=_WalletStateReader(),
+                        run_id="run_wallet_state_refresh",
+                        observed_at=datetime(2026, 3, 10, 10, 5, tzinfo=timezone.utc),
+                    )
+                finally:
+                    con.close()
+                self.assertEqual(wallet_state_result.metadata["wallet_count"], 1)
+                self.assertEqual(wallet_state_result.metadata["observation_count"], 3)
 
             with patch.dict(
                 os.environ,
@@ -753,6 +858,7 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
                         (SELECT COUNT(*) FROM weather.weather_watch_only_snapshots),
                         (SELECT COUNT(*) FROM capability.market_capabilities),
                         (SELECT COUNT(*) FROM capability.account_trading_capabilities),
+                        (SELECT COUNT(*) FROM runtime.external_balance_observations),
                         (SELECT COUNT(*) FROM runtime.strategy_runs),
                         (SELECT COUNT(*) FROM trading.orders)
                     """
@@ -773,8 +879,9 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
             self.assertEqual(counts[3], 1)
             self.assertEqual(counts[4], 2)
             self.assertEqual(counts[5], 1)
-            self.assertEqual(counts[6], 1)
+            self.assertEqual(counts[6], 3)
             self.assertEqual(counts[7], 1)
+            self.assertEqual(counts[8], 1)
             self.assertEqual(capability_row[0], Decimal("0.01000000"))
             self.assertEqual(capability_row[1], 30)
             self.assertEqual(json.loads(capability_row[2]), ["gamma", "clob_public"])

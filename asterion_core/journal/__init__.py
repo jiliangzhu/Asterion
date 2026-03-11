@@ -2,6 +2,7 @@
 
 from .journal_v3 import (
     build_journal_event,
+    enqueue_external_balance_observation_upserts,
     enqueue_exposure_snapshot_upserts,
     enqueue_fill_upserts,
     enqueue_gate_decision_upserts,
@@ -17,6 +18,7 @@ from .journal_v3 import (
 
 __all__ = [
     "build_journal_event",
+    "enqueue_external_balance_observation_upserts",
     "enqueue_exposure_snapshot_upserts",
     "enqueue_fill_upserts",
     "enqueue_gate_decision_upserts",

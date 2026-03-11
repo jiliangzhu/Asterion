@@ -6,6 +6,7 @@ from typing import Any
 
 from asterion_core.contracts import (
     ExposureSnapshot,
+    ExternalBalanceObservation,
     Fill,
     GateDecision,
     InventoryPosition,
@@ -195,6 +196,25 @@ TRADING_RECONCILIATION_COLUMNS = [
     "status",
     "resolution",
     "created_at",
+]
+
+RUNTIME_EXTERNAL_BALANCE_OBSERVATION_COLUMNS = [
+    "observation_id",
+    "wallet_id",
+    "funder",
+    "signature_type",
+    "asset_type",
+    "token_id",
+    "market_id",
+    "outcome",
+    "observation_kind",
+    "allowance_target",
+    "chain_id",
+    "block_number",
+    "observed_quantity",
+    "source",
+    "observed_at",
+    "raw_observation_json",
 ]
 
 
@@ -410,6 +430,24 @@ def enqueue_reconciliation_result_upserts(
     )
 
 
+def enqueue_external_balance_observation_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    observations: list[ExternalBalanceObservation],
+    run_id: str | None = None,
+) -> str | None:
+    if not observations:
+        return None
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="runtime.external_balance_observations",
+        pk_cols=["observation_id"],
+        columns=list(RUNTIME_EXTERNAL_BALANCE_OBSERVATION_COLUMNS),
+        rows=[external_balance_observation_to_row(item) for item in observations],
+        run_id=run_id,
+    )
+
+
 def strategy_run_to_row(record: StrategyRun) -> list[Any]:
     return [
         record.run_id,
@@ -603,6 +641,27 @@ def reconciliation_result_to_row(record: ReconciliationResult) -> list[Any]:
         _enum_value(record.status),
         record.resolution,
         _sql_timestamp(record.created_at),
+    ]
+
+
+def external_balance_observation_to_row(record: ExternalBalanceObservation) -> list[Any]:
+    return [
+        record.observation_id,
+        record.wallet_id,
+        record.funder,
+        record.signature_type,
+        record.asset_type,
+        record.token_id,
+        record.market_id,
+        record.outcome,
+        _enum_value(record.observation_kind),
+        record.allowance_target,
+        record.chain_id,
+        record.block_number,
+        _decimal_to_sql(record.observed_quantity),
+        record.source,
+        _sql_timestamp(record.observed_at),
+        safe_json_dumps(record.raw_observation_json),
     ]
 
 

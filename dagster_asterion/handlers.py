@@ -14,8 +14,14 @@ from agents.weather import (
     run_resolution_agent_review,
     run_rule2spec_agent_review,
 )
+from asterion_core.blockchain import (
+    build_wallet_state_observations,
+    load_observable_account_capabilities,
+    load_polygon_chain_registry,
+)
 from asterion_core.contracts import (
     ForecastReplayRequest,
+    ExternalBalanceObservation,
     ProposalStatus,
     ResolutionSpec,
     RouteAction,
@@ -54,6 +60,7 @@ from asterion_core.execution import (
 )
 from asterion_core.journal import (
     build_journal_event,
+    enqueue_external_balance_observation_upserts,
     enqueue_exposure_snapshot_upserts,
     enqueue_fill_upserts,
     enqueue_gate_decision_upserts,
@@ -276,6 +283,104 @@ def run_weather_capability_refresh_job(
             "market_ids": market_ids,
             "wallet_ids": wallet_ids,
             "token_ids": token_ids,
+        },
+    )
+
+
+def run_weather_wallet_state_refresh_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    chain_registry_path: str,
+    wallet_state_reader,
+    run_id: str | None = None,
+    observed_at: datetime | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    normalized_observed_at = _normalize_datetime(observed_at) or datetime.now(UTC).replace(tzinfo=None)
+    try:
+        account_capabilities = load_observable_account_capabilities(con)
+        chain_registry = load_polygon_chain_registry(chain_registry_path)
+        observations: list[ExternalBalanceObservation] = []
+        journal_events = []
+        wallet_ids: list[str] = []
+        funder_addresses: list[str] = []
+        allowance_target_count = 0
+        for account_capability in account_capabilities:
+            wallet_observations = build_wallet_state_observations(
+                account_capability=account_capability,
+                chain_registry=chain_registry,
+                reader=wallet_state_reader,
+                observed_at=normalized_observed_at,
+            )
+            observations.extend(wallet_observations)
+            wallet_ids.append(account_capability.wallet_id)
+            funder_addresses.append(account_capability.funder)
+            allowance_count = sum(1 for item in wallet_observations if item.allowance_target is not None)
+            allowance_target_count += allowance_count
+            journal_events.append(
+                build_journal_event(
+                    event_type="wallet_state.observed",
+                    entity_type="wallet",
+                    entity_id=account_capability.wallet_id,
+                    run_id=request_id,
+                    payload_json={
+                        "wallet_id": account_capability.wallet_id,
+                        "funder": account_capability.funder,
+                        "chain_id": chain_registry.chain_id,
+                        "observation_count": len(wallet_observations),
+                        "allowance_target_count": allowance_count,
+                    },
+                    created_at=normalized_observed_at,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        enqueue_journal_event_upserts(
+            queue_cfg,
+            journal_events=[
+                build_journal_event(
+                    event_type="wallet_state.refresh_failed",
+                    entity_type="wallet_state_refresh",
+                    entity_id=request_id,
+                    run_id=request_id,
+                    payload_json={"error": str(exc)},
+                    created_at=normalized_observed_at,
+                )
+            ],
+            run_id=request_id,
+        )
+        raise
+
+    task_ids: list[str] = []
+    task_ids.extend(
+        _append_task_id(
+            enqueue_external_balance_observation_upserts(
+                queue_cfg,
+                observations=observations,
+                run_id=request_id,
+            )
+        )
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_journal_event_upserts(
+                queue_cfg,
+                journal_events=journal_events,
+                run_id=request_id,
+            )
+        )
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_wallet_state_refresh",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=len(observations),
+        metadata={
+            "wallet_count": len(account_capabilities),
+            "observation_count": len(observations),
+            "wallet_ids": sorted(wallet_ids),
+            "funder_addresses": sorted(funder_addresses),
+            "allowance_target_count": allowance_target_count,
         },
     )
 
