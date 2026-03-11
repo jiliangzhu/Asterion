@@ -1,5 +1,12 @@
 """Execution layer modules."""
 from .execution_gate_v1 import evaluate_execution_gate, reservation_required_quantity
+from .order_router_v1 import (
+    RoutedCanonicalOrder,
+    canonical_order_router_hash,
+    canonical_order_router_payload,
+    route_trade_ticket,
+    route_trade_ticket_from_handoff,
+)
 from .signal_to_order_v1 import (
     ExecutionContextRecord,
     PersistedExecutionContextRecord,
@@ -23,6 +30,7 @@ from .watch_only_gate_v3 import decide_watch_only
 __all__ = [
     "ExecutionContextRecord",
     "PersistedExecutionContextRecord",
+    "RoutedCanonicalOrder",
     "bind_trade_ticket_handoff",
     "build_execution_context",
     "build_execution_context_record",
@@ -30,6 +38,8 @@ __all__ = [
     "build_signal_order_intent",
     "build_signal_order_intent_from_handoff",
     "build_trade_ticket",
+    "canonical_order_router_hash",
+    "canonical_order_router_payload",
     "canonical_order_handoff_hash",
     "canonical_order_handoff_payload",
     "decide_watch_only",
@@ -41,5 +51,7 @@ __all__ = [
     "load_account_trading_capability",
     "load_market_capability",
     "load_trade_ticket",
+    "route_trade_ticket",
+    "route_trade_ticket_from_handoff",
     "reservation_required_quantity",
 ]

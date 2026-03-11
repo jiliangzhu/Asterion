@@ -29,11 +29,13 @@ from asterion_core.execution import (
     build_execution_context_record,
     build_signal_order_intent_from_handoff,
     build_trade_ticket,
-    canonical_order_handoff_hash,
+    canonical_order_router_hash,
+    canonical_order_router_payload,
     canonical_order_handoff_payload,
     enqueue_execution_context_upserts,
     load_account_trading_capability,
     load_market_capability,
+    route_trade_ticket,
 )
 from asterion_core.journal import (
     build_journal_event,
@@ -475,6 +477,7 @@ def run_weather_paper_execution_job(
     ]
     for ticket in enriched_tickets:
         hydrated_execution_context = execution_context_records_by_id[ticket.execution_context_id or ""].execution_context
+        routed_order = route_trade_ticket(ticket, hydrated_execution_context)
         signal_order_intent = build_signal_order_intent_from_handoff(
             ticket,
             execution_context=hydrated_execution_context,
@@ -497,6 +500,16 @@ def run_weather_paper_execution_job(
         )
         journal_events.append(
             build_journal_event(
+                event_type="canonical_order.routed",
+                entity_type="canonical_order",
+                entity_id=ticket.request_id,
+                run_id=strategy_run.run_id,
+                payload_json=canonical_order_router_payload(routed_order),
+                created_at=observed_at or datetime.now(UTC),
+            )
+        )
+        journal_events.append(
+            build_journal_event(
                 event_type="signal_order_intent.created",
                 entity_type="signal_order_intent",
                 entity_id=ticket.request_id,
@@ -507,7 +520,7 @@ def run_weather_paper_execution_job(
                     "wallet_id": ticket.wallet_id,
                     "execution_context_id": ticket.execution_context_id,
                     **canonical_order_handoff_payload(signal_order_intent),
-                    "canonical_order_hash": canonical_order_handoff_hash(signal_order_intent),
+                    "canonical_order_hash": canonical_order_router_hash(routed_order),
                 },
                 created_at=observed_at or datetime.now(UTC),
             )

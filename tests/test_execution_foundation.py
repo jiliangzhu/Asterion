@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import importlib.util
 import tempfile
@@ -27,6 +28,8 @@ from asterion_core.execution import (
     build_signal_order_intent,
     build_signal_order_intent_from_handoff,
     build_trade_ticket,
+    canonical_order_router_hash,
+    canonical_order_router_payload,
     canonical_order_handoff_hash,
     canonical_order_handoff_payload,
     enqueue_execution_context_upserts,
@@ -37,6 +40,8 @@ from asterion_core.execution import (
     load_account_trading_capability,
     load_market_capability,
     load_trade_ticket,
+    route_trade_ticket,
+    route_trade_ticket_from_handoff,
 )
 from asterion_core.journal import (
     build_journal_event,
@@ -318,11 +323,13 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
         )
         intent = build_signal_order_intent_from_handoff(ticket, execution_context=execution_context)
         payload = canonical_order_handoff_payload(intent)
+        routed = route_trade_ticket(ticket, execution_context)
 
         self.assertEqual(intent.request_id, ticket.request_id)
         self.assertEqual(payload["route_action"], "fak")
         self.assertEqual(payload["time_in_force"], "fak")
-        self.assertEqual(canonical_order_handoff_hash(intent), canonical_order_handoff_hash(intent))
+        self.assertEqual(payload["post_only"], False)
+        self.assertEqual(canonical_order_handoff_hash(intent), canonical_order_router_hash(routed))
 
         _, gtd_decisions = run_strategy_engine(
             ctx=StrategyContext(
@@ -353,8 +360,97 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
             account_capability=_account_capability(),
             route_action=RouteAction.POST_ONLY_GTD,
         )
-        with self.assertRaisesRegex(ValueError, "POST_ONLY_GTD is blocked in P3-02"):
+        with self.assertRaisesRegex(ValueError, "POST_ONLY_GTD remains blocked in P3-03"):
             build_signal_order_intent_from_handoff(gtd_ticket, execution_context=gtd_context)
+
+    def test_route_trade_ticket_normalizes_supported_actions(self) -> None:
+        market_capability = _market_capability()
+        account_capability = _account_capability()
+        cases = [
+            (RouteAction.FAK, "fak", False),
+            (RouteAction.FOK, "fok", False),
+            (RouteAction.POST_ONLY_GTC, "gtc", True),
+        ]
+        for route_action, expected_tif, expected_post_only in cases:
+            with self.subTest(route_action=route_action.value):
+                _, decisions = run_strategy_engine(
+                    ctx=StrategyContext(
+                        data_snapshot_id="snap_weather_1",
+                        universe_snapshot_id=None,
+                        asof_ts_ms=1_710_000_000_000,
+                        dq_level="PASS",
+                        quote_snapshot_refs=[],
+                    ),
+                    snapshots=[_watch_snapshot(snapshot_id=f"snap_{route_action.value}", token_id="tok_yes", outcome="YES", side="BUY", edge_bps=900)],
+                    strategies=[
+                        StrategyRegistration(
+                            strategy_id="weather_primary",
+                            strategy_version="v1",
+                            priority=1,
+                            route_action=route_action,
+                            size=Decimal("10"),
+                        )
+                    ],
+                )
+                ticket = bind_trade_ticket_handoff(
+                    build_trade_ticket(decisions[0]),
+                    wallet_id="wallet_weather_1",
+                    execution_context_id=f"ectx_{route_action.value}",
+                )
+                execution_context = build_execution_context(
+                    market_capability=market_capability,
+                    account_capability=account_capability,
+                    route_action=route_action,
+                )
+                routed = route_trade_ticket(ticket, execution_context)
+                payload = canonical_order_router_payload(routed)
+                self.assertEqual(payload["time_in_force"], expected_tif)
+                self.assertEqual(payload["post_only"], expected_post_only)
+                self.assertIsNone(routed.expiration)
+
+    def test_route_trade_ticket_validates_tick_size_min_size_and_context_match(self) -> None:
+        _, decisions = run_strategy_engine(
+            ctx=StrategyContext(
+                data_snapshot_id="snap_weather_1",
+                universe_snapshot_id=None,
+                asof_ts_ms=1_710_000_000_000,
+                dq_level="PASS",
+                quote_snapshot_refs=[],
+            ),
+            snapshots=[_watch_snapshot(snapshot_id="snap_yes", token_id="tok_yes", outcome="YES", side="BUY", edge_bps=900)],
+            strategies=[
+                StrategyRegistration(
+                    strategy_id="weather_primary",
+                    strategy_version="v1",
+                    priority=1,
+                    route_action=RouteAction.FAK,
+                    size=Decimal("10"),
+                )
+            ],
+        )
+        base_ticket = bind_trade_ticket_handoff(
+            build_trade_ticket(decisions[0]),
+            wallet_id="wallet_weather_1",
+            execution_context_id="ectx_1",
+        )
+        execution_context = build_execution_context(
+            market_capability=_market_capability(),
+            account_capability=_account_capability(),
+            route_action=RouteAction.FAK,
+        )
+        bad_price_ticket = dataclasses.replace(base_ticket, reference_price=Decimal("0.555"))
+        with self.assertRaisesRegex(ValueError, "tick_size"):
+            route_trade_ticket(bad_price_ticket, execution_context)
+        bad_size_ticket = dataclasses.replace(base_ticket, size=Decimal("0.5"))
+        with self.assertRaisesRegex(ValueError, "min_order_size"):
+            route_trade_ticket(bad_size_ticket, execution_context)
+        mismatched_context = build_execution_context(
+            market_capability=_market_capability(),
+            account_capability=_account_capability(),
+            route_action=RouteAction.FOK,
+        )
+        with self.assertRaisesRegex(ValueError, "route_action"):
+            route_trade_ticket(base_ticket, mismatched_context)
 
 
 class ExecutionGateAndPortfolioTest(unittest.TestCase):
@@ -693,7 +789,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.strategy_runs").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.trade_tickets").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM capability.execution_contexts").fetchone()[0], 1)
-                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 3)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 4)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.gate_decisions").fetchone()[0], 0)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.orders").fetchone()[0], 0)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.fills").fetchone()[0], 0)
@@ -710,6 +806,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     )
                     hydrated_context = hydrate_execution_context(con, record=persisted_record)
                     rebuilt_intent = build_signal_order_intent_from_handoff(ticket, execution_context=hydrated_context)
+                    routed_order = route_trade_ticket_from_handoff(con, ticket_id=ticket.ticket_id)
                     handoff_event = con.execute(
                         """
                         SELECT payload_json
@@ -717,9 +814,17 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                         WHERE event_type = 'signal_order_intent.created'
                         """
                     ).fetchone()
+                    routed_event = con.execute(
+                        """
+                        SELECT payload_json
+                        FROM runtime.journal_events
+                        WHERE event_type = 'canonical_order.routed'
+                        """
+                    ).fetchone()
                 finally:
                     con.close()
             handoff_payload = json.loads(handoff_event[0])
+            routed_payload = json.loads(routed_event[0])
             self.assertEqual(tuple(row), ("wallet_weather_1", "tok_yes", "fak", "pending_gate"))
             self.assertEqual(ticket.wallet_id, "wallet_weather_1")
             self.assertIsNotNone(ticket.execution_context_id)
@@ -730,6 +835,11 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertEqual(handoff_payload["market_id"], rebuilt_intent.canonical_order.market_id)
             self.assertEqual(handoff_payload["route_action"], rebuilt_intent.canonical_order.route_action.value)
             self.assertEqual(handoff_payload["time_in_force"], rebuilt_intent.canonical_order.time_in_force.value)
+            self.assertEqual(handoff_payload["canonical_order_hash"], routed_payload["canonical_order_hash"])
+            self.assertEqual(routed_payload["ticket_id"], ticket.ticket_id)
+            self.assertEqual(routed_payload["request_id"], ticket.request_id)
+            self.assertEqual(routed_payload["router_reason"], "route_action_normalized")
+            self.assertEqual(routed_payload["time_in_force"], routed_order.time_in_force.value)
             self.assertTrue(handoff_payload["canonical_order_hash"].startswith("coh_"))
 
     def test_weather_paper_execution_rerun_keeps_row_counts_and_latest_journal_stable(self) -> None:
@@ -884,7 +994,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.strategy_runs").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.trade_tickets").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM capability.execution_contexts").fetchone()[0], 1)
-                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 3)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 4)
                     by_type = dict(
                         con.execute(
                             """
@@ -910,6 +1020,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertEqual(
                 by_type,
                 {
+                    "canonical_order.routed": 1,
                     "signal_order_intent.created": 1,
                     "strategy_run.created": 1,
                     "trade_ticket.created": 1,

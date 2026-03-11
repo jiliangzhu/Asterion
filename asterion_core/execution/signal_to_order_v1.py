@@ -15,11 +15,11 @@ from asterion_core.contracts import (
     OrderStatus,
     RouteAction,
     SignalOrderIntent,
-    TimeInForce,
     TradeTicket,
+    post_only_for_route_action,
     stable_object_id,
-    time_in_force_for_route_action,
 )
+from asterion_core.execution.order_router_v1 import RoutedCanonicalOrder, route_trade_ticket
 from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.write_queue import WriteQueueConfig
 
@@ -217,16 +217,29 @@ def build_signal_order_intent(
     expiration: datetime | None = None,
     risk_gate_result: str = "pending_gate",
 ) -> SignalOrderIntent:
+    execution_context = build_execution_context(
+        market_capability=market_capability,
+        account_capability=account_capability,
+        route_action=ticket.route_action,
+        risk_gate_result=risk_gate_result,
+    )
+    context_record = build_execution_context_record(
+        wallet_id=account_capability.wallet_id,
+        execution_context=execution_context,
+        created_at=ticket.created_at,
+    )
+    bound_ticket = TradeTicket(
+        **{
+            **ticket.__dict__,
+            "wallet_id": account_capability.wallet_id,
+            "execution_context_id": context_record.execution_context_id,
+        }
+    )
     return build_signal_order_intent_from_handoff(
-        ticket,
-        execution_context=build_execution_context(
-            market_capability=market_capability,
-            account_capability=account_capability,
-            route_action=ticket.route_action,
-            risk_gate_result=risk_gate_result,
-        ),
+        bound_ticket,
+        execution_context=execution_context,
         expiration=expiration,
-        require_bound_ticket=False,
+        require_bound_ticket=True,
     )
 
 
@@ -388,27 +401,10 @@ def build_signal_order_intent_from_handoff(
         raise ValueError("ticket.wallet_id is required for handoff rebuild")
     if require_bound_ticket and ticket.execution_context_id is None:
         raise ValueError("ticket.execution_context_id is required for handoff rebuild")
-    if execution_context.route_action is not ticket.route_action:
-        raise ValueError("execution_context.route_action must match ticket.route_action")
-    if execution_context.route_action is RouteAction.POST_ONLY_GTD:
-        raise ValueError("POST_ONLY_GTD is blocked in P3-02 until P3-03 router expiration policy is implemented")
-    time_in_force = time_in_force_for_route_action(ticket.route_action)
-    if ticket.route_action.name == "POST_ONLY_GTD" and expiration is None:
-        raise ValueError("expiration is required for POST_ONLY_GTD intents")
-    canonical_order = CanonicalOrderContract(
-        market_id=ticket.market_id,
-        token_id=ticket.token_id,
-        outcome=ticket.outcome,
-        side=ticket.side,
-        price=ticket.reference_price,
-        size=ticket.size,
-        route_action=ticket.route_action,
-        time_in_force=TimeInForce(time_in_force.value),
-        expiration=expiration,
-        fee_rate_bps=execution_context.fee_rate_bps,
-        signature_type=execution_context.signature_type,
-        funder=execution_context.funder,
-    )
+    if expiration is not None:
+        raise ValueError("expiration is not supported in P3-03 until a canonical expiration source is implemented")
+    routed_order = route_trade_ticket(ticket, execution_context)
+    canonical_order = _canonical_order_from_routed_order(routed_order)
     return SignalOrderIntent(
         ticket_id=ticket.ticket_id,
         request_id=ticket.request_id,
@@ -432,11 +428,29 @@ def canonical_order_handoff_payload(intent: SignalOrderIntent) -> dict[str, obje
         "fee_rate_bps": order.fee_rate_bps,
         "signature_type": order.signature_type,
         "funder": order.funder,
+        "post_only": post_only_for_route_action(order.route_action),
     }
 
 
 def canonical_order_handoff_hash(intent: SignalOrderIntent) -> str:
     return stable_object_id("coh", canonical_order_handoff_payload(intent))
+
+
+def _canonical_order_from_routed_order(routed_order: RoutedCanonicalOrder) -> CanonicalOrderContract:
+    return CanonicalOrderContract(
+        market_id=routed_order.market_id,
+        token_id=routed_order.token_id,
+        outcome=routed_order.outcome,
+        side=routed_order.side,
+        price=routed_order.price,
+        size=routed_order.size,
+        route_action=routed_order.route_action,
+        time_in_force=routed_order.time_in_force,
+        expiration=routed_order.expiration,
+        fee_rate_bps=routed_order.fee_rate_bps,
+        signature_type=routed_order.signature_type,
+        funder=routed_order.funder,
+    )
 
 
 def _json_list(value: object) -> list[str]:
