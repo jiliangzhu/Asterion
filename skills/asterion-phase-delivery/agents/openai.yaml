@@ -1,0 +1,10 @@
+interface:
+  display_name: "Asterion Phase Delivery"
+  short_description: "Drive Asterion phase implementation and acceptance."
+  icon_small: "./assets/small-phase-delivery.svg"
+  icon_large: "./assets/large-phase-delivery.svg"
+  brand_color: "#EA580C"
+  default_prompt: "Use $asterion-phase-delivery to plan, implement, validate, and close out the active Asterion phase or version milestone against real code and docs."
+
+policy:
+  allow_implicit_invocation: true

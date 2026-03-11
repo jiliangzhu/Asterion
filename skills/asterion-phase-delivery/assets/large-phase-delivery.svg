@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" role="img" aria-label="Asterion Phase Delivery">
+  <defs>
+    <linearGradient id="panel" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFF7ED"/>
+      <stop offset="100%" stop-color="#FDE6C8"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="640" rx="80" fill="#FFFDF8"/>
+  <rect x="72" y="72" width="816" height="496" rx="48" fill="#0F172A"/>
+  <rect x="120" y="132" width="320" height="376" rx="40" fill="url(#panel)"/>
+  <path d="M176 398 L244 264 L308 352 L384 206" fill="none" stroke="#EA580C" stroke-linecap="round" stroke-linejoin="round" stroke-width="28"/>
+  <circle cx="176" cy="398" r="18" fill="#FDBA74"/>
+  <circle cx="244" cy="264" r="18" fill="#FDBA74"/>
+  <circle cx="308" cy="352" r="18" fill="#FDBA74"/>
+  <circle cx="384" cy="206" r="18" fill="#FDBA74"/>
+  <path d="M210 458 L280 186 L350 458" fill="none" stroke="#0F172A" stroke-linecap="round" stroke-linejoin="round" stroke-width="24"/>
+  <path d="M236 374 H324" fill="none" stroke="#0F172A" stroke-linecap="round" stroke-width="20"/>
+  <g fill="#FFF7ED">
+    <rect x="500" y="176" width="282" height="24" rx="12"/>
+    <rect x="500" y="236" width="232" height="20" rx="10" opacity="0.92"/>
+    <rect x="500" y="292" width="266" height="20" rx="10" opacity="0.92"/>
+    <rect x="500" y="348" width="214" height="20" rx="10" opacity="0.92"/>
+  </g>
+  <g fill="#FDBA74">
+    <circle cx="838" cy="188" r="14"/>
+    <circle cx="792" cy="304" r="14"/>
+    <circle cx="740" cy="420" r="14"/>
+  </g>
+  <g fill="#FFF7ED" font-family="Georgia, serif">
+    <text x="500" y="132" font-size="46" font-weight="700">Asterion</text>
+    <text x="500" y="500" font-size="64" font-weight="700">Phase Delivery</text>
+  </g>
+</svg>

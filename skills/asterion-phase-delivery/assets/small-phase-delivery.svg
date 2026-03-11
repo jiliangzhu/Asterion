@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img" aria-label="Asterion Phase Delivery">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFF7ED"/>
+      <stop offset="100%" stop-color="#FDE6C8"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="400" rx="92" fill="url(#bg)"/>
+  <rect x="68" y="72" width="264" height="256" rx="54" fill="#0F172A"/>
+  <path d="M120 266 L182 144 L240 222 L282 128" fill="none" stroke="#EA580C" stroke-linecap="round" stroke-linejoin="round" stroke-width="24"/>
+  <circle cx="120" cy="266" r="16" fill="#FDBA74"/>
+  <circle cx="182" cy="144" r="16" fill="#FDBA74"/>
+  <circle cx="240" cy="222" r="16" fill="#FDBA74"/>
+  <circle cx="282" cy="128" r="16" fill="#FDBA74"/>
+  <path d="M150 304 L200 114 L250 304" fill="none" stroke="#FFF7ED" stroke-linecap="round" stroke-linejoin="round" stroke-width="18"/>
+  <path d="M168 246 H232" fill="none" stroke="#FFF7ED" stroke-linecap="round" stroke-width="16"/>
+</svg>
