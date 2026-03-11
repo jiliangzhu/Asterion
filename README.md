@@ -2,7 +2,7 @@
 
 **版本**: v1.2
 **更新日期**: 2026-03-11
-**状态**: P2 已关闭，P3 可开工
+**状态**: P3 实现已收口，closeout in progress
 
 ---
 
@@ -35,10 +35,12 @@ Asterion/
     │   │   ├── P0_Closeout_Checklist.md
     │   │   ├── P1_Closeout_Checklist.md
     │   │   ├── P2_Closeout_Checklist.md
+    │   │   ├── P3_Closeout_Checklist.md
     │   │   └── P1_P2_AlphaDesk_Remaining_Migration_Checklist.md
     │   ├── runbooks/
     │   │   ├── P1_Watch_Only_Replay_Cold_Path_Runbook.md
-    │   │   └── P2_Cold_Path_Orchestration_Job_Map_Runbook.md
+    │   │   ├── P2_Cold_Path_Orchestration_Job_Map_Runbook.md
+    │   │   └── P3_Paper_Execution_Runbook.md
     │   ├── migration-ledger/
     │   │   └── AlphaDesk_Migration_Ledger.md
     │   └── module-notes/
@@ -76,18 +78,22 @@ Asterion/
    - 这是所有实施文档的统一入口，后续阶段文档都从这里找
 6. 阅读 [P3_Implementation_Plan.md](./docs/10-implementation/phase-plans/P3_Implementation_Plan.md)
    - 这是 `P3 paper execution` 当前唯一实施入口，后续开发以本文件为准
-7. 阅读 [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./docs/10-implementation/checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+7. 阅读 [P3_Closeout_Checklist.md](./docs/10-implementation/checklists/P3_Closeout_Checklist.md)
+   - 这是 `P3` 是否具备 closeout 条件、是否可进入 `P4 planning` 的 closeout 审查入口
+8. 阅读 [P3_Paper_Execution_Runbook.md](./docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md)
+   - 这是 `P3 paper execution` 当前 canonical operator / daily ops / readiness 运行入口
+9. 阅读 [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./docs/10-implementation/checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
    - 如果目标是“彻底脱离 AlphaDesk 后再建独立 Git 仓库”，这份清单是当前唯一判断依据
-8. 阅读 [P2_Closeout_Checklist.md](./docs/10-implementation/checklists/P2_Closeout_Checklist.md)
+10. 阅读 [P2_Closeout_Checklist.md](./docs/10-implementation/checklists/P2_Closeout_Checklist.md)
    - 这是 `P2` 是否已经关闭、`P3` 是否可以开工、AlphaDesk Exit Gate 是否通过的唯一关闭依据
-9. 阅读 [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./docs/10-implementation/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
+11. 阅读 [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./docs/10-implementation/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
    - 这是 `watch-only / replay / cold path` 当前 canonical 入口和 operator 读路径
-10. 阅读 [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./docs/10-implementation/runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+12. 阅读 [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./docs/10-implementation/runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
    - 这是 `P2-07` 到 `P2-09` 的 canonical job map、schedule 和 handler 入口
-11. 如需回看 `P2` 的实施顺序，再阅读 [P2_Implementation_Plan.md](./docs/10-implementation/phase-plans/P2_Implementation_Plan.md)
-12. 如需回看 `P1` 阶段计划，再阅读 [P1_Implementation_Plan.md](./docs/10-implementation/phase-plans/P1_Implementation_Plan.md)
-13. 如需回看底座建设，再阅读 [P0_Implementation_Plan.md](./docs/10-implementation/phase-plans/P0_Implementation_Plan.md)
-14. 深入阅读详细设计文档（按需）
+13. 如需回看 `P2` 的实施顺序，再阅读 [P2_Implementation_Plan.md](./docs/10-implementation/phase-plans/P2_Implementation_Plan.md)
+14. 如需回看 `P1` 阶段计划，再阅读 [P1_Implementation_Plan.md](./docs/10-implementation/phase-plans/P1_Implementation_Plan.md)
+15. 如需回看底座建设，再阅读 [P0_Implementation_Plan.md](./docs/10-implementation/phase-plans/P0_Implementation_Plan.md)
+16. 深入阅读详细设计文档（按需）
 
 ### 1.1 文档归档规则
 

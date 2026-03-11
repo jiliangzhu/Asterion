@@ -32,10 +32,12 @@ docs/10-implementation/
     P0_Closeout_Checklist.md
     P1_Closeout_Checklist.md
     P2_Closeout_Checklist.md
+    P3_Closeout_Checklist.md
     P1_P2_AlphaDesk_Remaining_Migration_Checklist.md
   runbooks/
     P1_Watch_Only_Replay_Cold_Path_Runbook.md
     P2_Cold_Path_Orchestration_Job_Map_Runbook.md
+    P3_Paper_Execution_Runbook.md
   migration-ledger/
     AlphaDesk_Migration_Ledger.md
   module-notes/
@@ -74,12 +76,14 @@ docs/10-implementation/
 - [P0_Closeout_Checklist.md](./checklists/P0_Closeout_Checklist.md)
 - [P1_Closeout_Checklist.md](./checklists/P1_Closeout_Checklist.md)
 - [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
+- [P3_Closeout_Checklist.md](./checklists/P3_Closeout_Checklist.md)
 - [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
 
 ### 3.3 当前 Runbooks
 
 - [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
 - [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+- [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
 
 ### 3.4 迁移台账
 
@@ -174,13 +178,15 @@ docs/10-implementation/
 
 1. [Implementation_Index.md](./Implementation_Index.md)
 2. [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
-3. [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
-4. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
-5. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
-6. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
-7. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
-8. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
-9. 对应模块的 module note
+3. [P3_Closeout_Checklist.md](./checklists/P3_Closeout_Checklist.md)
+4. [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
+5. [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
+6. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
+7. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
+8. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+9. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+10. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
+11. 对应模块的 module note
 
 ---
 

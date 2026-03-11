@@ -59,9 +59,11 @@ source-of-truth：
 - `checklists/P0_Closeout_Checklist.md`
 - `checklists/P1_Closeout_Checklist.md`
 - `checklists/P2_Closeout_Checklist.md`
+- `checklists/P3_Closeout_Checklist.md`
 - `checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md`
 - `runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md`
 - `runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md`
+- `runbooks/P3_Paper_Execution_Runbook.md`
 - `migration-ledger/AlphaDesk_Migration_Ledger.md`
 - `module-notes/AlphaDesk_bronze_Module_Note.md`
 - `module-notes/AlphaDesk_clients_data_api_Module_Note.md`
@@ -83,8 +85,6 @@ source-of-truth：
 
 后续建议新增：
 
-- `checklists/<Topic>_Checklist.md`
-- `runbooks/P<Phase>_<Topic>_Runbook.md`
 - `module-notes/AlphaDesk_<Module>_Module_Note.md`
 
 source-of-truth：
