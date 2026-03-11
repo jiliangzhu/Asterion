@@ -456,7 +456,7 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                 created_at=datetime(2026, 3, 10, 10, 1, tzinfo=timezone.utc),
             ),
         ]
-        fake_record = type("ExecutionContextRecordStub", (), {"execution_context_id": "ectx_1"})()
+        fake_record = type("ExecutionContextRecordStub", (), {"execution_context_id": "ectx_1", "execution_context": object()})()
         with (
             patch(
                 "dagster_asterion.handlers.load_selected_watch_only_snapshots",
@@ -472,9 +472,13 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             patch("dagster_asterion.handlers.build_trade_ticket", side_effect=tickets),
             patch("dagster_asterion.handlers.build_execution_context", return_value=object()) as build_context,
             patch("dagster_asterion.handlers.build_execution_context_record", return_value=fake_record) as build_record,
+            patch("dagster_asterion.handlers.build_signal_order_intent_from_handoff", return_value=object()),
+            patch("dagster_asterion.handlers.canonical_order_handoff_payload", return_value={"route_action": "fak"}),
+            patch("dagster_asterion.handlers.canonical_order_handoff_hash", return_value="coh_1"),
             patch("dagster_asterion.handlers.enqueue_strategy_run_upserts", return_value="task_strategy"),
             patch("dagster_asterion.handlers.enqueue_trade_ticket_upserts", return_value="task_ticket"),
             patch("dagster_asterion.handlers.enqueue_execution_context_upserts", return_value="task_context") as enqueue_contexts,
+            patch("dagster_asterion.handlers.enqueue_journal_event_upserts", return_value="task_journal"),
         ):
             result = run_weather_paper_execution_job(
                 object(),
@@ -493,8 +497,9 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                     "snapshot_ids": ["snap_yes", "snap_yes"],
                 },
             )
-        self.assertEqual(result.task_ids, ["task_strategy", "task_ticket", "task_context"])
+        self.assertEqual(result.task_ids, ["task_strategy", "task_ticket", "task_context", "task_journal"])
         self.assertEqual(result.metadata["ticket_count"], 2)
+        self.assertEqual(result.metadata["ticket_ids"], ["tt_1", "tt_2"])
         self.assertEqual(result.metadata["execution_context_count"], 1)
         self.assertEqual(result.metadata["ticket_execution_context_ids"], {"tt_1": "ectx_1", "tt_2": "ectx_1"})
         self.assertEqual(build_context.call_count, 2)

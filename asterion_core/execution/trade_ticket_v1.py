@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 
-from asterion_core.contracts import StrategyDecision, TradeTicket, stable_object_id
+from asterion_core.contracts import RouteAction, StrategyDecision, TradeTicket, stable_object_id
 
 
 def build_trade_ticket(
@@ -62,3 +65,90 @@ def build_trade_ticket(
         provenance_json=provenance,
         created_at=created_at or datetime.now(UTC),
     )
+
+
+def bind_trade_ticket_handoff(
+    ticket: TradeTicket,
+    *,
+    wallet_id: str,
+    execution_context_id: str,
+) -> TradeTicket:
+    if not wallet_id:
+        raise ValueError("wallet_id is required")
+    if not execution_context_id:
+        raise ValueError("execution_context_id is required")
+    return replace(
+        ticket,
+        wallet_id=wallet_id,
+        execution_context_id=execution_context_id,
+    )
+
+
+def load_trade_ticket(con, *, ticket_id: str) -> TradeTicket:
+    row = con.execute(
+        """
+        SELECT
+            ticket_id,
+            run_id,
+            strategy_id,
+            strategy_version,
+            market_id,
+            token_id,
+            outcome,
+            side,
+            reference_price,
+            fair_value,
+            edge_bps,
+            threshold_bps,
+            route_action,
+            size,
+            signal_ts_ms,
+            forecast_run_id,
+            watch_snapshot_id,
+            request_id,
+            ticket_hash,
+            provenance_json,
+            created_at,
+            wallet_id,
+            execution_context_id
+        FROM runtime.trade_tickets
+        WHERE ticket_id = ?
+        """,
+        [ticket_id],
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"trade ticket not found for ticket_id={ticket_id}")
+    return TradeTicket(
+        ticket_id=str(row[0]),
+        run_id=str(row[1]),
+        strategy_id=str(row[2]),
+        strategy_version=str(row[3]),
+        market_id=str(row[4]),
+        token_id=str(row[5]),
+        outcome=str(row[6]),
+        side=str(row[7]),
+        reference_price=Decimal(str(row[8])),
+        fair_value=Decimal(str(row[9])),
+        edge_bps=int(row[10]),
+        threshold_bps=int(row[11]),
+        route_action=RouteAction(str(row[12])),
+        size=Decimal(str(row[13])),
+        signal_ts_ms=int(row[14]),
+        forecast_run_id=str(row[15]),
+        watch_snapshot_id=str(row[16]),
+        request_id=str(row[17]),
+        ticket_hash=str(row[18]),
+        provenance_json=_json_dict(row[19]),
+        created_at=row[20],
+        wallet_id=str(row[21]) if row[21] is not None else None,
+        execution_context_id=str(row[22]) if row[22] is not None else None,
+    )
+
+
+def _json_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return {str(key): value[key] for key in value}
+    decoded = json.loads(str(value))
+    if not isinstance(decoded, dict):
+        raise ValueError("provenance_json must decode to an object")
+    return {str(key): decoded[key] for key in decoded}

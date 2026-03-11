@@ -271,6 +271,8 @@ class TradeTicket:
     ticket_hash: str
     provenance_json: dict[str, Any]
     created_at: datetime
+    wallet_id: str | None = None
+    execution_context_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.ticket_id or not self.run_id or not self.strategy_id:
@@ -293,6 +295,10 @@ class TradeTicket:
             raise ValueError("request_id and ticket_hash are required")
         if not isinstance(self.provenance_json, dict):
             raise ValueError("provenance_json must be a dictionary")
+        if self.wallet_id == "":
+            raise ValueError("wallet_id must be None or non-empty")
+        if self.execution_context_id == "":
+            raise ValueError("execution_context_id must be None or non-empty")
 
 
 @dataclass(frozen=True)

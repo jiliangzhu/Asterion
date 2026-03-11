@@ -52,6 +52,8 @@ RUNTIME_TRADE_TICKET_COLUMNS = [
     "watch_snapshot_id",
     "request_id",
     "ticket_hash",
+    "wallet_id",
+    "execution_context_id",
     "provenance_json",
     "created_at",
 ]
@@ -378,6 +380,8 @@ def trade_ticket_to_row(record: TradeTicket) -> list[Any]:
         record.watch_snapshot_id,
         record.request_id,
         record.ticket_hash,
+        record.wallet_id,
+        record.execution_context_id,
         safe_json_dumps(record.provenance_json),
         _sql_timestamp(record.created_at),
     ]

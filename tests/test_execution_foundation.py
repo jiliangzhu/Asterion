@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import importlib.util
 import tempfile
 import unittest
@@ -19,16 +20,23 @@ from asterion_core.contracts import (
     WatchOnlySnapshotRecord,
 )
 from asterion_core.execution import (
+    bind_trade_ticket_handoff,
     build_execution_context,
     build_execution_context_record,
     build_order_from_intent,
     build_signal_order_intent,
+    build_signal_order_intent_from_handoff,
     build_trade_ticket,
+    canonical_order_handoff_hash,
+    canonical_order_handoff_payload,
     enqueue_execution_context_upserts,
     evaluate_execution_gate,
     execution_context_record_to_row,
+    hydrate_execution_context,
+    load_execution_context_record,
     load_account_trading_capability,
     load_market_capability,
+    load_trade_ticket,
 )
 from asterion_core.journal import (
     build_journal_event,
@@ -190,6 +198,16 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
         self.assertEqual(ticket_a.provenance_json["watch_snapshot_id"], "snap_yes")
         self.assertEqual(ticket_a.provenance_json["strategy_id"], "weather_primary")
 
+        bound_ticket = bind_trade_ticket_handoff(
+            ticket_a,
+            wallet_id="wallet_weather_1",
+            execution_context_id="ectx_1",
+        )
+        self.assertEqual(bound_ticket.ticket_hash, ticket_a.ticket_hash)
+        self.assertEqual(bound_ticket.request_id, ticket_a.request_id)
+        self.assertEqual(bound_ticket.wallet_id, "wallet_weather_1")
+        self.assertEqual(bound_ticket.execution_context_id, "ectx_1")
+
     def test_signal_to_order_builds_canonical_order_and_execution_context(self) -> None:
         _, decisions = run_strategy_engine(
             ctx=StrategyContext(
@@ -267,6 +285,76 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
         self.assertEqual(record_a.execution_context_id, record_b.execution_context_id)
         self.assertNotEqual(record_a.execution_context_id, record_c.execution_context_id)
         self.assertEqual(execution_context_record_to_row(record_a)[1], "wallet_weather_1")
+
+    def test_signal_order_intent_from_handoff_is_rebuildable_and_blocks_gtd(self) -> None:
+        _, decisions = run_strategy_engine(
+            ctx=StrategyContext(
+                data_snapshot_id="snap_weather_1",
+                universe_snapshot_id=None,
+                asof_ts_ms=1_710_000_000_000,
+                dq_level="PASS",
+                quote_snapshot_refs=[],
+            ),
+            snapshots=[_watch_snapshot(snapshot_id="snap_yes", token_id="tok_yes", outcome="YES", side="BUY", edge_bps=900)],
+            strategies=[
+                StrategyRegistration(
+                    strategy_id="weather_primary",
+                    strategy_version="v1",
+                    priority=1,
+                    route_action=RouteAction.FAK,
+                    size=Decimal("10"),
+                )
+            ],
+        )
+        ticket = bind_trade_ticket_handoff(
+            build_trade_ticket(decisions[0]),
+            wallet_id="wallet_weather_1",
+            execution_context_id="ectx_1",
+        )
+        execution_context = build_execution_context(
+            market_capability=_market_capability(),
+            account_capability=_account_capability(),
+            route_action=RouteAction.FAK,
+        )
+        intent = build_signal_order_intent_from_handoff(ticket, execution_context=execution_context)
+        payload = canonical_order_handoff_payload(intent)
+
+        self.assertEqual(intent.request_id, ticket.request_id)
+        self.assertEqual(payload["route_action"], "fak")
+        self.assertEqual(payload["time_in_force"], "fak")
+        self.assertEqual(canonical_order_handoff_hash(intent), canonical_order_handoff_hash(intent))
+
+        _, gtd_decisions = run_strategy_engine(
+            ctx=StrategyContext(
+                data_snapshot_id="snap_weather_1",
+                universe_snapshot_id=None,
+                asof_ts_ms=1_710_000_000_000,
+                dq_level="PASS",
+                quote_snapshot_refs=[],
+            ),
+            snapshots=[_watch_snapshot(snapshot_id="snap_yes", token_id="tok_yes", outcome="YES", side="BUY", edge_bps=900)],
+            strategies=[
+                StrategyRegistration(
+                    strategy_id="weather_primary",
+                    strategy_version="v1",
+                    priority=1,
+                    route_action=RouteAction.POST_ONLY_GTD,
+                    size=Decimal("10"),
+                )
+            ],
+        )
+        gtd_ticket = bind_trade_ticket_handoff(
+            build_trade_ticket(gtd_decisions[0]),
+            wallet_id="wallet_weather_1",
+            execution_context_id="ectx_gtd",
+        )
+        gtd_context = build_execution_context(
+            market_capability=_market_capability(),
+            account_capability=_account_capability(),
+            route_action=RouteAction.POST_ONLY_GTD,
+        )
+        with self.assertRaisesRegex(ValueError, "POST_ONLY_GTD is blocked in P3-02"):
+            build_signal_order_intent_from_handoff(gtd_ticket, execution_context=gtd_context)
 
 
 class ExecutionGateAndPortfolioTest(unittest.TestCase):
@@ -585,6 +673,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     "runtime.strategy_runs",
                     "runtime.trade_tickets",
                     "capability.execution_contexts",
+                    "runtime.journal_events",
                 ]
             )
             with patch.dict(
@@ -604,6 +693,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.strategy_runs").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.trade_tickets").fetchone()[0], 1)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM capability.execution_contexts").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 3)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.gate_decisions").fetchone()[0], 0)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.orders").fetchone()[0], 0)
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.fills").fetchone()[0], 0)
@@ -613,9 +703,222 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                         FROM capability.execution_contexts
                         """
                     ).fetchone()
+                    ticket = load_trade_ticket(con, ticket_id=result.metadata["ticket_ids"][0])
+                    persisted_record = load_execution_context_record(
+                        con,
+                        execution_context_id=ticket.execution_context_id or "",
+                    )
+                    hydrated_context = hydrate_execution_context(con, record=persisted_record)
+                    rebuilt_intent = build_signal_order_intent_from_handoff(ticket, execution_context=hydrated_context)
+                    handoff_event = con.execute(
+                        """
+                        SELECT payload_json
+                        FROM runtime.journal_events
+                        WHERE event_type = 'signal_order_intent.created'
+                        """
+                    ).fetchone()
                 finally:
                     con.close()
+            handoff_payload = json.loads(handoff_event[0])
             self.assertEqual(tuple(row), ("wallet_weather_1", "tok_yes", "fak", "pending_gate"))
+            self.assertEqual(ticket.wallet_id, "wallet_weather_1")
+            self.assertIsNotNone(ticket.execution_context_id)
+            self.assertEqual(rebuilt_intent.request_id, ticket.request_id)
+            self.assertEqual(handoff_payload["ticket_id"], ticket.ticket_id)
+            self.assertEqual(handoff_payload["request_id"], ticket.request_id)
+            self.assertEqual(handoff_payload["execution_context_id"], ticket.execution_context_id)
+            self.assertEqual(handoff_payload["market_id"], rebuilt_intent.canonical_order.market_id)
+            self.assertEqual(handoff_payload["route_action"], rebuilt_intent.canonical_order.route_action.value)
+            self.assertEqual(handoff_payload["time_in_force"], rebuilt_intent.canonical_order.time_in_force.value)
+            self.assertTrue(handoff_payload["canonical_order_hash"].startswith("coh_"))
+
+    def test_weather_paper_execution_rerun_keeps_row_counts_and_latest_journal_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "asterion.duckdb")
+            queue_path = str(Path(tmpdir) / "write_queue.sqlite")
+            migrations_dir = str(Path(__file__).resolve().parents[1] / "sql" / "migrations")
+            writer_env = {
+                "ASTERION_STRICT_SINGLE_WRITER": "1",
+                "ASTERION_DB_ROLE": "writer",
+                "WRITERD": "1",
+            }
+            with patch.dict("os.environ", writer_env, clear=False):
+                apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=migrations_dir))
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    con.execute(
+                        """
+                        INSERT INTO capability.market_capabilities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            "tok_yes",
+                            "mkt_weather_1",
+                            "cond_weather_1",
+                            "YES",
+                            Decimal("0.01"),
+                            30,
+                            False,
+                            Decimal("1"),
+                            True,
+                            True,
+                            "[\"gamma\",\"clob_public\"]",
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
+                    con.execute(
+                        """
+                        INSERT INTO capability.account_trading_capabilities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            "wallet_weather_1",
+                            "eoa",
+                            1,
+                            "0xfunder",
+                            "[\"0xrelayer\"]",
+                            True,
+                            True,
+                            None,
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
+                    con.execute(
+                        """
+                        INSERT INTO weather.weather_watch_only_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            "snap_yes",
+                            "fv_yes",
+                            "frun_weather_1",
+                            "mkt_weather_1",
+                            "cond_weather_1",
+                            "tok_yes",
+                            "YES",
+                            0.55,
+                            0.63,
+                            800,
+                            500,
+                            "TAKE",
+                            "BUY",
+                            "paper rerun",
+                            "{\"signal_ts_ms\":1710000000000}",
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
+                finally:
+                    con.close()
+
+            reader_env = {
+                "ASTERION_STRICT_SINGLE_WRITER": "1",
+                "ASTERION_DB_ROLE": "reader",
+                "WRITERD": "0",
+            }
+            queue_cfg = WriteQueueConfig(path=queue_path)
+            params_json = {
+                "wallet_id": "wallet_weather_1",
+                "strategy_registrations": [
+                    {
+                        "strategy_id": "weather_primary",
+                        "strategy_version": "v1",
+                        "priority": 1,
+                        "route_action": "FAK",
+                        "size": "10",
+                        "min_edge_bps": 500,
+                    }
+                ],
+                "snapshot_ids": ["snap_yes"],
+            }
+
+            latest_after_runs = []
+            for observed_at in [
+                datetime(2026, 3, 10, 10, 6, tzinfo=UTC),
+                datetime(2026, 3, 10, 10, 7, tzinfo=UTC),
+            ]:
+                with patch.dict("os.environ", reader_env, clear=False):
+                    con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                    try:
+                        result = run_weather_paper_execution_job(
+                            con,
+                            queue_cfg,
+                            params_json=params_json,
+                            observed_at=observed_at,
+                        )
+                    finally:
+                        con.close()
+                allow_tables = ",".join(
+                    [
+                        "runtime.strategy_runs",
+                        "runtime.trade_tickets",
+                        "capability.execution_contexts",
+                        "runtime.journal_events",
+                    ]
+                )
+                with patch.dict(
+                    "os.environ",
+                    {
+                        "ASTERION_DB_PATH": db_path,
+                        "ASTERION_WRITERD_ALLOWED_TABLES": allow_tables,
+                    },
+                    clear=False,
+                ):
+                    while process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False):
+                        pass
+                with patch.dict("os.environ", reader_env, clear=False):
+                    con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                    try:
+                        latest_after_runs.append(
+                            con.execute(
+                                """
+                                SELECT event_id, event_type, entity_id
+                                FROM runtime.journal_events
+                                ORDER BY created_at DESC, event_id DESC
+                                LIMIT 1
+                                """
+                            ).fetchone()
+                        )
+                    finally:
+                        con.close()
+
+            with patch.dict("os.environ", reader_env, clear=False):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.strategy_runs").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.trade_tickets").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM capability.execution_contexts").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 3)
+                    by_type = dict(
+                        con.execute(
+                            """
+                            SELECT event_type, COUNT(*)
+                            FROM runtime.journal_events
+                            GROUP BY event_type
+                            ORDER BY event_type
+                            """
+                        ).fetchall()
+                    )
+                    latest = con.execute(
+                        """
+                        SELECT event_id, event_type, entity_id
+                        FROM runtime.journal_events
+                        ORDER BY created_at DESC, event_id DESC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                    ticket = load_trade_ticket(con, ticket_id=result.metadata["ticket_ids"][0])
+                finally:
+                    con.close()
+
+            self.assertEqual(
+                by_type,
+                {
+                    "signal_order_intent.created": 1,
+                    "strategy_run.created": 1,
+                    "trade_ticket.created": 1,
+                },
+            )
+            self.assertEqual(latest_after_runs[0], latest_after_runs[1])
+            self.assertEqual(latest, latest_after_runs[1])
+            self.assertEqual(ticket.wallet_id, "wallet_weather_1")
+            self.assertIsNotNone(ticket.execution_context_id)
 
     def test_paper_chain_persists_runtime_and_trading_ledgers(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
