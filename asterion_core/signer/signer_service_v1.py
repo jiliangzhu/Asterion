@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -676,6 +677,52 @@ def enqueue_submit_attempt_upserts(
     )
 
 
+def load_submit_attempt(con, *, attempt_id: str) -> SubmitAttemptRecord:
+    row = con.execute(
+        """
+        SELECT
+            attempt_id,
+            request_id,
+            ticket_id,
+            order_id,
+            wallet_id,
+            execution_context_id,
+            exchange,
+            attempt_kind,
+            attempt_mode,
+            canonical_order_hash,
+            payload_hash,
+            submit_payload_json,
+            signed_payload_ref,
+            status,
+            error,
+            created_at
+        FROM runtime.submit_attempts
+        WHERE attempt_id = ?
+        """,
+        [attempt_id],
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"submit attempt not found: {attempt_id}")
+    return _submit_attempt_record_from_row(row)
+
+
+def load_sign_only_attempts(con, *, attempt_ids: list[str]) -> list[SubmitAttemptRecord]:
+    if not attempt_ids:
+        raise ValueError("attempt_ids are required")
+    records = [load_submit_attempt(con, attempt_id=attempt_id) for attempt_id in attempt_ids]
+    invalid = [
+        item.attempt_id
+        for item in records
+        if item.attempt_kind != "sign_order" or item.attempt_mode != "sign_only" or item.status != "signed"
+    ]
+    if invalid:
+        raise ValueError(
+            "submitter smoke only accepts signed sign-only attempts: " + ", ".join(sorted(invalid))
+        )
+    return records
+
+
 def hash_signer_payload(payload: dict[str, Any]) -> str:
     return hashlib.sha256(safe_json_dumps(payload).encode("utf-8")).hexdigest()
 
@@ -884,3 +931,30 @@ def _sql_timestamp(value: datetime | None) -> str | None:
 
 def _append_task_id(task_id: str | None) -> list[str]:
     return [task_id] if task_id else []
+
+
+def _submit_attempt_record_from_row(row: Any) -> SubmitAttemptRecord:
+    return SubmitAttemptRecord(
+        attempt_id=str(row[0]),
+        request_id=str(row[1]),
+        ticket_id=str(row[2]),
+        order_id=str(row[3]) if row[3] is not None else None,
+        wallet_id=str(row[4]),
+        execution_context_id=str(row[5]),
+        exchange=str(row[6]),
+        attempt_kind=str(row[7]),
+        attempt_mode=str(row[8]),
+        canonical_order_hash=str(row[9]),
+        payload_hash=str(row[10]),
+        submit_payload_json=json.loads(str(row[11])),
+        signed_payload_ref=str(row[12]) if row[12] is not None else None,
+        status=str(row[13]),
+        error=str(row[14]) if row[14] is not None else None,
+        created_at=_decode_timestamp(row[15]),
+    )
+
+
+def _decode_timestamp(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return _normalize_timestamp(value)
+    return datetime.fromisoformat(str(value))

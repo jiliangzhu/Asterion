@@ -8,7 +8,12 @@ from typing import Any
 
 from asterion_core.blockchain import PolygonWalletStateReader
 from asterion_core.clients import ClobPublicClient
-from asterion_core.execution import SafeDefaultChainAccountCapabilityReader
+from asterion_core.execution import (
+    DisabledSubmitterBackend,
+    SafeDefaultChainAccountCapabilityReader,
+    ShadowSubmitterBackend,
+    SubmitterServiceShell,
+)
 from asterion_core.signer import (
     DeterministicOfficialOrderSigningBackend,
     DisabledSignerBackend,
@@ -49,6 +54,8 @@ class AsterionColdPathSettings:
     capability_rpc_urls: list[str]
     signer_backend_kind: str
     signer_rpc_url: str | None
+    submitter_backend_kind: str
+    submitter_api_base_url: str | None
     forecast_primary_source: str
     forecast_fallback_sources: list[str]
     watcher_chain_id: int
@@ -92,6 +99,8 @@ class AsterionColdPathSettings:
             capability_rpc_urls=capability_rpc_urls,
             signer_backend_kind=os.getenv("ASTERION_SIGNER_BACKEND_KIND", "disabled"),
             signer_rpc_url=os.getenv("ASTERION_SIGNER_RPC_URL") or None,
+            submitter_backend_kind=os.getenv("ASTERION_SUBMITTER_BACKEND_KIND", "disabled"),
+            submitter_api_base_url=os.getenv("ASTERION_SUBMITTER_API_BASE_URL") or None,
             forecast_primary_source=os.getenv("ASTERION_FORECAST_PRIMARY_SOURCE", "openmeteo"),
             forecast_fallback_sources=fallback,
             watcher_chain_id=int(os.getenv("ASTERION_WATCHER_CHAIN_ID", "137")),
@@ -199,6 +208,20 @@ class SignerRuntimeResource:
         if self.settings.signer_backend_kind == "py_clob_client":
             return SignerServiceShell(PyClobClientOrderSigningBackend())
         raise ValueError(f"unsupported signer_backend_kind={self.settings.signer_backend_kind!r}")
+
+
+@dataclass(frozen=True)
+class SubmitterRuntimeResource:
+    settings: AsterionColdPathSettings
+
+    def build_submitter_service(self, *, service: Any | None = None) -> SubmitterServiceShell:
+        if service is not None:
+            return service
+        if self.settings.submitter_backend_kind == "disabled":
+            return SubmitterServiceShell(DisabledSubmitterBackend())
+        if self.settings.submitter_backend_kind == "shadow_stub":
+            return SubmitterServiceShell(ShadowSubmitterBackend())
+        raise ValueError(f"unsupported submitter_backend_kind={self.settings.submitter_backend_kind!r}")
 
 
 @dataclass(frozen=True)
@@ -388,6 +411,8 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 capability_rpc_urls=list(self.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
                 signer_rpc_url=settings.signer_rpc_url,
+                submitter_backend_kind=settings.submitter_backend_kind,
+                submitter_api_base_url=settings.submitter_api_base_url,
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
@@ -424,6 +449,8 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 capability_rpc_urls=list(self.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
                 signer_rpc_url=settings.signer_rpc_url,
+                submitter_backend_kind=settings.submitter_backend_kind,
+                submitter_api_base_url=settings.submitter_api_base_url,
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
@@ -458,6 +485,8 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
                 signer_rpc_url=settings.signer_rpc_url,
+                submitter_backend_kind=settings.submitter_backend_kind,
+                submitter_api_base_url=settings.submitter_api_base_url,
                 forecast_primary_source=self.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
@@ -492,6 +521,8 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
                 signer_rpc_url=settings.signer_rpc_url,
+                submitter_backend_kind=settings.submitter_backend_kind,
+                submitter_api_base_url=settings.submitter_api_base_url,
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=int(self.watcher_chain_id),
@@ -527,12 +558,51 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=self.signer_backend_kind,
                 signer_rpc_url=self.signer_rpc_url,
+                submitter_backend_kind=settings.submitter_backend_kind,
+                submitter_api_base_url=settings.submitter_api_base_url,
                 forecast_primary_source=settings.forecast_primary_source,
                 forecast_fallback_sources=list(settings.forecast_fallback_sources),
                 watcher_chain_id=settings.watcher_chain_id,
                 watcher_rpc_urls=list(settings.watcher_rpc_urls),
             )
             return SignerRuntimeResource(settings=settings)
+
+
+    class DagsterSubmitterRuntimeResource(ConfigurableResource):
+        submitter_backend_kind: str = "disabled"
+        submitter_api_base_url: str | None = None
+
+        def build_runtime(self) -> SubmitterRuntimeResource:
+            settings = AsterionColdPathSettings.from_env()
+            settings = AsterionColdPathSettings(
+                db_path=settings.db_path,
+                ddl_path=settings.ddl_path,
+                write_queue_path=settings.write_queue_path,
+                gamma_base_url=settings.gamma_base_url,
+                gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_page_limit=settings.gamma_page_limit,
+                gamma_max_pages=settings.gamma_max_pages,
+                gamma_sleep_s=settings.gamma_sleep_s,
+                gamma_active_only=settings.gamma_active_only,
+                gamma_closed=settings.gamma_closed,
+                gamma_archived=settings.gamma_archived,
+                clob_base_url=settings.clob_base_url,
+                clob_book_endpoint=settings.clob_book_endpoint,
+                clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
+                wallet_registry_path=settings.wallet_registry_path,
+                chain_registry_path=settings.chain_registry_path,
+                capability_chain_id=settings.capability_chain_id,
+                capability_rpc_urls=list(settings.capability_rpc_urls),
+                signer_backend_kind=settings.signer_backend_kind,
+                signer_rpc_url=settings.signer_rpc_url,
+                submitter_backend_kind=self.submitter_backend_kind,
+                submitter_api_base_url=self.submitter_api_base_url,
+                forecast_primary_source=settings.forecast_primary_source,
+                forecast_fallback_sources=list(settings.forecast_fallback_sources),
+                watcher_chain_id=settings.watcher_chain_id,
+                watcher_rpc_urls=list(settings.watcher_rpc_urls),
+            )
+            return SubmitterRuntimeResource(settings=settings)
 
 
 def build_runtime_resources(settings: AsterionColdPathSettings | None = None) -> dict[str, Any]:
@@ -545,6 +615,7 @@ def build_runtime_resources(settings: AsterionColdPathSettings | None = None) ->
         "capability_refresh_runtime": CapabilityRefreshRuntimeResource(settings=active),
         "wallet_state_observation_runtime": WalletStateObservationRuntimeResource(settings=active),
         "signer_runtime": SignerRuntimeResource(settings=active),
+        "submitter_runtime": SubmitterRuntimeResource(settings=active),
         "forecast_runtime": ForecastRuntimeResource(settings=active),
         "watcher_rpc_pool": WatcherRpcPoolResource(settings=active),
     }
@@ -584,6 +655,10 @@ def build_dagster_resource_defs(settings: AsterionColdPathSettings | None = None
         "signer_runtime": DagsterSignerRuntimeResource(
             signer_backend_kind=active.signer_backend_kind,
             signer_rpc_url=active.signer_rpc_url,
+        ),
+        "submitter_runtime": DagsterSubmitterRuntimeResource(
+            submitter_backend_kind=active.submitter_backend_kind,
+            submitter_api_base_url=active.submitter_api_base_url,
         ),
         "forecast_runtime": DagsterForecastRuntimeResource(forecast_primary_source=active.forecast_primary_source),
         "watcher_rpc_pool": DagsterWatcherRpcPoolResource(watcher_chain_id=active.watcher_chain_id),

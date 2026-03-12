@@ -23,6 +23,8 @@ from .signer_service_v1 import (
     enqueue_submit_attempt_upserts,
     enqueue_signature_audit_log_upserts,
     hash_signer_payload,
+    load_sign_only_attempts,
+    load_submit_attempt,
     signature_audit_log_to_row,
     submit_attempt_record_to_row,
 )
@@ -50,6 +52,8 @@ __all__ = [
     "enqueue_submit_attempt_upserts",
     "enqueue_signature_audit_log_upserts",
     "hash_signer_payload",
+    "load_sign_only_attempts",
+    "load_submit_attempt",
     "signature_audit_log_to_row",
     "submit_attempt_record_to_row",
 ]

@@ -30,22 +30,30 @@ from asterion_core.contracts import (
     new_request_id,
 )
 from asterion_core.execution import (
+    DisabledSubmitterBackend,
+    SubmitMode,
+    SubmitterServiceShell,
     SafeDefaultChainAccountCapabilityReader,
     apply_fills_to_order,
     bind_trade_ticket_handoff,
     build_execution_context,
     build_execution_context_record,
+    build_external_order_observation,
     build_order_from_intent,
     build_paper_order,
     build_signal_order_intent_from_handoff,
+    build_submit_attempt_from_signed_payload,
+    build_submit_order_request_from_sign_attempt,
     build_trade_ticket,
     canonical_order_router_hash,
     canonical_order_router_payload,
     canonical_order_handoff_payload,
     enqueue_account_capability_upserts,
     enqueue_execution_context_upserts,
+    enqueue_external_order_observation_upserts,
     enqueue_market_capability_upserts,
     evaluate_execution_gate,
+    external_order_observation_to_row,
     fill_journal_payload,
     gate_rejection_journal_payload,
     load_account_trading_capability,
@@ -94,6 +102,7 @@ from asterion_core.risk import (
 )
 from asterion_core.signer import (
     build_sign_order_request_from_routed_order,
+    load_sign_only_attempts,
     SignerRequest,
     SignerServiceShell,
     SigningPurpose,
@@ -227,6 +236,19 @@ class OrderSigningSmokeRequest:
     def __post_init__(self) -> None:
         if not self.ticket_ids:
             raise ValueError("ticket_ids are required")
+        if not self.requester:
+            raise ValueError("requester is required")
+
+
+@dataclass(frozen=True)
+class SubmitterSmokeRequest:
+    attempt_ids: list[str]
+    requester: str
+    submit_mode: SubmitMode
+
+    def __post_init__(self) -> None:
+        if not self.attempt_ids:
+            raise ValueError("attempt_ids are required")
         if not self.requester:
             raise ValueError("requester is required")
 
@@ -564,6 +586,106 @@ def run_weather_order_signing_smoke_job(
             "rejected_count": rejected_count,
             "payload_hashes": payload_hashes,
             "attempt_ids": attempt_ids,
+        },
+    )
+
+
+def run_weather_submitter_smoke_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    submitter_service: SubmitterServiceShell,
+    params_json: dict[str, Any],
+    run_id: str | None = None,
+    observed_at: datetime | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    normalized_request = _normalize_submitter_smoke_request(params_json)
+    normalized_observed_at = _normalize_datetime(observed_at) or datetime.now(UTC).replace(tzinfo=None)
+    sign_attempts = load_sign_only_attempts(con, attempt_ids=list(normalized_request.attempt_ids))
+    wallet_ids = {item.wallet_id for item in sign_attempts}
+    if len(wallet_ids) != 1:
+        raise ValueError("weather_submitter_smoke only supports a single wallet per invocation")
+    wallet_id = next(iter(wallet_ids))
+
+    request_ids: list[str] = []
+    payload_hashes: list[str] = []
+    observation_ids: list[str] = []
+    task_ids: list[str] = []
+    submit_attempts = []
+    observations = []
+    preview_count = 0
+    accepted_count = 0
+    rejected_count = 0
+
+    for sign_attempt in sign_attempts:
+        submit_request = build_submit_order_request_from_sign_attempt(
+            sign_attempt,
+            requester=normalized_request.requester,
+            request_id=stable_object_id(
+                "subreq",
+                {"run_id": request_id, "source_attempt_id": sign_attempt.attempt_id},
+            ),
+            timestamp=normalized_observed_at,
+            submit_mode=normalized_request.submit_mode,
+        )
+        invocation = submitter_service.submit_order(
+            submit_request,
+            queue_cfg=queue_cfg,
+            run_id=request_id,
+        )
+        submit_attempt = build_submit_attempt_from_signed_payload(submit_request, invocation.response)
+        observation = build_external_order_observation(
+            submit_attempt,
+            observed_at=invocation.response.completed_at,
+        )
+        submit_attempts.append(submit_attempt)
+        observations.append(observation)
+        task_ids.extend(invocation.task_ids)
+        request_ids.append(submit_request.request_id)
+        payload_hashes.append(invocation.payload_hash)
+        observation_ids.append(observation.observation_id)
+        if invocation.response.status == "previewed":
+            preview_count += 1
+        elif invocation.response.status == "accepted":
+            accepted_count += 1
+        else:
+            rejected_count += 1
+
+    task_ids.extend(
+        _append_task_id(
+            enqueue_submit_attempt_upserts(
+                queue_cfg,
+                attempts=submit_attempts,
+                run_id=request_id,
+            )
+        )
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_external_order_observation_upserts(
+                queue_cfg,
+                observations=observations,
+                run_id=request_id,
+            )
+        )
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_submitter_smoke",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=len(submit_attempts),
+        metadata={
+            "request_ids": request_ids,
+            "attempt_ids": list(normalized_request.attempt_ids),
+            "wallet_id": wallet_id,
+            "submit_mode": normalized_request.submit_mode.value,
+            "submit_count": len(submit_attempts),
+            "accepted_count": accepted_count,
+            "rejected_count": rejected_count,
+            "preview_count": preview_count,
+            "payload_hashes": payload_hashes,
+            "observation_ids": observation_ids,
         },
     )
 
@@ -1671,6 +1793,18 @@ def _normalize_order_signing_smoke_request(params_json: dict[str, Any]) -> Order
     return OrderSigningSmokeRequest(
         ticket_ids=ticket_ids or [],
         requester=str(params_json.get("requester") or ""),
+    )
+
+
+def _normalize_submitter_smoke_request(params_json: dict[str, Any]) -> SubmitterSmokeRequest:
+    if not isinstance(params_json, dict):
+        raise ValueError("params_json must be a dictionary")
+    attempt_ids = _coerce_optional_str_list(params_json.get("attempt_ids"))
+    raw_mode = str(params_json.get("submit_mode") or "").strip().lower() or SubmitMode.DRY_RUN.value
+    return SubmitterSmokeRequest(
+        attempt_ids=attempt_ids or [],
+        requester=str(params_json.get("requester") or ""),
+        submit_mode=SubmitMode(raw_mode),
     )
 
 

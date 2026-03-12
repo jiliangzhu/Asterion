@@ -56,6 +56,7 @@ from dagster_asterion.handlers import (
     run_weather_forecast_replay_job,
     run_weather_order_signing_smoke_job,
     run_weather_signer_audit_smoke_job,
+    run_weather_submitter_smoke_job,
     run_weather_wallet_state_refresh_job,
     run_weather_resolution_review_job,
     run_weather_resolution_reconciliation,
@@ -69,6 +70,7 @@ from dagster_asterion.resources import (
     ForecastRuntimeResource,
     GammaDiscoveryRuntimeResource,
     SignerRuntimeResource,
+    SubmitterRuntimeResource,
     WalletStateObservationRuntimeResource,
     WatcherRpcPoolResource,
     WriteQueueResource,
@@ -103,6 +105,8 @@ def _settings() -> AsterionColdPathSettings:
         capability_rpc_urls=[],
         signer_backend_kind="disabled",
         signer_rpc_url=None,
+        submitter_backend_kind="disabled",
+        submitter_api_base_url=None,
         forecast_primary_source="openmeteo",
         forecast_fallback_sources=["nws", "openmeteo"],
         watcher_chain_id=137,
@@ -288,6 +292,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_wallet_state_refresh",
             "weather_signer_audit_smoke",
             "weather_order_signing_smoke",
+            "weather_submitter_smoke",
             "weather_forecast_refresh",
             "weather_forecast_replay",
             "weather_paper_execution",
@@ -302,12 +307,14 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_wallet_state_refresh"].upstream_jobs, ["weather_capability_refresh"])
         self.assertEqual(jobs["weather_signer_audit_smoke"].upstream_jobs, ["weather_capability_refresh"])
         self.assertEqual(jobs["weather_order_signing_smoke"].upstream_jobs, ["weather_paper_execution"])
+        self.assertEqual(jobs["weather_submitter_smoke"].upstream_jobs, ["weather_order_signing_smoke"])
         self.assertEqual(jobs["weather_forecast_refresh"].upstream_jobs, ["weather_spec_sync"])
         self.assertEqual(jobs["weather_market_discovery"].mode, "scheduled")
         self.assertEqual(jobs["weather_watcher_backfill"].mode, "scheduled")
         self.assertEqual(jobs["weather_paper_execution"].mode, "manual")
         self.assertEqual(jobs["weather_signer_audit_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_order_signing_smoke"].mode, "manual")
+        self.assertEqual(jobs["weather_submitter_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
         self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
         self.assertEqual(jobs["weather_data_qa_review"].upstream_jobs, ["weather_forecast_replay"])
@@ -337,6 +344,7 @@ class ColdPathResourcesTest(unittest.TestCase):
         capability_runtime = CapabilityRefreshRuntimeResource(settings=settings)
         wallet_state_runtime = WalletStateObservationRuntimeResource(settings=settings)
         signer_runtime = SignerRuntimeResource(settings=settings)
+        submitter_runtime = SubmitterRuntimeResource(settings=settings)
         forecast_runtime = ForecastRuntimeResource(settings=settings)
         watcher_rpc = WatcherRpcPoolResource(settings=settings)
         reader = object()
@@ -351,6 +359,7 @@ class ColdPathResourcesTest(unittest.TestCase):
         self.assertEqual(wallet_state_runtime.resolve_chain_registry_path(), settings.chain_registry_path)
         self.assertIs(wallet_state_runtime.build_wallet_state_reader(reader=reader), reader)
         self.assertEqual(signer_runtime.build_signer_service()._backend.__class__.__name__, "DisabledSignerBackend")
+        self.assertEqual(submitter_runtime.build_submitter_service()._backend.__class__.__name__, "DisabledSubmitterBackend")
         self.assertIsInstance(forecast_runtime.build_cache(), InMemoryForecastCache)
         with self.assertRaises(ValueError):
             watcher_rpc.build_rpc_pool()
@@ -802,6 +811,95 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         self.assertEqual(result.metadata["rejected_count"], 0)
         self.assertEqual(result.metadata["payload_hashes"], ["phash_1"])
         self.assertEqual(result.metadata["ticket_ids"], ["tt_1"])
+
+    def test_weather_submitter_smoke_routes_to_submit_attempts_external_observations_and_journal(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        sign_attempt = type(
+            "SubmitAttemptStub",
+            (),
+            {
+                "attempt_id": "satt_sign_1",
+                "request_id": "sigreq_1",
+                "ticket_id": "tt_1",
+                "order_id": "ordr_1",
+                "wallet_id": "wallet_weather_1",
+                "execution_context_id": "ectx_1",
+                "exchange": "polymarket_clob",
+                "attempt_kind": "sign_order",
+                "attempt_mode": "sign_only",
+                "canonical_order_hash": "coh_1",
+                "payload_hash": "phash_sign_1",
+                "submit_payload_json": {"signed": True},
+                "signed_payload_ref": "satt_sign_1",
+                "status": "signed",
+                "error": None,
+                "created_at": datetime(2026, 3, 10, 10, 5),
+            },
+        )()
+        submitter_service = type(
+            "SubmitterServiceStub",
+            (),
+            {
+                "submit_order": lambda self, request, *, queue_cfg, run_id=None: type(
+                    "InvocationResultStub",
+                    (),
+                    {
+                        "payload_hash": "phash_submit_1",
+                        "task_ids": ["task_submit_requested", "task_submit_final"],
+                        "response": type(
+                            "SubmitOrderResultStub",
+                            (),
+                            {
+                                "request_id": request.request_id,
+                                "status": "previewed",
+                                "payload_hash": "phash_submit_1",
+                                "submit_payload_json": {"backend_kind": "dry_run", "status": "previewed"},
+                                "external_order_id": None,
+                                "error": None,
+                                "completed_at": datetime(2026, 3, 10, 10, 6),
+                            },
+                        )(),
+                    },
+                )()
+            },
+        )()
+        with ExitStack() as stack:
+            stack.enter_context(patch("dagster_asterion.handlers.load_sign_only_attempts", return_value=[sign_attempt]))
+            enqueue_attempts = stack.enter_context(
+                patch("dagster_asterion.handlers.enqueue_submit_attempt_upserts", return_value="task_submit_attempt")
+            )
+            enqueue_observations = stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.enqueue_external_order_observation_upserts",
+                    return_value="task_external_observation",
+                )
+            )
+            result = run_weather_submitter_smoke_job(
+                object(),
+                queue_cfg,
+                submitter_service=submitter_service,
+                params_json={"attempt_ids": ["satt_sign_1"], "requester": "operator", "submit_mode": "dry_run"},
+                run_id="run_submitter",
+                observed_at=datetime(2026, 3, 10, 10, 6, tzinfo=timezone.utc),
+            )
+        enqueue_attempts.assert_called_once()
+        enqueue_observations.assert_called_once()
+        self.assertEqual(
+            result.task_ids,
+            [
+                "task_submit_requested",
+                "task_submit_final",
+                "task_submit_attempt",
+                "task_external_observation",
+            ],
+        )
+        self.assertEqual(result.metadata["wallet_id"], "wallet_weather_1")
+        self.assertEqual(result.metadata["submit_mode"], "dry_run")
+        self.assertEqual(result.metadata["submit_count"], 1)
+        self.assertEqual(result.metadata["preview_count"], 1)
+        self.assertEqual(result.metadata["accepted_count"], 0)
+        self.assertEqual(result.metadata["rejected_count"], 0)
+        self.assertEqual(result.metadata["attempt_ids"], ["satt_sign_1"])
 
     def test_weather_paper_execution_rejects_invalid_selectors(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")

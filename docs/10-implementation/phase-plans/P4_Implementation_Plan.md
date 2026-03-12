@@ -1,9 +1,9 @@
 # Asterion P4 Implementation Plan
 
 **版本**: v1.0
-**更新日期**: 2026-03-11
+**更新日期**: 2026-03-12
 **阶段**: `P4`
-**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` 已完成）
+**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` 已完成）
 **目标**: 在 `P3 paper execution` 已关闭的基础上，补齐 `live prerequisites`：真实外部只读数据、capability refresh、signer boundary、submitter dry-run/shadow path、chain transaction scaffolding、external reconciliation、operator/readiness/ops hardening，并保持默认安全边界。
 
 ---
@@ -100,6 +100,10 @@
   - `weather_order_signing_smoke` 已成为 canonical official-order-compatible signing smoke entry
   - `runtime.submit_attempts` 已落地为 sign-only canonical attempt ledger
   - official-order-compatible payload envelope 已可由 `SignerServiceShell + official_stub` 生成，默认仍不触发真实 submit
+- `P4-06` 已完成：
+  - `weather_submitter_smoke` 已成为 canonical submitter dry-run / shadow-submit smoke entry
+  - `runtime.submit_attempts` 已扩展消费 `submit_order` attempts，仍保持 canonical attempt ledger
+  - `runtime.external_order_observations` 已落地为 canonical order-level external observation ledger，默认仍不触发真实网络 submit
 
 ### 2.2 P4 Start-State Register
 
@@ -111,11 +115,12 @@
 - 当前 repo 中已存在 `asterion_core/signer/`，并已支持 `official_stub` order signing backend，但真实 backend 仍保持 `default-off`
 - 当前 repo 中的 `asterion_core/blockchain/` 仅包含 read-only wallet observation helpers，还没有 live submit / broadcast / nonce / gas management path
 
-#### Register B: `meta.signature_audit_logs` 已接入 shell audit，`runtime.submit_attempts` 已接入 sign-only path，但 submitter / external submit observation 仍未落地
+#### Register B: `meta.signature_audit_logs` 已接入 shell audit，`runtime.submit_attempts` 与 `runtime.external_order_observations` 已接入 sign-only / submitter dry-run path，但真实 submit 与 external fill observation 仍未落地
 
 - `0010_signature_audit_boundary.sql` 已扩充 `meta.signature_audit_logs`
 - `0011_runtime_submit_attempts.sql` 已新增 `runtime.submit_attempts`
-- 当前 signer shell 已写 request / response / payload hash，official-order-compatible signing 已进入 sign-only attempt ledger，但 submitter / external submitter 仍未消费该审计链
+- `0012_runtime_external_order_observations.sql` 已新增 `runtime.external_order_observations`
+- 当前 signer shell 已写 request / response / payload hash，official-order-compatible signing 已进入 sign-only attempt ledger，submitter dry-run / shadow path 已消费该审计链，但真实 submit 与 external fill observation 仍未落地
 
 #### Register C: capability contract 与 canonical refresh path 已闭合，但 downstream live path 仍未消费其全部信号
 
@@ -124,10 +129,10 @@
 - canonical 的 `Gamma + CLOB public + chain read + local config` refresh pipeline 已在 `P4-02` 落地
 - 但 submitter / live tx scaffold 仍未把这些 refreshed values 全量接入
 
-#### Register D: orchestration job map 已覆盖 signer smoke 与 order-signing smoke，但还未覆盖 submitter / chain tx / shadow submit
+#### Register D: orchestration job map 已覆盖 signer smoke、order-signing smoke 与 submitter smoke，但还未覆盖 chain tx / controlled live smoke
 
-- 当前 `dagster_asterion/job_map.py` 已包含 `weather_signer_audit_smoke` 与 `weather_order_signing_smoke`
-- 但仍没有 submitter / chain tx / shadow submit job
+- 当前 `dagster_asterion/job_map.py` 已包含 `weather_signer_audit_smoke`、`weather_order_signing_smoke` 与 `weather_submitter_smoke`
+- 但仍没有 chain tx / controlled live smoke job
 - 当前仍没有 canonical 的 `controlled live smoke` job boundary
 
 #### Register E: reconciliation 仍是 paper-local deterministic reconciliation
@@ -397,9 +402,9 @@ Gamma / CLOB public / Open-Meteo / NWS / Polygon RPC
 
 - **goal**: 建立 canonical submitter shell，让 routed order 能以 `dry_run` 或 `shadow_submit` 模式进入外部执行适配层。
 - **code landing area**: `asterion_core/execution/` 下新增 live submitter / clob adapter 模块、`dagster_asterion/handlers.py`、`dagster_asterion/job_map.py`
-- **input tables**: `trading.orders`、`capability.execution_contexts`、`meta.signature_audit_logs`
+- **input tables**: `runtime.submit_attempts`、`runtime.trade_tickets`、`capability.execution_contexts`
 - **output tables**: `runtime.submit_attempts`、`runtime.external_order_observations`、`runtime.journal_events`
-- **contracts consumed**: `RoutedCanonicalOrder`、`Order`、`ExecutionContext`
+- **contracts consumed**: `SubmitAttemptRecord`、`RoutedCanonicalOrder`、`ExecutionContext`
 - **tests required**: submit payload tests、dry-run integration tests、shadow observation tests
 - **exit criteria**: submitter 支持 `dry_run`、`shadow_submit` 两种模式；默认不做真实资金 side effect
 
