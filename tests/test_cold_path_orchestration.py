@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+import json
 import importlib.util
 import unittest
 from datetime import date, datetime, timezone
@@ -52,6 +53,7 @@ from dagster_asterion.handlers import (
     SettlementVerificationInput,
     run_weather_capability_refresh_job,
     run_weather_chain_tx_smoke_job,
+    run_weather_controlled_live_smoke_job,
     run_weather_paper_execution_job,
     run_weather_data_qa_review_job,
     run_weather_external_execution_reconciliation_job,
@@ -73,6 +75,7 @@ from dagster_asterion.resources import (
     DuckDBResource,
     CapabilityRefreshRuntimeResource,
     ChainTxRuntimeResource,
+    ControlledLiveSmokeRuntimeResource,
     ForecastRuntimeResource,
     GammaDiscoveryRuntimeResource,
     LivePrereqReadinessRuntimeResource,
@@ -108,6 +111,7 @@ def _settings() -> AsterionColdPathSettings:
         clob_fee_rate_endpoint="/fee-rate",
         wallet_registry_path="config/wallet_registry.json",
         chain_registry_path="config/chain_registry.polygon.json",
+        controlled_live_smoke_policy_path="config/controlled_live_smoke.json",
         capability_chain_id=137,
         capability_rpc_urls=[],
         signer_backend_kind="disabled",
@@ -304,6 +308,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_external_execution_reconciliation",
             "weather_chain_tx_smoke",
             "weather_live_prereq_readiness",
+            "weather_controlled_live_smoke",
             "weather_forecast_refresh",
             "weather_forecast_replay",
             "weather_paper_execution",
@@ -328,6 +333,10 @@ class ColdPathJobMapTest(unittest.TestCase):
             jobs["weather_live_prereq_readiness"].upstream_jobs,
             ["weather_external_execution_reconciliation", "weather_chain_tx_smoke"],
         )
+        self.assertEqual(
+            jobs["weather_controlled_live_smoke"].upstream_jobs,
+            ["weather_live_prereq_readiness"],
+        )
         self.assertEqual(jobs["weather_forecast_refresh"].upstream_jobs, ["weather_spec_sync"])
         self.assertEqual(jobs["weather_market_discovery"].mode, "scheduled")
         self.assertEqual(jobs["weather_watcher_backfill"].mode, "scheduled")
@@ -338,6 +347,7 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_external_execution_reconciliation"].mode, "scheduled")
         self.assertEqual(jobs["weather_chain_tx_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_live_prereq_readiness"].mode, "scheduled")
+        self.assertEqual(jobs["weather_controlled_live_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
         self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
         self.assertEqual(jobs["weather_data_qa_review"].upstream_jobs, ["weather_forecast_replay"])
@@ -371,6 +381,7 @@ class ColdPathResourcesTest(unittest.TestCase):
         signer_runtime = SignerRuntimeResource(settings=settings)
         submitter_runtime = SubmitterRuntimeResource(settings=settings)
         chain_tx_runtime = ChainTxRuntimeResource(settings=settings)
+        controlled_live_runtime = ControlledLiveSmokeRuntimeResource(settings=settings)
         readiness_runtime = LivePrereqReadinessRuntimeResource(settings=settings)
         forecast_runtime = ForecastRuntimeResource(settings=settings)
         watcher_rpc = WatcherRpcPoolResource(settings=settings)
@@ -390,6 +401,9 @@ class ColdPathResourcesTest(unittest.TestCase):
         self.assertEqual(chain_tx_runtime.resolve_chain_registry_path(), settings.chain_registry_path)
         self.assertIs(chain_tx_runtime.build_chain_tx_reader(reader=reader), reader)
         self.assertEqual(chain_tx_runtime.build_chain_tx_service()._backend.__class__.__name__, "DisabledChainTxBackend")
+        self.assertTrue(
+            controlled_live_runtime.resolve_policy_path().endswith("config/controlled_live_smoke.json")
+        )
         self.assertTrue(readiness_runtime.resolve_readiness_report_json_path().endswith("asterion_readiness_p4.json"))
         self.assertIsInstance(forecast_runtime.build_cache(), InMemoryForecastCache)
         with self.assertRaises(ValueError):
@@ -400,6 +414,7 @@ class ColdPathResourcesTest(unittest.TestCase):
         self.assertIn("duckdb", resource_defs)
         self.assertIn("signer_runtime", resource_defs)
         self.assertIn("chain_tx_runtime", resource_defs)
+        self.assertIn("controlled_live_smoke_runtime", resource_defs)
         self.assertIn("live_prereq_readiness_runtime", resource_defs)
         if HAS_DAGSTER:
             self.assertNotIsInstance(resource_defs["duckdb"], DuckDBResource)
@@ -1036,6 +1051,8 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                 "token_id": "usdc_e",
                 "amount": Decimal("100"),
                 "nonce": 12,
+                "approval_id": None,
+                "approval_reason": None,
                 "gas_estimate": type(
                     "GasEstimateStub",
                     (),
@@ -1163,6 +1180,67 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         self.assertEqual(result.metadata["go_decision"], "GO")
         self.assertEqual(result.metadata["failed_gate_names"], [])
         self.assertTrue(result.metadata["ui_lite_ok"])
+
+    def test_weather_controlled_live_smoke_blocks_when_not_armed(self) -> None:
+        import tempfile
+        import duckdb
+        from pathlib import Path
+        from asterion_core.storage.write_queue import init_queue
+
+        report = ReadinessReport(
+            target=ReadinessTarget.P4_LIVE_PREREQUISITES,
+            generated_at=datetime(2026, 3, 12, 12, 0, tzinfo=timezone.utc),
+            all_passed=True,
+            go_decision="GO",
+            decision_reason="all readiness gates passed; ready for controlled live rollout decision",
+            data_hash="hash_p4",
+            gate_results=[],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue_cfg = WriteQueueConfig(path=str(Path(tmpdir) / "write_queue.sqlite"))
+            init_queue(queue_cfg)
+            readiness_path = Path(tmpdir) / "asterion_readiness_p4.json"
+            ui_lite_path = Path(tmpdir) / "ui_lite.duckdb"
+            readiness_path.write_text(
+                json.dumps(report.to_dict()),
+                encoding="utf-8",
+            )
+            ui_con = duckdb.connect(str(ui_lite_path))
+            try:
+                ui_con.execute("CREATE SCHEMA IF NOT EXISTS ui")
+                ui_con.execute(
+                    """
+                    CREATE TABLE ui.live_prereq_wallet_summary AS
+                    SELECT 'wallet_weather_1' AS wallet_id, 'ready' AS wallet_readiness_status
+                    """
+                )
+            finally:
+                ui_con.close()
+            result = run_weather_controlled_live_smoke_job(
+                object(),
+                queue_cfg,
+                signer_service=object(),
+                chain_tx_service=object(),
+                chain_registry_path="config/chain_registry.polygon.json",
+                controlled_live_smoke_policy_path="config/controlled_live_smoke.json",
+                readiness_report_json_path=str(readiness_path),
+                ui_lite_db_path=str(ui_lite_path),
+                chain_tx_reader=object(),
+                params_json={
+                    "wallet_id": "wallet_weather_1",
+                    "requester": "operator",
+                    "approval_id": "clive_1",
+                    "approval_reason": "controlled live approve smoke",
+                    "approval_token": "bad-token",
+                    "tx_kind": "approve_usdc",
+                    "spender": "0x2222222222222222222222222222222222222222",
+                    "amount": "25",
+                },
+                run_id="run_controlled_live",
+                observed_at=datetime(2026, 3, 12, 12, 5, tzinfo=timezone.utc),
+            )
+        self.assertEqual(result.metadata["status"], "blocked")
+        self.assertEqual(result.metadata["reason"], "controlled_live_smoke_not_armed")
 
     def test_weather_external_execution_reconciliation_routes_to_results_and_journal(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")

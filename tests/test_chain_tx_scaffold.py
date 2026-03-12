@@ -120,6 +120,24 @@ class ChainTxScaffoldUnitTest(unittest.TestCase):
         self.assertEqual(signer_request.context.signing_purpose.value, "transaction")
         self.assertEqual(signer_request.payload["tx_kind"], "approve_usdc")
 
+    def test_controlled_live_request_preserves_approval_metadata(self) -> None:
+        chain_request = build_approve_usdc_request(
+            account_capability=_account_capability(),
+            chain_registry=_chain_registry(),
+            chain_tx_reader=_Reader(),
+            requester="operator",
+            request_id="req_chain_live_1",
+            timestamp=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+            tx_mode=ChainTxMode.CONTROLLED_LIVE,
+            spender="0x2222222222222222222222222222222222222222",
+            amount=Decimal("25"),
+            approval_id="clive_1",
+            approval_reason="controlled live approve smoke",
+        )
+        self.assertEqual(chain_request.tx_mode, ChainTxMode.CONTROLLED_LIVE)
+        self.assertEqual(chain_request.approval_id, "clive_1")
+        self.assertEqual(chain_request.approval_reason, "controlled live approve smoke")
+
     def test_disabled_backend_rejects(self) -> None:
         chain_request = build_approve_usdc_request(
             account_capability=_account_capability(),
@@ -214,6 +232,38 @@ class ChainTxScaffoldUnitTest(unittest.TestCase):
         right = build_chain_tx_attempt_record(chain_request, result, signed_payload_ref="txsref_1")
         self.assertEqual(left.attempt_id, right.attempt_id)
         self.assertEqual(left.payload_hash, right.payload_hash)
+
+    def test_build_chain_tx_attempt_record_supports_broadcasted_status(self) -> None:
+        chain_request = build_approve_usdc_request(
+            account_capability=_account_capability(),
+            chain_registry=_chain_registry(),
+            chain_tx_reader=_Reader(),
+            requester="operator",
+            request_id="req_chain_live_1",
+            timestamp=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+            tx_mode=ChainTxMode.CONTROLLED_LIVE,
+            spender="0x2222222222222222222222222222222222222222",
+            amount=Decimal("25"),
+            approval_id="clive_1",
+            approval_reason="controlled live approve smoke",
+        )
+        result = type(
+            "ChainTxResultStub",
+            (),
+            {
+                "request_id": chain_request.request_id,
+                "status": "broadcasted",
+                "payload_hash": "phash_live_1",
+                "tx_payload_json": {"backend_kind": "real_broadcast", "status": "broadcasted"},
+                "tx_hash": "0xabc123",
+                "error": None,
+                "completed_at": datetime(2026, 3, 12, 10, 1),
+            },
+        )()
+        record = build_chain_tx_attempt_record(chain_request, result, signed_payload_ref="txsref_live_1")
+        self.assertEqual(record.tx_mode, "controlled_live")
+        self.assertEqual(record.status, "broadcasted")
+        self.assertEqual(record.tx_hash, "0xabc123")
 
 
 if __name__ == "__main__":

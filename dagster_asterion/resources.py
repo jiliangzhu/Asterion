@@ -8,6 +8,7 @@ from typing import Any
 
 from asterion_core.blockchain import (
     ChainTxServiceShell,
+    RealBroadcastBackend,
     DisabledChainTxBackend,
     PolygonChainTxReader,
     PolygonWalletStateReader,
@@ -24,6 +25,7 @@ from asterion_core.signer import (
     DeterministicOfficialOrderSigningBackend,
     DeterministicTransactionSignerBackend,
     DisabledSignerBackend,
+    EnvPrivateKeyTransactionSignerBackend,
     PyClobClientOrderSigningBackend,
     SignerServiceShell,
 )
@@ -63,6 +65,7 @@ class AsterionColdPathSettings:
     clob_fee_rate_endpoint: str
     wallet_registry_path: str
     chain_registry_path: str
+    controlled_live_smoke_policy_path: str
     capability_chain_id: int
     capability_rpc_urls: list[str]
     signer_backend_kind: str
@@ -111,6 +114,9 @@ class AsterionColdPathSettings:
             clob_fee_rate_endpoint=os.getenv("ASTERION_CLOB_FEE_RATE_ENDPOINT", "/fee-rate"),
             wallet_registry_path=os.getenv("ASTERION_WALLET_REGISTRY_PATH", "config/wallet_registry.json"),
             chain_registry_path=os.getenv("ASTERION_CHAIN_REGISTRY_PATH", "config/chain_registry.polygon.json"),
+            controlled_live_smoke_policy_path=os.getenv(
+                "ASTERION_CONTROLLED_LIVE_SMOKE_POLICY_PATH", "config/controlled_live_smoke.json"
+            ),
             capability_chain_id=int(os.getenv("ASTERION_CAPABILITY_CHAIN_ID", "137")),
             capability_rpc_urls=capability_rpc_urls,
             signer_backend_kind=os.getenv("ASTERION_SIGNER_BACKEND_KIND", "disabled"),
@@ -228,6 +234,8 @@ class SignerRuntimeResource:
             return SignerServiceShell(DeterministicOfficialOrderSigningBackend())
         if self.settings.signer_backend_kind == "tx_stub":
             return SignerServiceShell(DeterministicTransactionSignerBackend())
+        if self.settings.signer_backend_kind == "env_private_key_tx":
+            return SignerServiceShell(EnvPrivateKeyTransactionSignerBackend())
         if self.settings.signer_backend_kind == "py_clob_client":
             return SignerServiceShell(PyClobClientOrderSigningBackend())
         raise ValueError(f"unsupported signer_backend_kind={self.settings.signer_backend_kind!r}")
@@ -267,7 +275,22 @@ class ChainTxRuntimeResource:
             return ChainTxServiceShell(DisabledChainTxBackend())
         if self.settings.chain_tx_backend_kind == "shadow_stub":
             return ChainTxServiceShell(ShadowBroadcastBackend())
+        if self.settings.chain_tx_backend_kind == "real_broadcast":
+            return ChainTxServiceShell(
+                RealBroadcastBackend(
+                    chain_id=self.settings.capability_chain_id,
+                    rpc_urls=list(self.settings.capability_rpc_urls),
+                )
+            )
         raise ValueError(f"unsupported chain_tx_backend_kind={self.settings.chain_tx_backend_kind!r}")
+
+
+@dataclass(frozen=True)
+class ControlledLiveSmokeRuntimeResource:
+    settings: AsterionColdPathSettings
+
+    def resolve_policy_path(self) -> str:
+        return str(Path(self.settings.controlled_live_smoke_policy_path))
 
 
 @dataclass(frozen=True)
@@ -362,6 +385,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -399,6 +423,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -443,6 +468,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -485,6 +511,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 clob_fee_rate_endpoint=self.clob_fee_rate_endpoint,
                 wallet_registry_path=self.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
                 capability_chain_id=int(self.capability_chain_id),
                 capability_rpc_urls=list(self.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -524,6 +551,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=self.chain_registry_path,
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
                 capability_chain_id=int(self.capability_chain_id),
                 capability_rpc_urls=list(self.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -561,6 +589,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -598,6 +627,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -636,6 +666,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=self.signer_backend_kind,
@@ -674,6 +705,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -714,6 +746,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=self.chain_registry_path,
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
                 capability_chain_id=int(self.capability_chain_id),
                 capability_rpc_urls=list(self.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -752,6 +785,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -769,6 +803,46 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
             return LivePrereqReadinessRuntimeResource(settings=settings)
 
 
+    class DagsterControlledLiveSmokeRuntimeResource(ConfigurableResource):
+        controlled_live_smoke_policy_path: str = "config/controlled_live_smoke.json"
+
+        def build_runtime(self) -> ControlledLiveSmokeRuntimeResource:
+            settings = AsterionColdPathSettings.from_env()
+            settings = AsterionColdPathSettings(
+                db_path=settings.db_path,
+                ddl_path=settings.ddl_path,
+                write_queue_path=settings.write_queue_path,
+                gamma_base_url=settings.gamma_base_url,
+                gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_page_limit=settings.gamma_page_limit,
+                gamma_max_pages=settings.gamma_max_pages,
+                gamma_sleep_s=settings.gamma_sleep_s,
+                gamma_active_only=settings.gamma_active_only,
+                gamma_closed=settings.gamma_closed,
+                gamma_archived=settings.gamma_archived,
+                clob_base_url=settings.clob_base_url,
+                clob_book_endpoint=settings.clob_book_endpoint,
+                clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
+                wallet_registry_path=settings.wallet_registry_path,
+                chain_registry_path=settings.chain_registry_path,
+                controlled_live_smoke_policy_path=self.controlled_live_smoke_policy_path,
+                capability_chain_id=settings.capability_chain_id,
+                capability_rpc_urls=list(settings.capability_rpc_urls),
+                signer_backend_kind=settings.signer_backend_kind,
+                signer_rpc_url=settings.signer_rpc_url,
+                submitter_backend_kind=settings.submitter_backend_kind,
+                submitter_api_base_url=settings.submitter_api_base_url,
+                chain_tx_backend_kind=settings.chain_tx_backend_kind,
+                forecast_primary_source=settings.forecast_primary_source,
+                forecast_fallback_sources=list(settings.forecast_fallback_sources),
+                watcher_chain_id=settings.watcher_chain_id,
+                watcher_rpc_urls=list(settings.watcher_rpc_urls),
+                readiness_report_json_path=settings.readiness_report_json_path,
+                readiness_report_markdown_path=settings.readiness_report_markdown_path,
+            )
+            return ControlledLiveSmokeRuntimeResource(settings=settings)
+
+
 def build_runtime_resources(settings: AsterionColdPathSettings | None = None) -> dict[str, Any]:
     active = settings or AsterionColdPathSettings.from_env()
     return {
@@ -782,6 +856,7 @@ def build_runtime_resources(settings: AsterionColdPathSettings | None = None) ->
         "submitter_runtime": SubmitterRuntimeResource(settings=active),
         "chain_tx_runtime": ChainTxRuntimeResource(settings=active),
         "live_prereq_readiness_runtime": LivePrereqReadinessRuntimeResource(settings=active),
+        "controlled_live_smoke_runtime": ControlledLiveSmokeRuntimeResource(settings=active),
         "forecast_runtime": ForecastRuntimeResource(settings=active),
         "watcher_rpc_pool": WatcherRpcPoolResource(settings=active),
     }
@@ -835,6 +910,9 @@ def build_dagster_resource_defs(settings: AsterionColdPathSettings | None = None
         "live_prereq_readiness_runtime": DagsterLivePrereqReadinessRuntimeResource(
             readiness_report_json_path=active.readiness_report_json_path,
             readiness_report_markdown_path=active.readiness_report_markdown_path,
+        ),
+        "controlled_live_smoke_runtime": DagsterControlledLiveSmokeRuntimeResource(
+            controlled_live_smoke_policy_path=active.controlled_live_smoke_policy_path,
         ),
         "forecast_runtime": DagsterForecastRuntimeResource(forecast_primary_source=active.forecast_primary_source),
         "watcher_rpc_pool": DagsterWatcherRpcPoolResource(watcher_chain_id=active.watcher_chain_id),

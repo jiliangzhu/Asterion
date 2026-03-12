@@ -6,7 +6,10 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
+import os
 from typing import TYPE_CHECKING, Any
+
+from web3 import Account
 
 from asterion_core.contracts import AccountTradingCapability, CanonicalOrderContract, stable_object_id
 from asterion_core.journal import build_journal_event, enqueue_journal_event_upserts
@@ -149,6 +152,7 @@ class SignerResponse:
     signed_payload_ref: str | None
     error: str | None
     completed_at: datetime
+    signed_payload_json: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -317,6 +321,104 @@ class DeterministicTransactionSignerBackend(OrderSigningBackend):
             signed_payload_ref=signed_payload_ref,
             error=None,
             completed_at=_normalize_timestamp(request.timestamp),
+            signed_payload_json={
+                "backend_kind": "tx_stub",
+                "request_id": request.request_id,
+                "signed_payload_ref": signed_payload_ref,
+                "signature": signature,
+                "unsigned_tx": dict(request.payload),
+            },
+        )
+
+    def derive_api_credentials(self, request: SignerRequest) -> SignerResponse:
+        return _disabled_response(request)
+
+
+class EnvPrivateKeyTransactionSignerBackend(OrderSigningBackend):
+    def sign_order(self, request: SignOrderRequest) -> OrderSigningResult:
+        payload_hash = hash_signer_payload(_sign_order_request_payload(request))
+        return OrderSigningResult(
+            request_id=request.request_id,
+            status="rejected",
+            signature=None,
+            error="env_private_key_tx_order_signing_disabled",
+            payload_hash=payload_hash,
+            submit_payload_json=_build_official_submit_payload(
+                request,
+                signature=None,
+                backend_kind="env_private_key_tx",
+                signed=False,
+                error="env_private_key_tx_order_signing_disabled",
+            ),
+            completed_at=_normalize_timestamp(request.timestamp),
+        )
+
+    def sign_transaction(self, request: SignerRequest) -> SignerResponse:
+        payload_hash = hash_signer_payload(request.payload)
+        private_key_env_var = str(request.payload.get("private_key_env_var") or "").strip()
+        if not private_key_env_var:
+            return SignerResponse(
+                request_id=request.request_id,
+                status=SignatureAuditStatus.REJECTED.value,
+                signature=None,
+                signed_payload_ref=None,
+                error="controlled_live_private_key_env_var_missing",
+                completed_at=_normalize_timestamp(request.timestamp),
+            )
+        private_key = os.getenv(private_key_env_var)
+        if not private_key:
+            return SignerResponse(
+                request_id=request.request_id,
+                status=SignatureAuditStatus.REJECTED.value,
+                signature=None,
+                signed_payload_ref=None,
+                error="controlled_live_private_key_not_set",
+                completed_at=_normalize_timestamp(request.timestamp),
+            )
+        account = Account.from_key(private_key)
+        funder = str(request.payload.get("from") or "").strip().lower()
+        if account.address.lower() != funder:
+            return SignerResponse(
+                request_id=request.request_id,
+                status=SignatureAuditStatus.REJECTED.value,
+                signature=None,
+                signed_payload_ref=None,
+                error="controlled_live_private_key_address_mismatch",
+                completed_at=_normalize_timestamp(request.timestamp),
+            )
+        tx_dict = {
+            "type": 2,
+            "chainId": int(request.payload["chain_id"]),
+            "nonce": int(request.payload["nonce"]),
+            "to": request.payload["to"],
+            "value": int(str(request.payload.get("value") or "0")),
+            "gas": int(request.payload["gas_limit"]),
+            "maxFeePerGas": int(request.payload["max_fee_per_gas"]),
+            "maxPriorityFeePerGas": int(request.payload["max_priority_fee_per_gas"]),
+            "data": request.payload["data"],
+        }
+        signed = account.sign_transaction(tx_dict)
+        signed_payload_ref = stable_object_id(
+            "txsref",
+            {"request_id": request.request_id, "payload_hash": payload_hash},
+        )
+        tx_hash_hex = signed.hash.hex()
+        return SignerResponse(
+            request_id=request.request_id,
+            status=SignatureAuditStatus.SUCCEEDED.value,
+            signature=tx_hash_hex,
+            signed_payload_ref=signed_payload_ref,
+            error=None,
+            completed_at=_normalize_timestamp(request.timestamp),
+            signed_payload_json={
+                "backend_kind": "env_private_key_tx",
+                "request_id": request.request_id,
+                "signed_payload_ref": signed_payload_ref,
+                "signature": tx_hash_hex,
+                "signer_address": account.address,
+                "unsigned_tx": dict(request.payload),
+                "raw_transaction_hex": signed.raw_transaction.hex(),
+            },
         )
 
     def derive_api_credentials(self, request: SignerRequest) -> SignerResponse:

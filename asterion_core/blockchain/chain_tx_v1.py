@@ -5,8 +5,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 import hashlib
+import json
+from pathlib import Path
 from typing import Any, Protocol
 
+from eth_abi import encode as abi_encode
 from web3 import Web3
 
 from asterion_core.blockchain.wallet_state_v1 import PolygonChainRegistry
@@ -51,6 +54,7 @@ class ChainTxKind(str, Enum):
 class ChainTxMode(str, Enum):
     DRY_RUN = "dry_run"
     SHADOW_BROADCAST = "shadow_broadcast"
+    CONTROLLED_LIVE = "controlled_live"
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,8 @@ class ChainTxRequest:
     amount: Decimal | None
     nonce: int
     gas_estimate: GasEstimate
+    approval_id: str | None = None
+    approval_reason: str | None = None
 
     def __post_init__(self) -> None:
         if not self.request_id or not self.requester or not self.wallet_id or not self.funder:
@@ -141,8 +147,8 @@ class ChainTxResult:
     completed_at: datetime
 
     def __post_init__(self) -> None:
-        if self.status not in {"previewed", "accepted", "rejected"}:
-            raise ValueError("chain tx status must be previewed, accepted, or rejected")
+        if self.status not in {"previewed", "accepted", "rejected", "broadcasted"}:
+            raise ValueError("chain tx status must be previewed, accepted, rejected, or broadcasted")
         if not self.payload_hash:
             raise ValueError("payload_hash is required")
         if not isinstance(self.tx_payload_json, dict) or not self.tx_payload_json:
@@ -154,6 +160,27 @@ class _ChainTxInvocationResult:
     response: ChainTxResult
     payload_hash: str
     task_ids: list[str]
+
+
+@dataclass(frozen=True)
+class ControlledLiveSmokeWalletPolicy:
+    wallet_id: str
+    allowed_tx_kinds: list[str]
+    allowed_spenders: list[str]
+    max_approve_amount: Decimal
+    private_key_env_var: str
+
+
+@dataclass(frozen=True)
+class ControlledLiveSmokePolicy:
+    chain_id: int
+    wallets: list[ControlledLiveSmokeWalletPolicy]
+
+    def wallet_policy(self, wallet_id: str) -> ControlledLiveSmokeWalletPolicy:
+        for item in self.wallets:
+            if item.wallet_id == wallet_id:
+                return item
+        raise ValueError(f"wallet is not allowlisted for controlled live smoke: {wallet_id}")
 
 
 class ChainTxReader(Protocol):
@@ -271,6 +298,72 @@ class ShadowBroadcastBackend(ChainTxBackend):
         )
 
 
+class RealBroadcastBackend(ChainTxBackend):
+    def __init__(self, *, chain_id: int, rpc_urls: list[str]) -> None:
+        urls = [str(item).strip() for item in rpc_urls if str(item).strip()]
+        if chain_id <= 0:
+            raise ValueError("chain_id must be positive")
+        if not urls:
+            raise ValueError("capability_rpc_urls are required for real_broadcast backend")
+        self._chain_id = int(chain_id)
+        self._rpc_urls = urls
+
+    def broadcast(self, request: ChainTxRequest, *, signed_payload_json: dict[str, Any]) -> ChainTxResult:
+        raw_transaction_hex = str(signed_payload_json.get("raw_transaction_hex") or "").strip()
+        if not raw_transaction_hex:
+            envelope = _build_tx_payload_envelope(
+                request,
+                signed_payload_json=signed_payload_json,
+                backend_kind="real_broadcast",
+                status="rejected",
+                tx_hash=None,
+                error="missing_raw_transaction_hex",
+            )
+            return ChainTxResult(
+                request_id=request.request_id,
+                status="rejected",
+                payload_hash=_hash_payload(envelope),
+                tx_payload_json=envelope,
+                tx_hash=None,
+                error="missing_raw_transaction_hex",
+                completed_at=_normalize_timestamp(request.timestamp),
+            )
+        tx_hash_hex = self._broadcast_raw_transaction(raw_transaction_hex)
+        envelope = _build_tx_payload_envelope(
+            request,
+            signed_payload_json=signed_payload_json,
+            backend_kind="real_broadcast",
+            status="broadcasted",
+            tx_hash=tx_hash_hex,
+            error=None,
+        )
+        return ChainTxResult(
+            request_id=request.request_id,
+            status="broadcasted",
+            payload_hash=_hash_payload(envelope),
+            tx_payload_json=envelope,
+            tx_hash=tx_hash_hex,
+            error=None,
+            completed_at=_normalize_timestamp(request.timestamp),
+        )
+
+    def _broadcast_raw_transaction(self, raw_transaction_hex: str) -> str:
+        last_error: Exception | None = None
+        for rpc_url in self._rpc_urls:
+            try:
+                web3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+                observed_chain_id = int(web3.eth.chain_id)
+                if observed_chain_id != self._chain_id:
+                    raise RuntimeError(
+                        f"real_broadcast chain_id mismatch: expected {self._chain_id}, got {observed_chain_id}"
+                    )
+                tx_hash = web3.eth.send_raw_transaction(Web3.to_bytes(hexstr=raw_transaction_hex))
+                return tx_hash.hex()
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+        raise RuntimeError("real broadcast failed for all configured rpc urls") from last_error
+
+
 class ChainTxServiceShell:
     def __init__(self, backend: ChainTxBackend | None = None) -> None:
         self._backend = backend or DisabledChainTxBackend()
@@ -324,6 +417,7 @@ class ChainTxServiceShell:
             "previewed": "chain_tx.previewed",
             "accepted": "chain_tx.accepted",
             "rejected": "chain_tx.rejected",
+            "broadcasted": "chain_tx.broadcasted",
         }[response.status]
         task_ids.extend(
             _append_task_id(
@@ -366,6 +460,8 @@ def build_approve_usdc_request(
     tx_mode: ChainTxMode,
     spender: str,
     amount: Decimal,
+    approval_id: str | None = None,
+    approval_reason: str | None = None,
 ) -> ChainTxRequest:
     normalized_spender = _normalize_address(spender)
     allowed_spenders = {_normalize_address(item) for item in account_capability.allowance_targets}
@@ -391,6 +487,8 @@ def build_approve_usdc_request(
         amount=amount,
         nonce=nonce.nonce,
         gas_estimate=gas_estimate,
+        approval_id=approval_id,
+        approval_reason=approval_reason,
     )
 
 
@@ -592,7 +690,7 @@ def _build_tx_payload_envelope(
         "tx_kind": request.tx_kind.value,
         "tx_mode": request.tx_mode.value,
         "unsigned_tx": _build_unsigned_tx_payload(request),
-        "signed_payload": dict(signed_payload_json),
+        "signed_payload": _sanitize_signed_payload_json(signed_payload_json),
         "tx_hash": tx_hash,
         "error": error,
     }
@@ -601,7 +699,7 @@ def _build_tx_payload_envelope(
 def _build_unsigned_tx_payload(request: ChainTxRequest) -> dict[str, Any]:
     amount = request.amount or Decimal("0")
     token_decimals = 6 if request.token_id == "usdc_e" else 18
-    amount_raw = str(int(amount * (Decimal(10) ** token_decimals)))
+    amount_raw_int = int(amount * (Decimal(10) ** token_decimals))
     return {
         "request_id": request.request_id,
         "wallet_id": request.wallet_id,
@@ -612,13 +710,78 @@ def _build_unsigned_tx_payload(request: ChainTxRequest) -> dict[str, Any]:
         "token_id": request.token_id,
         "spender": request.spender,
         "amount": str(amount),
-        "amount_raw": amount_raw,
+        "amount_raw": str(amount_raw_int),
         "nonce": request.nonce,
         "gas_limit": request.gas_estimate.gas_limit,
         "max_fee_per_gas": request.gas_estimate.max_fee_per_gas,
         "max_priority_fee_per_gas": request.gas_estimate.max_priority_fee_per_gas,
+        "value": "0",
+        "data": _encode_approve_usdc_call_data(request.spender, amount_raw_int)
+        if request.tx_kind is ChainTxKind.APPROVE_USDC
+        else None,
+        "approval_id": request.approval_id,
+        "approval_reason": request.approval_reason,
         "method": "approve(address,uint256)" if request.tx_kind is ChainTxKind.APPROVE_USDC else request.tx_kind.value,
     }
+
+
+def load_controlled_live_smoke_policy(path: str | Path) -> ControlledLiveSmokePolicy:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    chain_id = int(payload.get("chain_id") or 0)
+    if chain_id <= 0:
+        raise ValueError("controlled live smoke policy requires positive chain_id")
+    wallets_raw = payload.get("wallets")
+    if not isinstance(wallets_raw, list) or not wallets_raw:
+        raise ValueError("controlled live smoke policy requires non-empty wallets")
+    wallets: list[ControlledLiveSmokeWalletPolicy] = []
+    for item in wallets_raw:
+        if not isinstance(item, dict):
+            raise ValueError("controlled live smoke wallet entries must be objects")
+        max_approve_amount = Decimal(str(item.get("max_approve_amount") or "0"))
+        if max_approve_amount <= 0:
+            raise ValueError("controlled live smoke wallet policy requires positive max_approve_amount")
+        wallets.append(
+            ControlledLiveSmokeWalletPolicy(
+                wallet_id=str(item.get("wallet_id") or "").strip(),
+                allowed_tx_kinds=[str(value).strip() for value in list(item.get("allowed_tx_kinds") or []) if str(value).strip()],
+                allowed_spenders=[_normalize_address(value) for value in list(item.get("allowed_spenders") or []) if str(value).strip()],
+                max_approve_amount=max_approve_amount,
+                private_key_env_var=str(item.get("private_key_env_var") or "").strip(),
+            )
+        )
+    invalid_wallets = [
+        item.wallet_id
+        for item in wallets
+        if not item.wallet_id or not item.allowed_tx_kinds or not item.allowed_spenders or not item.private_key_env_var
+    ]
+    if invalid_wallets:
+        raise ValueError("controlled live smoke policy contains incomplete wallet entries")
+    return ControlledLiveSmokePolicy(chain_id=chain_id, wallets=wallets)
+
+
+def _sanitize_signed_payload_json(signed_payload_json: dict[str, Any]) -> dict[str, Any]:
+    def _scrub(value: Any) -> Any:
+        if isinstance(value, dict):
+            cleaned = {}
+            for key, item in value.items():
+                if key in {"raw_transaction_hex", "raw_transaction", "raw_signed_tx", "private_key_env_var"}:
+                    continue
+                cleaned[key] = _scrub(item)
+            return cleaned
+        if isinstance(value, list):
+            return [_scrub(item) for item in value]
+        return value
+
+    persisted = _scrub(dict(signed_payload_json))
+    return persisted
+
+
+def _encode_approve_usdc_call_data(spender: str | None, amount_raw_int: int) -> str | None:
+    if not spender:
+        return None
+    selector = Web3.keccak(text="approve(address,uint256)")[:4]
+    encoded_args = abi_encode(["address", "uint256"], [_normalize_address(spender), amount_raw_int])
+    return "0x" + (selector + encoded_args).hex()
 
 
 def _normalize_timestamp(value: datetime) -> datetime:
@@ -639,7 +802,7 @@ def _hash_payload(payload: dict[str, Any]) -> str:
     return hashlib.sha256(safe_json_dumps(payload).encode("utf-8")).hexdigest()
 
 
-def _sql_timestamp(value: datetime | None) -> datetime | None:
+def _sql_timestamp(value: datetime | None) -> str | None:
     if value is None:
         return None
-    return _normalize_timestamp(value)
+    return _normalize_timestamp(value).isoformat(sep=" ", timespec="seconds")

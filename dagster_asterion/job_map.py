@@ -201,6 +201,24 @@ _JOB_SPECS = [
         default_schedule_key="weather_live_prereq_readiness_hourly",
     ),
     ColdPathJobSpec(
+        job_name="weather_controlled_live_smoke",
+        description="Run the canonical manual controlled-live smoke for allowlisted approve_usdc with explicit env arming and full audit.",
+        mode="manual",
+        upstream_jobs=["weather_live_prereq_readiness"],
+        input_tables=[
+            "capability.account_trading_capabilities",
+            "runtime.external_balance_observations",
+            "ui.live_prereq_wallet_summary",
+        ],
+        output_tables=[
+            "runtime.chain_tx_attempts",
+            "meta.signature_audit_logs",
+            "runtime.journal_events",
+        ],
+        handler_name="run_weather_controlled_live_smoke_job",
+        default_schedule_key=None,
+    ),
+    ColdPathJobSpec(
         job_name="weather_forecast_replay",
         description="Replay persisted forecast/pricing outputs from canonical replay keys.",
         mode="manual",

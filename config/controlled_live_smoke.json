@@ -1,0 +1,12 @@
+{
+  "chain_id": 137,
+  "wallets": [
+    {
+      "wallet_id": "wallet_weather_1",
+      "allowed_tx_kinds": ["approve_usdc"],
+      "allowed_spenders": ["0x2222222222222222222222222222222222222222"],
+      "max_approve_amount": "100",
+      "private_key_env_var": "ASTERION_CONTROLLED_LIVE_SMOKE_PK_WALLET_WEATHER_1"
+    }
+  ]
+}

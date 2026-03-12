@@ -3,7 +3,7 @@
 **版本**: v1.0
 **更新日期**: 2026-03-12
 **阶段**: `P4`
-**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` 已完成）
+**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` 已完成）
 **目标**: 在 `P3 paper execution` 已关闭的基础上，补齐 `live prerequisites`：真实外部只读数据、capability refresh、signer boundary、submitter dry-run/shadow path、chain transaction scaffolding、external reconciliation、operator/readiness/ops hardening，并保持默认安全边界。
 
 ---
@@ -146,11 +146,11 @@
 - canonical 的 `Gamma + CLOB public + chain read + local config` refresh pipeline 已在 `P4-02` 落地
 - 但 submitter / live tx scaffold 仍未把这些 refreshed values 全量接入
 
-#### Register D: orchestration job map 已覆盖 signer smoke、order-signing smoke 与 submitter smoke，但还未覆盖 chain tx / controlled live smoke
+#### Register D: orchestration job map 已覆盖 signer smoke、order-signing smoke、submitter smoke、chain tx smoke 与 controlled live smoke
 
-- 当前 `dagster_asterion/job_map.py` 已包含 `weather_signer_audit_smoke`、`weather_order_signing_smoke` 与 `weather_submitter_smoke`
-- 但仍没有 chain tx / controlled live smoke job
-- 当前仍没有 canonical 的 `controlled live smoke` job boundary
+- 当前 `dagster_asterion/job_map.py` 已包含 `weather_signer_audit_smoke`、`weather_order_signing_smoke`、`weather_submitter_smoke`、`weather_chain_tx_smoke` 与 `weather_controlled_live_smoke`
+- `weather_controlled_live_smoke` 已成为唯一 canonical controlled-live manual entry
+- controlled live 仍保持 `default-off + manual-only + auditable`
 
 #### Register E: reconciliation 仍是 paper-local deterministic reconciliation
 
@@ -468,12 +468,12 @@ Gamma / CLOB public / Open-Meteo / NWS / Polygon RPC
 ### P4-11 Controlled Live Smoke Boundary
 
 - **goal**: 明确 `controlled_live_smoke` 的手动放行、wallet 范围、notional 限额、runbook 边界与 env gating。
-- **code landing area**: `dagster_asterion/job_map.py`、`dagster_asterion/handlers.py`、`README.md`、future runbook/checklist docs
-- **input tables**: `capability.account_trading_capabilities`、`runtime.submit_attempts`、`runtime.chain_tx_attempts`
-- **output tables**: `runtime.submit_attempts`、`runtime.chain_tx_attempts`、`runtime.journal_events`
+- **code landing area**: `dagster_asterion/job_map.py`、`dagster_asterion/handlers.py`、`asterion_core/blockchain/chain_tx_v1.py`、`asterion_core/signer/signer_service_v1.py`、`README.md`、runbook docs
+- **input tables**: `capability.account_trading_capabilities`、`runtime.external_balance_observations`、`runtime.chain_tx_attempts`、`ui.live_prereq_wallet_summary`
+- **output tables**: `runtime.chain_tx_attempts`、`meta.signature_audit_logs`、`runtime.journal_events`
 - **contracts consumed**: existing canonical order / signer / chain tx contracts
 - **tests required**: env gate tests、default-off tests、operator-approval tests
-- **exit criteria**: repo 内存在明确、可审计、默认关闭的 controlled live smoke path
+- **exit criteria**: 已完成；`weather_controlled_live_smoke`、`config/controlled_live_smoke.json`、`env_private_key_tx` signer backend、`real_broadcast` backend 与 controlled-live runbook 已落地，且真实 side effect 仅限 `approve_usdc`
 
 ### P4-12 Readiness / Closeout / Controlled Rollout Decision
 

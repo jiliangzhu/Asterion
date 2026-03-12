@@ -44,6 +44,21 @@ class P4PlanDocsTest(unittest.TestCase):
         self.assertIn("ready for controlled live rollout decision", plan)
         self.assertIn("evaluate_p4_live_prereq_readiness", plan)
         self.assertIn("weather_live_prereq_readiness", plan)
+        self.assertIn("weather_controlled_live_smoke", plan)
+
+    def test_p4_docs_reference_controlled_live_smoke_runbook(self) -> None:
+        expected_refs = {
+            ROOT / "README.md": ["P4_Controlled_Live_Smoke_Runbook.md"],
+            ROOT / "docs" / "10-implementation" / "Implementation_Index.md": ["P4_Controlled_Live_Smoke_Runbook.md"],
+            ROOT / "docs" / "00-overview" / "Documentation_Index.md": ["P4_Controlled_Live_Smoke_Runbook.md"],
+        }
+        missing_refs: list[str] = []
+        for path, refs in expected_refs.items():
+            text = path.read_text(encoding="utf-8")
+            for ref in refs:
+                if ref not in text:
+                    missing_refs.append(f"{path}:{ref}")
+        self.assertEqual(missing_refs, [])
 
 
 if __name__ == "__main__":

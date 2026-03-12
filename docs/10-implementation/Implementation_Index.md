@@ -39,6 +39,7 @@ docs/10-implementation/
     P1_Watch_Only_Replay_Cold_Path_Runbook.md
     P2_Cold_Path_Orchestration_Job_Map_Runbook.md
     P3_Paper_Execution_Runbook.md
+    P4_Controlled_Live_Smoke_Runbook.md
   migration-ledger/
     AlphaDesk_Migration_Ledger.md
   module-notes/
@@ -86,6 +87,7 @@ docs/10-implementation/
 - [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
 - [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
 - [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
+- [P4_Controlled_Live_Smoke_Runbook.md](./runbooks/P4_Controlled_Live_Smoke_Runbook.md)
 
 ### 3.4 迁移台账
 

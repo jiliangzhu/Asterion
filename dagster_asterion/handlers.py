@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 import json
+import os
+from pathlib import Path
 from typing import Any
+
+from web3 import Web3
 
 from agents.common import build_agent_client_from_env, enqueue_agent_artifact_upserts
 from agents.weather import (
@@ -21,6 +25,7 @@ from asterion_core.blockchain import (
     ChainTxServiceShell,
     build_approve_usdc_request,
     build_chain_tx_attempt_record,
+    load_controlled_live_smoke_policy,
     build_transaction_signer_request,
     build_wallet_state_observations,
     enqueue_chain_tx_attempt_upserts,
@@ -105,6 +110,7 @@ from asterion_core.journal import (
     enqueue_trade_ticket_upserts,
 )
 from asterion_core.monitoring import (
+    ReadinessReport,
     ReadinessConfig,
     evaluate_p4_live_prereq_readiness,
     write_readiness_report,
@@ -128,6 +134,7 @@ from asterion_core.risk import (
 )
 from asterion_core.signer import (
     SubmitAttemptRecord,
+    SignatureAuditStatus,
     build_sign_order_request_from_routed_order,
     load_sign_only_attempts,
     SignerRequest,
@@ -297,6 +304,30 @@ class ChainTxSmokeRequest:
             raise ValueError("wallet_id and requester are required")
         if self.tx_kind is not ChainTxKind.APPROVE_USDC:
             raise ValueError("weather_chain_tx_smoke only supports approve_usdc in P4-07")
+        if not self.spender:
+            raise ValueError("spender is required")
+        if self.amount <= 0:
+            raise ValueError("amount must be positive")
+
+
+@dataclass(frozen=True)
+class ControlledLiveSmokeRequest:
+    wallet_id: str
+    requester: str
+    approval_id: str
+    approval_reason: str
+    approval_token: str
+    tx_kind: ChainTxKind
+    spender: str
+    amount: Decimal
+
+    def __post_init__(self) -> None:
+        if not self.wallet_id or not self.requester:
+            raise ValueError("wallet_id and requester are required")
+        if not self.approval_id or not self.approval_reason or not self.approval_token:
+            raise ValueError("approval_id, approval_reason, and approval_token are required")
+        if self.tx_kind is not ChainTxKind.APPROVE_USDC:
+            raise ValueError("weather_controlled_live_smoke only supports approve_usdc in P4-11")
         if not self.spender:
             raise ValueError("spender is required")
         if self.amount <= 0:
@@ -801,7 +832,7 @@ def run_weather_chain_tx_smoke_job(
         run_id=request_id,
     )
 
-    signed_payload_json = {
+    signed_payload_json = getattr(signer_invocation.response, "signed_payload_json", None) or {
         "backend_kind": "tx_stub" if signer_invocation.response.status == "succeeded" else "disabled",
         "request_id": signer_request.request_id,
         "wallet_id": normalized_request.wallet_id,
@@ -812,6 +843,7 @@ def run_weather_chain_tx_smoke_job(
         "unsigned_tx": dict(signer_request.payload),
     }
     if signer_invocation.response.status != "succeeded":
+        signed_payload_json = dict(signed_payload_json)
         signed_payload_json["error"] = signer_invocation.response.error
 
     chain_tx_invocation = chain_tx_service.submit_transaction(
@@ -843,6 +875,235 @@ def run_weather_chain_tx_smoke_job(
         item_count=1,
         metadata={
             "request_id": request_id,
+            "wallet_id": normalized_request.wallet_id,
+            "tx_kind": chain_tx_request.tx_kind.value,
+            "tx_mode": chain_tx_request.tx_mode.value,
+            "attempt_id": attempt.attempt_id,
+            "status": attempt.status,
+            "payload_hash": attempt.payload_hash,
+            "tx_hash": attempt.tx_hash,
+        },
+    )
+
+
+def run_weather_controlled_live_smoke_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    signer_service: SignerServiceShell,
+    chain_tx_service: ChainTxServiceShell,
+    chain_registry_path: str,
+    controlled_live_smoke_policy_path: str,
+    readiness_report_json_path: str,
+    ui_lite_db_path: str,
+    chain_tx_reader,
+    params_json: dict[str, Any],
+    run_id: str | None = None,
+    observed_at: datetime | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    normalized_request = _normalize_controlled_live_smoke_request(params_json)
+    normalized_observed_at = _normalize_datetime(observed_at) or datetime.now(UTC).replace(tzinfo=None)
+    task_ids: list[str] = []
+
+    requested_event = build_journal_event(
+        event_type="controlled_live_smoke.requested",
+        entity_type="controlled_live_smoke",
+        entity_id=normalized_request.approval_id,
+        run_id=request_id,
+        payload_json={
+            "approval_id": normalized_request.approval_id,
+            "wallet_id": normalized_request.wallet_id,
+            "tx_kind": normalized_request.tx_kind.value,
+            "spender": normalized_request.spender,
+            "amount": str(normalized_request.amount),
+        },
+        created_at=normalized_observed_at,
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_journal_event_upserts(queue_cfg, journal_events=[requested_event], run_id=request_id)
+        )
+    )
+
+    def _blocked(reason: str, *, metadata_extra: dict[str, Any] | None = None) -> ColdPathHandlerResult:
+        blocked_event = build_journal_event(
+            event_type="controlled_live_smoke.blocked",
+            entity_type="controlled_live_smoke",
+            entity_id=normalized_request.approval_id,
+            run_id=request_id,
+            payload_json={
+                "approval_id": normalized_request.approval_id,
+                "wallet_id": normalized_request.wallet_id,
+                "tx_kind": normalized_request.tx_kind.value,
+                "reason": reason,
+            },
+            created_at=normalized_observed_at,
+        )
+        blocked_task_ids = list(task_ids)
+        blocked_task_ids.extend(
+            _append_task_id(
+                enqueue_journal_event_upserts(queue_cfg, journal_events=[blocked_event], run_id=request_id)
+            )
+        )
+        metadata = {
+            "request_id": request_id,
+            "approval_id": normalized_request.approval_id,
+            "wallet_id": normalized_request.wallet_id,
+            "tx_kind": normalized_request.tx_kind.value,
+            "tx_mode": ChainTxMode.CONTROLLED_LIVE.value,
+            "status": "blocked",
+            "tx_hash": None,
+            "payload_hash": None,
+            "reason": reason,
+        }
+        if metadata_extra:
+            metadata.update(metadata_extra)
+        return ColdPathHandlerResult(
+            job_name="weather_controlled_live_smoke",
+            run_id=request_id,
+            task_ids=blocked_task_ids,
+            item_count=0,
+            metadata=metadata,
+        )
+
+    readiness_report = _load_readiness_report_or_none(readiness_report_json_path)
+    if readiness_report is None or readiness_report.target.value != "p4_live_prerequisites":
+        return _blocked("missing_p4_readiness_report")
+    if readiness_report.go_decision != "GO":
+        return _blocked("p4_live_prereq_not_go")
+    wallet_readiness_status = _load_live_prereq_wallet_status(ui_lite_db_path, wallet_id=normalized_request.wallet_id)
+    if wallet_readiness_status != "ready":
+        return _blocked("wallet_not_ready", metadata_extra={"wallet_readiness_status": wallet_readiness_status})
+
+    policy = load_controlled_live_smoke_policy(controlled_live_smoke_policy_path)
+    if policy.chain_id <= 0:
+        return _blocked("invalid_controlled_live_policy")
+    is_armed = str(os.getenv("ASTERION_CONTROLLED_LIVE_SMOKE_ARMED") or "").strip().lower() == "true"
+    if not is_armed:
+        return _blocked("controlled_live_smoke_not_armed")
+    expected_token = str(os.getenv("ASTERION_CONTROLLED_LIVE_SMOKE_APPROVAL_TOKEN") or "").strip()
+    if not expected_token or normalized_request.approval_token != expected_token:
+        return _blocked("approval_token_mismatch")
+
+    try:
+        wallet_policy = policy.wallet_policy(normalized_request.wallet_id)
+    except ValueError:
+        return _blocked("wallet_not_allowlisted")
+    if normalized_request.tx_kind.value not in wallet_policy.allowed_tx_kinds:
+        return _blocked("tx_kind_not_allowlisted")
+    normalized_spender = Web3.to_checksum_address(normalized_request.spender.strip())
+    if normalized_spender not in wallet_policy.allowed_spenders:
+        return _blocked("spender_not_allowlisted")
+    if normalized_request.amount > wallet_policy.max_approve_amount:
+        return _blocked("amount_cap_exceeded")
+
+    account_capability = load_account_trading_capability(con, wallet_id=normalized_request.wallet_id)
+    chain_registry = load_polygon_chain_registry(chain_registry_path)
+    load_latest_wallet_state_gate(
+        con,
+        wallet_id=normalized_request.wallet_id,
+        chain_registry=chain_registry,
+        spender=normalized_spender,
+    )
+    chain_tx_request = build_approve_usdc_request(
+        account_capability=account_capability,
+        chain_registry=chain_registry,
+        chain_tx_reader=chain_tx_reader,
+        requester=normalized_request.requester,
+        request_id=request_id,
+        timestamp=normalized_observed_at,
+        tx_mode=ChainTxMode.CONTROLLED_LIVE,
+        spender=normalized_spender,
+        amount=normalized_request.amount,
+        approval_id=normalized_request.approval_id,
+        approval_reason=normalized_request.approval_reason,
+    )
+    signer_request = build_transaction_signer_request(
+        chain_tx_request,
+        account_capability,
+    )
+    signer_request = SignerRequest(
+        request_id=signer_request.request_id,
+        requester=signer_request.requester,
+        timestamp=signer_request.timestamp,
+        context=signer_request.context,
+        payload={
+            **signer_request.payload,
+            "private_key_env_var": wallet_policy.private_key_env_var,
+            "approval_id": normalized_request.approval_id,
+            "approval_reason": normalized_request.approval_reason,
+        },
+    )
+    signer_invocation = signer_service.sign_transaction(
+        signer_request,
+        queue_cfg=queue_cfg,
+        run_id=request_id,
+    )
+    signed_payload_json = getattr(signer_invocation.response, "signed_payload_json", None) or {
+        "backend_kind": "disabled",
+        "request_id": signer_request.request_id,
+        "signed_payload_ref": signer_invocation.response.signed_payload_ref,
+        "unsigned_tx": dict(signer_request.payload),
+    }
+    if signer_invocation.response.status != SignatureAuditStatus.SUCCEEDED.value:
+        signed_payload_json = dict(signed_payload_json)
+        signed_payload_json["error"] = signer_invocation.response.error
+    chain_tx_invocation = chain_tx_service.submit_transaction(
+        chain_tx_request,
+        signed_payload_json=signed_payload_json,
+        queue_cfg=queue_cfg,
+        run_id=request_id,
+    )
+    attempt = build_chain_tx_attempt_record(
+        chain_tx_request,
+        chain_tx_invocation.response,
+        signed_payload_ref=signer_invocation.response.signed_payload_ref,
+    )
+    task_ids.extend(signer_invocation.task_ids)
+    task_ids.extend(chain_tx_invocation.task_ids)
+    task_ids.extend(
+        _append_task_id(
+            enqueue_chain_tx_attempt_upserts(
+                queue_cfg,
+                attempts=[attempt],
+                run_id=request_id,
+            )
+        )
+    )
+    if attempt.status == "broadcasted":
+        task_ids.extend(
+            _append_task_id(
+                enqueue_journal_event_upserts(
+                    queue_cfg,
+                    journal_events=[
+                        build_journal_event(
+                            event_type="controlled_live_smoke.broadcasted",
+                            entity_type="controlled_live_smoke",
+                            entity_id=normalized_request.approval_id,
+                            run_id=request_id,
+                            payload_json={
+                                "approval_id": normalized_request.approval_id,
+                                "wallet_id": normalized_request.wallet_id,
+                                "tx_kind": normalized_request.tx_kind.value,
+                                "attempt_id": attempt.attempt_id,
+                                "tx_hash": attempt.tx_hash,
+                            },
+                            created_at=normalized_observed_at,
+                        )
+                    ],
+                    run_id=request_id,
+                )
+            )
+        )
+    return ColdPathHandlerResult(
+        job_name="weather_controlled_live_smoke",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=1,
+        metadata={
+            "request_id": request_id,
+            "approval_id": normalized_request.approval_id,
             "wallet_id": normalized_request.wallet_id,
             "tx_kind": chain_tx_request.tx_kind.value,
             "tx_mode": chain_tx_request.tx_mode.value,
@@ -2163,6 +2424,47 @@ def _normalize_chain_tx_smoke_request(params_json: dict[str, Any]) -> ChainTxSmo
         spender=str(params_json.get("spender") or "").strip(),
         amount=Decimal(str(params_json.get("amount") or "0")),
     )
+
+
+def _normalize_controlled_live_smoke_request(params_json: dict[str, Any]) -> ControlledLiveSmokeRequest:
+    if not isinstance(params_json, dict):
+        raise ValueError("params_json must be a dictionary")
+    raw_tx_kind = str(params_json.get("tx_kind") or "").strip().lower()
+    return ControlledLiveSmokeRequest(
+        wallet_id=str(params_json.get("wallet_id") or ""),
+        requester=str(params_json.get("requester") or ""),
+        approval_id=str(params_json.get("approval_id") or "").strip(),
+        approval_reason=str(params_json.get("approval_reason") or "").strip(),
+        approval_token=str(params_json.get("approval_token") or "").strip(),
+        tx_kind=ChainTxKind(raw_tx_kind),
+        spender=str(params_json.get("spender") or "").strip(),
+        amount=Decimal(str(params_json.get("amount") or "0")),
+    )
+
+
+def _load_readiness_report_or_none(path: str) -> ReadinessReport | None:
+    if not path or not os.path.exists(path):
+        return None
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return ReadinessReport.from_dict(payload)
+
+
+def _load_live_prereq_wallet_status(ui_lite_db_path: str, *, wallet_id: str) -> str | None:
+    import duckdb
+
+    con = duckdb.connect(ui_lite_db_path, read_only=True)
+    try:
+        row = con.execute(
+            """
+            SELECT wallet_readiness_status
+            FROM ui.live_prereq_wallet_summary
+            WHERE wallet_id = ?
+            """,
+            [wallet_id],
+        ).fetchone()
+    finally:
+        con.close()
+    return None if row is None or row[0] is None else str(row[0])
 
 
 def _load_shadow_submit_attempts_for_external_reconciliation(con) -> list[SubmitAttemptRecord]:
