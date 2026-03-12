@@ -2,7 +2,7 @@
 
 **版本**: v1.2
 **更新日期**: 2026-03-12
-**状态**: P4 implementation in progress (`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` completed)
+**状态**: P4 closed (`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` / `P4-12` completed; ready for controlled live rollout decision)
 
 ---
 
@@ -37,12 +37,14 @@ Asterion/
     │   │   ├── P1_Closeout_Checklist.md
     │   │   ├── P2_Closeout_Checklist.md
     │   │   ├── P3_Closeout_Checklist.md
+    │   │   ├── P4_Closeout_Checklist.md
     │   │   └── P1_P2_AlphaDesk_Remaining_Migration_Checklist.md
     │   ├── runbooks/
     │   │   ├── P1_Watch_Only_Replay_Cold_Path_Runbook.md
     │   │   ├── P2_Cold_Path_Orchestration_Job_Map_Runbook.md
     │   │   ├── P3_Paper_Execution_Runbook.md
-    │   │   └── P4_Controlled_Live_Smoke_Runbook.md
+    │   │   ├── P4_Controlled_Live_Smoke_Runbook.md
+    │   │   └── P4_Controlled_Rollout_Decision_Runbook.md
     │   ├── migration-ledger/
     │   │   └── AlphaDesk_Migration_Ledger.md
     │   └── module-notes/
@@ -79,24 +81,28 @@ Asterion/
 5. 阅读 [Implementation_Index.md](./docs/10-implementation/Implementation_Index.md)
    - 这是所有实施文档的统一入口，后续阶段文档都从这里找
 6. 阅读 [P4_Implementation_Plan.md](./docs/10-implementation/phase-plans/P4_Implementation_Plan.md)
-   - 这是 `P4 live prerequisites` 当前唯一实施入口，后续开发以本文件为准
-7. 阅读 [P3_Closeout_Checklist.md](./docs/10-implementation/checklists/P3_Closeout_Checklist.md)
+   - 这是 `P4 live prerequisites` 的 canonical phase 记录与 closeout contract
+7. 阅读 [P4_Closeout_Checklist.md](./docs/10-implementation/checklists/P4_Closeout_Checklist.md)
+   - 这是 `P4` 是否已关闭、是否达到 `controlled live rollout decision` 条件的 closeout 审查入口
+8. 阅读 [P4_Controlled_Rollout_Decision_Runbook.md](./docs/10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
+   - 这是 `P4` closeout 后的 rollout decision operator runbook
+9. 阅读 [P3_Closeout_Checklist.md](./docs/10-implementation/checklists/P3_Closeout_Checklist.md)
    - 这是 `P3` 是否具备 closeout 条件、是否可进入 `P4 planning` 的 closeout 审查入口
-8. 阅读 [P3_Paper_Execution_Runbook.md](./docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md)
+10. 阅读 [P3_Paper_Execution_Runbook.md](./docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md)
    - 这是 `P3 paper execution` 当前 canonical operator / daily ops / readiness 运行入口
-9. 如需进入 `P4` 之前的阶段边界，再阅读 [P3_Implementation_Plan.md](./docs/10-implementation/phase-plans/P3_Implementation_Plan.md)
-10. 阅读 [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./docs/10-implementation/checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+11. 如需进入 `P4` 之前的阶段边界，再阅读 [P3_Implementation_Plan.md](./docs/10-implementation/phase-plans/P3_Implementation_Plan.md)
+12. 阅读 [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./docs/10-implementation/checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
    - 如果目标是“彻底脱离 AlphaDesk 后再建独立 Git 仓库”，这份清单是当前唯一判断依据
-11. 阅读 [P2_Closeout_Checklist.md](./docs/10-implementation/checklists/P2_Closeout_Checklist.md)
+13. 阅读 [P2_Closeout_Checklist.md](./docs/10-implementation/checklists/P2_Closeout_Checklist.md)
    - 这是 `P2` 是否已经关闭、`P3` 是否可以开工、AlphaDesk Exit Gate 是否通过的唯一关闭依据
-12. 阅读 [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./docs/10-implementation/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
+14. 阅读 [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./docs/10-implementation/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
    - 这是 `watch-only / replay / cold path` 当前 canonical 入口和 operator 读路径
-13. 阅读 [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./docs/10-implementation/runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+15. 阅读 [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./docs/10-implementation/runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
    - 这是 `P2-07` 到 `P2-09` 的 canonical job map、schedule 和 handler 入口
-14. 如需回看 `P2` 的实施顺序，再阅读 [P2_Implementation_Plan.md](./docs/10-implementation/phase-plans/P2_Implementation_Plan.md)
-15. 如需回看 `P1` 阶段计划，再阅读 [P1_Implementation_Plan.md](./docs/10-implementation/phase-plans/P1_Implementation_Plan.md)
-16. 如需回看底座建设，再阅读 [P0_Implementation_Plan.md](./docs/10-implementation/phase-plans/P0_Implementation_Plan.md)
-17. 深入阅读详细设计文档（按需）
+16. 如需回看 `P2` 的实施顺序，再阅读 [P2_Implementation_Plan.md](./docs/10-implementation/phase-plans/P2_Implementation_Plan.md)
+17. 如需回看 `P1` 阶段计划，再阅读 [P1_Implementation_Plan.md](./docs/10-implementation/phase-plans/P1_Implementation_Plan.md)
+18. 如需回看底座建设，再阅读 [P0_Implementation_Plan.md](./docs/10-implementation/phase-plans/P0_Implementation_Plan.md)
+19. 深入阅读详细设计文档（按需）
 
 ### 1.1 文档归档规则
 
@@ -149,7 +155,7 @@ python3 -m unittest discover -s tests -v
 
 ## 🏗️ 技术架构
 
-### 当前已落地模块（P4-11）
+### 当前已落地模块（P4-12）
 
 ```
 asterion_core/              # 平台核心
@@ -219,10 +225,11 @@ agents/                     # AI Agent
 - `ui.live_prereq_execution_summary`、`ui.live_prereq_wallet_summary` 与扩展后的 `ui.execution_*` 已在 `P4-09` 落地，用于 operator live-prereq read model
 - `evaluate_p4_live_prereq_readiness(...)` 与 `weather_live_prereq_readiness` 已在 `P4-10` 落地，用于 minimum ops hardening、hourly P4 readiness report 以及 `ui.phase_readiness_summary`
 - `weather_controlled_live_smoke`、`config/controlled_live_smoke.json` 与 controlled-live runbook 已在 `P4-11` 落地，用于 `approve_usdc` 的最小真实 side-effect 边界；默认仍是 `default-off + manual-only + auditable`
+- `P4_Closeout_Checklist.md`、`P4_Controlled_Rollout_Decision_Runbook.md` 与 `P4` closeout doc tests 已在 `P4-12` 落地，用于 `P4 closed / ready for controlled live rollout decision` 的审查入口
 - `weather_chain_tx_smoke` 已成为 `P4-07` 的 canonical chain-tx manual entry；当前只开放 `approve_usdc`
 - `weather_signer_audit_smoke`、`weather_order_signing_smoke`、`weather_submitter_smoke` 与 `weather_external_execution_reconciliation` 已成为 `P4` signer / order-signing / submitter / reconciliation 的 canonical entry
 - `daily_review_agent.py` 仍未落地；当前只完成 `ui.daily_review_input` 等 review input surface
-- `P4` 当前 canonical 实施入口见 [P4_Implementation_Plan.md](./docs/10-implementation/phase-plans/P4_Implementation_Plan.md)
+- `P4` 当前 canonical closeout / decision 入口见 [P4_Implementation_Plan.md](./docs/10-implementation/phase-plans/P4_Implementation_Plan.md)、[P4_Closeout_Checklist.md](./docs/10-implementation/checklists/P4_Closeout_Checklist.md)、[P4_Controlled_Rollout_Decision_Runbook.md](./docs/10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
 - `P3` 的 canonical closeout 与 runbook 入口见 [P3_Closeout_Checklist.md](./docs/10-implementation/checklists/P3_Closeout_Checklist.md)、[P3_Paper_Execution_Runbook.md](./docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md)
 
 ---

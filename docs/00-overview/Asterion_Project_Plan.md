@@ -7,7 +7,7 @@
 **文档版本**: v1.2
 **创建日期**: 2026-03-07
 **更新日期**: 2026-03-12
-**状态**: 详细设计完成，P3 已关闭，P4 implementation in progress（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` 已完成）
+**状态**: 详细设计完成，P3 已关闭，P4 已关闭（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` / `P4-12` 已完成；ready for controlled live rollout decision）
 
 ---
 
@@ -27,6 +27,8 @@
 - [开发路线图](./DEVELOPMENT_ROADMAP.md)
 - [Implementation Index](../10-implementation/Implementation_Index.md)
 - [P4 实施文档](../10-implementation/phase-plans/P4_Implementation_Plan.md)
+- [P4 关闭清单](../10-implementation/checklists/P4_Closeout_Checklist.md)
+- [P4 Controlled Rollout Decision Runbook](../10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
 - [P3 实施文档](../10-implementation/phase-plans/P3_Implementation_Plan.md)
 - [P2 实施文档](../10-implementation/phase-plans/P2_Implementation_Plan.md)
 - [P1 实施文档](../10-implementation/phase-plans/P1_Implementation_Plan.md)
@@ -2261,19 +2263,23 @@ class CircuitBreaker:
 
 ---
 
-### Phase 4: Live prerequisites（后续阶段）
+### Phase 4: Live prerequisites（已完成）
 
-**目标**: 在 paper execution 之后补齐 signer、KMS、告警和真实资金上线前置条件
+**目标**: 在 paper execution 之后补齐真实数据 ingress、capability refresh、external observation、signer / submitter / chain-tx scaffold、external reconciliation、operator live-prereq read model、minimum ops hardening，以及 controlled live rollout decision 边界
 
 **任务**:
-- [ ] signer / KMS / Vault / HSM
-- [ ] live readiness checklist
-- [ ] alerting / ops hardening
-- [ ] live rollout plan
+- [x] real data ingress / capability refresh / wallet state observation
+- [x] signer shell / official-order-compatible signing / submitter dry-run-shadow
+- [x] approve-first chain tx scaffold / external execution reconciliation
+- [x] operator live-prereq read model / minimum ops hardening
+- [x] controlled live smoke boundary / closeout checklist / rollout decision runbook
 
 **交付物**:
-- Crypto pack 运行
-- 完整的多领域平台
+- canonical `P4` live-prereq chain
+- `P4` closeout checklist
+- controlled live smoke runbook
+- controlled rollout decision runbook
+- `ready for controlled live rollout decision`
 
 ---
 

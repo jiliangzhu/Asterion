@@ -47,8 +47,10 @@
 - `P1` 已关闭
 - `P2` 已关闭
 - `P3` 已关闭
-- `P4 implementation` 进行中（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` 已完成）
+- `P4` 已关闭（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` / `P4-12` 已完成）
 - 当前 closeout / planning 入口是：
+  - [P4_Closeout_Checklist.md](../10-implementation/checklists/P4_Closeout_Checklist.md)
+  - [P4_Controlled_Rollout_Decision_Runbook.md](../10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
   - [P3_Closeout_Checklist.md](../10-implementation/checklists/P3_Closeout_Checklist.md)
   - [P3_Paper_Execution_Runbook.md](../10-implementation/runbooks/P3_Paper_Execution_Runbook.md)
   - [P4_Implementation_Plan.md](../10-implementation/phase-plans/P4_Implementation_Plan.md)

@@ -3,7 +3,7 @@
 **版本**: v1.0
 **更新日期**: 2026-03-12
 **阶段**: `P4`
-**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` 已完成）
+**状态**: closed（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` / `P4-12` 已完成；ready for controlled live rollout decision）
 **目标**: 在 `P3 paper execution` 已关闭的基础上，补齐 `live prerequisites`：真实外部只读数据、capability refresh、signer boundary、submitter dry-run/shadow path、chain transaction scaffolding、external reconciliation、operator/readiness/ops hardening，并保持默认安全边界。
 
 ---
@@ -483,7 +483,7 @@ Gamma / CLOB public / Open-Meteo / NWS / Polygon RPC
 - **output tables**: readiness report、closeout checklist、runbook、navigation docs
 - **contracts consumed**: P4 readiness report contract
 - **tests required**: closeout doc tests、readiness integration tests、navigation sync tests
-- **exit criteria**: `P4` 结束时，结论只能是 `ready for controlled live rollout decision`，不能直接跳成“ready for unattended live”
+- **exit criteria**: 已完成；`P4_Closeout_Checklist.md`、`P4_Controlled_Rollout_Decision_Runbook.md`、closeout doc tests 与导航同步已落地，且 `P4` 的最终结论固定为 `ready for controlled live rollout decision`，不跳成“ready for unattended live”
 
 ---
 

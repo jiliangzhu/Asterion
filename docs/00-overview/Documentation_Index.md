@@ -1,7 +1,7 @@
 # Asterion Documentation Index
 
 **版本**: v1.2
-**更新日期**: 2026-03-11
+**更新日期**: 2026-03-12
 **目标**: 统一 Asterion 文档的目录结构、分类规则和 source-of-truth，避免后续开发中出现重复文档、重复接口定义和失效导航。
 
 ---
@@ -61,11 +61,13 @@ source-of-truth：
 - `checklists/P1_Closeout_Checklist.md`
 - `checklists/P2_Closeout_Checklist.md`
 - `checklists/P3_Closeout_Checklist.md`
+- `checklists/P4_Closeout_Checklist.md`
 - `checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md`
 - `runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md`
 - `runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md`
 - `runbooks/P3_Paper_Execution_Runbook.md`
 - `runbooks/P4_Controlled_Live_Smoke_Runbook.md`
+- `runbooks/P4_Controlled_Rollout_Decision_Runbook.md`
 - `migration-ledger/AlphaDesk_Migration_Ledger.md`
 - `module-notes/AlphaDesk_bronze_Module_Note.md`
 - `module-notes/AlphaDesk_clients_data_api_Module_Note.md`
@@ -258,10 +260,13 @@ source-of-truth：
 4. `docs/00-overview/DEVELOPMENT_ROADMAP.md`
 5. `docs/10-implementation/Implementation_Index.md`
 6. `docs/10-implementation/phase-plans/P4_Implementation_Plan.md`
-7. `docs/10-implementation/checklists/P3_Closeout_Checklist.md`
-8. `docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md`
-9. `docs/10-implementation/phase-plans/P3_Implementation_Plan.md`
-10. 进入对应模块设计文档
+7. `docs/10-implementation/checklists/P4_Closeout_Checklist.md`
+8. `docs/10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md`
+9. `docs/10-implementation/runbooks/P4_Controlled_Live_Smoke_Runbook.md`
+10. `docs/10-implementation/checklists/P3_Closeout_Checklist.md`
+11. `docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md`
+12. `docs/10-implementation/phase-plans/P3_Implementation_Plan.md`
+13. 进入对应模块设计文档
 
 ---
 

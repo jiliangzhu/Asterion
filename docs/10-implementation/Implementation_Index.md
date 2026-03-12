@@ -1,7 +1,7 @@
 # Asterion Implementation Index
 
 **版本**: v1.2
-**更新日期**: 2026-03-11
+**更新日期**: 2026-03-12
 **目标**: 作为 `docs/10-implementation/` 的统一入口，按“阶段计划 / 检查清单 / runbook / 迁移台账 / module notes”分类组织实施文档，便于快速定位每个阶段的实施计划、关闭条件和运行入口。
 
 ---
@@ -34,12 +34,14 @@ docs/10-implementation/
     P1_Closeout_Checklist.md
     P2_Closeout_Checklist.md
     P3_Closeout_Checklist.md
+    P4_Closeout_Checklist.md
     P1_P2_AlphaDesk_Remaining_Migration_Checklist.md
   runbooks/
     P1_Watch_Only_Replay_Cold_Path_Runbook.md
     P2_Cold_Path_Orchestration_Job_Map_Runbook.md
     P3_Paper_Execution_Runbook.md
     P4_Controlled_Live_Smoke_Runbook.md
+    P4_Controlled_Rollout_Decision_Runbook.md
   migration-ledger/
     AlphaDesk_Migration_Ledger.md
   module-notes/
@@ -80,6 +82,7 @@ docs/10-implementation/
 - [P1_Closeout_Checklist.md](./checklists/P1_Closeout_Checklist.md)
 - [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
 - [P3_Closeout_Checklist.md](./checklists/P3_Closeout_Checklist.md)
+- [P4_Closeout_Checklist.md](./checklists/P4_Closeout_Checklist.md)
 - [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
 
 ### 3.3 当前 Runbooks
@@ -88,6 +91,7 @@ docs/10-implementation/
 - [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
 - [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
 - [P4_Controlled_Live_Smoke_Runbook.md](./runbooks/P4_Controlled_Live_Smoke_Runbook.md)
+- [P4_Controlled_Rollout_Decision_Runbook.md](./runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
 
 ### 3.4 迁移台账
 
@@ -182,16 +186,19 @@ docs/10-implementation/
 
 1. [Implementation_Index.md](./Implementation_Index.md)
 2. [P4_Implementation_Plan.md](./phase-plans/P4_Implementation_Plan.md)
-3. [P3_Closeout_Checklist.md](./checklists/P3_Closeout_Checklist.md)
-4. [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
-5. [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
-6. [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
-7. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
-8. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
-9. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
-10. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
-11. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
-12. 对应模块的 module note
+3. [P4_Closeout_Checklist.md](./checklists/P4_Closeout_Checklist.md)
+4. [P4_Controlled_Rollout_Decision_Runbook.md](./runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
+5. [P4_Controlled_Live_Smoke_Runbook.md](./runbooks/P4_Controlled_Live_Smoke_Runbook.md)
+6. [P3_Closeout_Checklist.md](./checklists/P3_Closeout_Checklist.md)
+7. [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
+8. [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
+9. [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
+10. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
+11. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
+12. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+13. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+14. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
+15. 对应模块的 module note
 
 ---
 
