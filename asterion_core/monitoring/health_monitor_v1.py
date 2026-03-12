@@ -57,6 +57,51 @@ class SystemHealthSnapshot:
     tickets_per_min: float
 
 
+@dataclass(frozen=True)
+class SignerHealthSnapshot:
+    request_count: int
+    rejected_count: int
+    latest_status: str | None
+    latest_created_at: str | None
+
+
+@dataclass(frozen=True)
+class SubmitterHealthSnapshot:
+    sign_only_signed_count: int
+    submit_preview_count: int
+    submit_accepted_count: int
+    submit_rejected_count: int
+    latest_submit_created_at: str | None
+
+
+@dataclass(frozen=True)
+class ChainTxHealthSnapshot:
+    approve_attempt_count: int
+    approve_rejected_count: int
+    latest_approve_status: str | None
+    latest_approve_created_at: str | None
+
+
+@dataclass(frozen=True)
+class ExternalExecutionHealthSnapshot:
+    external_order_observation_count: int
+    external_fill_observation_count: int
+    external_reconciliation_ok_count: int
+    external_reconciliation_mismatch_count: int
+    external_reconciliation_unverified_count: int
+    latest_observed_at: str | None
+
+
+@dataclass(frozen=True)
+class LivePrereqHealthSnapshot:
+    timestamp_ms: int
+    queue_health: QueueHealthSnapshot
+    signer_health: SignerHealthSnapshot
+    submitter_health: SubmitterHealthSnapshot
+    chain_tx_health: ChainTxHealthSnapshot
+    external_execution_health: ExternalExecutionHealthSnapshot
+
+
 def _percentile(values: list[float], p: float) -> float:
     if not values:
         return 0.0
@@ -240,3 +285,185 @@ def collect_system_health(
         realtime_latency_p95_ms=0.0,
         tickets_per_min=0.0,
     )
+
+
+def collect_signer_health(con) -> SignerHealthSnapshot:
+    if not _duckdb_table_exists(con, "meta.signature_audit_logs"):
+        return SignerHealthSnapshot(0, 0, None, None)
+    counts = con.execute(
+        """
+        SELECT
+            COUNT(*) AS request_count,
+            COUNT(*) FILTER (WHERE status = 'rejected') AS rejected_count
+        FROM meta.signature_audit_logs
+        """
+    ).fetchone()
+    latest = con.execute(
+        """
+        SELECT status, COALESCE(CAST(created_at AS TEXT), CAST(timestamp AS TEXT))
+        FROM meta.signature_audit_logs
+        ORDER BY COALESCE(created_at, timestamp) DESC, log_id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return SignerHealthSnapshot(
+        request_count=int(counts[0]) if counts else 0,
+        rejected_count=int(counts[1]) if counts else 0,
+        latest_status=str(latest[0]) if latest and latest[0] is not None else None,
+        latest_created_at=str(latest[1]) if latest and latest[1] is not None else None,
+    )
+
+
+def collect_submitter_health(con) -> SubmitterHealthSnapshot:
+    if not _duckdb_table_exists(con, "runtime.submit_attempts"):
+        return SubmitterHealthSnapshot(0, 0, 0, 0, None)
+    counts = con.execute(
+        """
+        SELECT
+            COUNT(*) FILTER (
+                WHERE attempt_kind = 'sign_order'
+                  AND attempt_mode = 'sign_only'
+                  AND status = 'signed'
+            ) AS sign_only_signed_count,
+            COUNT(*) FILTER (
+                WHERE attempt_kind = 'submit_order'
+                  AND attempt_mode = 'dry_run'
+                  AND status = 'previewed'
+            ) AS submit_preview_count,
+            COUNT(*) FILTER (
+                WHERE attempt_kind = 'submit_order'
+                  AND attempt_mode = 'shadow_submit'
+                  AND status = 'accepted'
+            ) AS submit_accepted_count,
+            COUNT(*) FILTER (
+                WHERE attempt_kind = 'submit_order'
+                  AND status = 'rejected'
+            ) AS submit_rejected_count
+        FROM runtime.submit_attempts
+        """
+    ).fetchone()
+    latest = con.execute(
+        """
+        SELECT created_at
+        FROM runtime.submit_attempts
+        WHERE attempt_kind = 'submit_order'
+        ORDER BY created_at DESC, attempt_id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return SubmitterHealthSnapshot(
+        sign_only_signed_count=int(counts[0]) if counts else 0,
+        submit_preview_count=int(counts[1]) if counts else 0,
+        submit_accepted_count=int(counts[2]) if counts else 0,
+        submit_rejected_count=int(counts[3]) if counts else 0,
+        latest_submit_created_at=str(latest[0]) if latest and latest[0] is not None else None,
+    )
+
+
+def collect_chain_tx_health(con) -> ChainTxHealthSnapshot:
+    if not _duckdb_table_exists(con, "runtime.chain_tx_attempts"):
+        return ChainTxHealthSnapshot(0, 0, None, None)
+    counts = con.execute(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE tx_kind = 'approve_usdc') AS approve_attempt_count,
+            COUNT(*) FILTER (WHERE tx_kind = 'approve_usdc' AND status = 'rejected') AS approve_rejected_count
+        FROM runtime.chain_tx_attempts
+        """
+    ).fetchone()
+    latest = con.execute(
+        """
+        SELECT status, created_at
+        FROM runtime.chain_tx_attempts
+        WHERE tx_kind = 'approve_usdc'
+        ORDER BY created_at DESC, attempt_id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return ChainTxHealthSnapshot(
+        approve_attempt_count=int(counts[0]) if counts else 0,
+        approve_rejected_count=int(counts[1]) if counts else 0,
+        latest_approve_status=str(latest[0]) if latest and latest[0] is not None else None,
+        latest_approve_created_at=str(latest[1]) if latest and latest[1] is not None else None,
+    )
+
+
+def collect_external_execution_health(con) -> ExternalExecutionHealthSnapshot:
+    order_count = _duckdb_table_count(con, "runtime.external_order_observations")
+    fill_count = _duckdb_table_count(con, "runtime.external_fill_observations")
+    if _duckdb_table_exists(con, "trading.reconciliation_results"):
+        counts = con.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE reconciliation_scope = 'external_execution' AND status = 'ok'
+                ) AS ok_count,
+                COUNT(*) FILTER (
+                    WHERE reconciliation_scope = 'external_execution' AND status IN ('external_order_mismatch', 'external_fill_mismatch')
+                ) AS mismatch_count,
+                COUNT(*) FILTER (
+                    WHERE reconciliation_scope = 'external_execution' AND status = 'external_state_unverified'
+                ) AS unverified_count
+            FROM trading.reconciliation_results
+            """
+        ).fetchone()
+    else:
+        counts = (0, 0, 0)
+    latest = None
+    if _duckdb_table_exists(con, "runtime.external_fill_observations"):
+        latest = con.execute(
+            """
+            SELECT observed_at
+            FROM runtime.external_fill_observations
+            ORDER BY observed_at DESC, observation_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    if latest is None and _duckdb_table_exists(con, "runtime.external_order_observations"):
+        latest = con.execute(
+            """
+            SELECT observed_at
+            FROM runtime.external_order_observations
+            ORDER BY observed_at DESC, observation_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return ExternalExecutionHealthSnapshot(
+        external_order_observation_count=order_count,
+        external_fill_observation_count=fill_count,
+        external_reconciliation_ok_count=int(counts[0]) if counts else 0,
+        external_reconciliation_mismatch_count=int(counts[1]) if counts else 0,
+        external_reconciliation_unverified_count=int(counts[2]) if counts else 0,
+        latest_observed_at=str(latest[0]) if latest and latest[0] is not None else None,
+    )
+
+
+def collect_live_prereq_health(con, *, queue_path: str) -> LivePrereqHealthSnapshot:
+    return LivePrereqHealthSnapshot(
+        timestamp_ms=int(time.time() * 1000),
+        queue_health=collect_queue_health(queue_path),
+        signer_health=collect_signer_health(con),
+        submitter_health=collect_submitter_health(con),
+        chain_tx_health=collect_chain_tx_health(con),
+        external_execution_health=collect_external_execution_health(con),
+    )
+
+
+def _duckdb_table_exists(con, table_name: str) -> bool:
+    schema, table = table_name.split(".", 1)
+    row = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_schema = ? AND table_name = ?
+        """,
+        [schema, table],
+    ).fetchone()
+    return bool(row and int(row[0]) > 0)
+
+
+def _duckdb_table_count(con, table_name: str) -> int:
+    if not _duckdb_table_exists(con, table_name):
+        return 0
+    row = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
+    return int(row[0]) if row is not None else 0

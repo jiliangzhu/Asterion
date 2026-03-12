@@ -42,6 +42,8 @@ class P4PlanDocsTest(unittest.TestCase):
         self.assertIn("P4` 不是 production live rollout", plan)
         self.assertIn("default-off + explicit operator approval + auditable", plan)
         self.assertIn("ready for controlled live rollout decision", plan)
+        self.assertIn("evaluate_p4_live_prereq_readiness", plan)
+        self.assertIn("weather_live_prereq_readiness", plan)
 
 
 if __name__ == "__main__":

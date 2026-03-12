@@ -3,7 +3,7 @@
 **版本**: v1.0
 **更新日期**: 2026-03-12
 **阶段**: `P4`
-**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` 已完成）
+**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` 已完成）
 **目标**: 在 `P3 paper execution` 已关闭的基础上，补齐 `live prerequisites`：真实外部只读数据、capability refresh、signer boundary、submitter dry-run/shadow path、chain transaction scaffolding、external reconciliation、operator/readiness/ops hardening，并保持默认安全边界。
 
 ---
@@ -116,6 +116,10 @@
   - `ui.execution_ticket_summary` 已拆分 paper-local 与 external reconciliation 语义，保留 `reconciliation_*` 作为 paper-local 视图，并新增 `external_*` / `live_prereq_*` 字段
   - `ui.execution_run_summary` 与 `ui.execution_exception_summary` 已扩展 live-prereq 聚合与异常切片
   - `ui.live_prereq_execution_summary` 与 `ui.live_prereq_wallet_summary` 已落地，用于 operator live-prereq read model
+- `P4-10` 已完成：
+  - `evaluate_p4_live_prereq_readiness(...)` 已作为独立 `P4` readiness contract 落地，且不回退 `evaluate_p3_readiness(...)` 的语义
+  - `weather_live_prereq_readiness` 已成为 hourly readiness refresh 入口，会生成 `data/ui/asterion_readiness_p4.json` / `.md` 并刷新 `ui.phase_readiness_summary`
+  - `health_monitor_v1.py` 已扩展 signer / submitter / chain-tx / external execution 的最小 health surface，`GO` 文案明确只表示 `ready for controlled live rollout decision`
 
 ### 2.2 P4 Start-State Register
 
@@ -459,7 +463,7 @@ Gamma / CLOB public / Open-Meteo / NWS / Polygon RPC
 - **output tables**: readiness JSON / markdown、`ui.phase_readiness_summary`
 - **contracts consumed**: health / readiness report contract
 - **tests required**: health collector tests、readiness gate tests、missing-surface failure tests
-- **exit criteria**: signer/RPC/CLOB failures 能进入 canonical readiness / operator surface，而不是只留在日志中
+- **exit criteria**: 已完成；`evaluate_p4_live_prereq_readiness(...)` 与 `weather_live_prereq_readiness` 已落地，`ui.phase_readiness_summary` 已可承载 `p4_live_prerequisites`，且 `GO` 仅表示 `ready for controlled live rollout decision`
 
 ### P4-11 Controlled Live Smoke Boundary
 

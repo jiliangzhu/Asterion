@@ -104,6 +104,11 @@ from asterion_core.journal import (
     enqueue_strategy_run_upserts,
     enqueue_trade_ticket_upserts,
 )
+from asterion_core.monitoring import (
+    ReadinessConfig,
+    evaluate_p4_live_prereq_readiness,
+    write_readiness_report,
+)
 from asterion_core.risk import (
     available_inventory_quantity_for_ticket,
     apply_fill_to_inventory,
@@ -139,6 +144,7 @@ from asterion_core.runtime import (
     run_strategy_engine,
 )
 from asterion_core.storage.write_queue import WriteQueueConfig
+from asterion_core.ui import build_ui_lite_db_once, refresh_ui_db_replica_once
 from domains.weather.forecast import (
     AdapterRouter,
     ForecastService,
@@ -945,6 +951,68 @@ def run_weather_external_execution_reconciliation_job(
             "reconciliation_count": len(reconciliation_results),
             "reconciliation_mismatch_count": sum(1 for item in reconciliation_results if item.status.value != "ok"),
             "wallet_ids": sorted({item.wallet_id for item in submit_attempts}),
+        },
+    )
+
+
+def run_weather_live_prereq_readiness_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    ui_replica_db_path: str,
+    ui_replica_meta_path: str,
+    ui_lite_db_path: str,
+    ui_lite_meta_path: str,
+    readiness_report_json_path: str,
+    readiness_report_markdown_path: str,
+    run_id: str | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    db_path = _resolve_connection_db_path(con)
+    report = evaluate_p4_live_prereq_readiness(
+        ReadinessConfig(
+            db_path=db_path,
+            ui_replica_db_path=ui_replica_db_path,
+            ui_replica_meta_path=ui_replica_meta_path,
+            ui_lite_db_path=ui_lite_db_path,
+            ui_lite_meta_path=ui_lite_meta_path,
+            readiness_report_json_path=readiness_report_json_path,
+            readiness_report_markdown_path=readiness_report_markdown_path,
+            write_queue_path=queue_cfg.path,
+        )
+    )
+    write_readiness_report(
+        report,
+        json_path=readiness_report_json_path,
+        markdown_path=readiness_report_markdown_path,
+    )
+    replica_result = refresh_ui_db_replica_once(
+        src_db_path=db_path,
+        dst_db_path=ui_replica_db_path,
+        meta_path=ui_replica_meta_path,
+    )
+    lite_result = build_ui_lite_db_once(
+        src_db_path=ui_replica_db_path,
+        dst_db_path=ui_lite_db_path,
+        meta_path=ui_lite_meta_path,
+        readiness_report_json_path=readiness_report_json_path,
+    )
+    failed_gate_names = [item.gate_name for item in report.gate_results if not item.passed]
+    return ColdPathHandlerResult(
+        job_name="weather_live_prereq_readiness",
+        run_id=request_id,
+        task_ids=[],
+        item_count=len(report.gate_results),
+        metadata={
+            "target": report.target.value,
+            "go_decision": report.go_decision,
+            "decision_reason": report.decision_reason,
+            "gate_count": len(report.gate_results),
+            "failed_gate_names": failed_gate_names,
+            "report_json_path": readiness_report_json_path,
+            "report_markdown_path": readiness_report_markdown_path,
+            "ui_replica_ok": replica_result.ok,
+            "ui_lite_ok": lite_result.ok,
         },
     )
 
@@ -2439,6 +2507,14 @@ def _coerce_optional_non_empty_string(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _resolve_connection_db_path(con) -> str:
+    rows = con.execute("PRAGMA database_list").fetchall()
+    for row in rows:
+        if len(row) >= 3 and str(row[1]) == "main" and str(row[2]):
+            return str(row[2])
+    raise ValueError("unable to resolve active DuckDB main database path from connection")
 
 
 def _stable_unique_values(values: list[str]) -> list[str]:

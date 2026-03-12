@@ -29,6 +29,12 @@ from asterion_core.signer import (
 )
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.write_queue import WriteQueueConfig, default_write_queue_path
+from asterion_core.ui import (
+    default_ui_db_replica_path,
+    default_ui_lite_db_path,
+    default_ui_lite_meta_path,
+    default_ui_replica_meta_path,
+)
 from domains.weather.forecast import AdapterRouter, ForecastService, InMemoryForecastCache, NWSAdapter, OpenMeteoAdapter
 from domains.weather.resolution import BackfillRpcClient, FallbackRpcPool, RpcEndpointConfig
 
@@ -68,6 +74,8 @@ class AsterionColdPathSettings:
     forecast_fallback_sources: list[str]
     watcher_chain_id: int
     watcher_rpc_urls: list[str]
+    readiness_report_json_path: str = "data/ui/asterion_readiness_p4.json"
+    readiness_report_markdown_path: str = "data/ui/asterion_readiness_p4.md"
 
     @classmethod
     def from_env(cls) -> "AsterionColdPathSettings":
@@ -114,6 +122,10 @@ class AsterionColdPathSettings:
             forecast_fallback_sources=fallback,
             watcher_chain_id=int(os.getenv("ASTERION_WATCHER_CHAIN_ID", "137")),
             watcher_rpc_urls=watcher_urls,
+            readiness_report_json_path=os.getenv("ASTERION_READINESS_REPORT_JSON_PATH", "data/ui/asterion_readiness_p4.json"),
+            readiness_report_markdown_path=os.getenv(
+                "ASTERION_READINESS_REPORT_MARKDOWN_PATH", "data/ui/asterion_readiness_p4.md"
+            ),
         )
 
 
@@ -256,6 +268,29 @@ class ChainTxRuntimeResource:
         if self.settings.chain_tx_backend_kind == "shadow_stub":
             return ChainTxServiceShell(ShadowBroadcastBackend())
         raise ValueError(f"unsupported chain_tx_backend_kind={self.settings.chain_tx_backend_kind!r}")
+
+
+@dataclass(frozen=True)
+class LivePrereqReadinessRuntimeResource:
+    settings: AsterionColdPathSettings
+
+    def resolve_ui_replica_db_path(self) -> str:
+        return default_ui_db_replica_path()
+
+    def resolve_ui_replica_meta_path(self) -> str:
+        return default_ui_replica_meta_path()
+
+    def resolve_ui_lite_db_path(self) -> str:
+        return default_ui_lite_db_path()
+
+    def resolve_ui_lite_meta_path(self) -> str:
+        return default_ui_lite_meta_path()
+
+    def resolve_readiness_report_json_path(self) -> str:
+        return str(Path(self.settings.readiness_report_json_path))
+
+    def resolve_readiness_report_markdown_path(self) -> str:
+        return str(Path(self.settings.readiness_report_markdown_path))
 
 
 @dataclass(frozen=True)
@@ -694,6 +729,46 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
             return ChainTxRuntimeResource(settings=settings)
 
 
+    class DagsterLivePrereqReadinessRuntimeResource(ConfigurableResource):
+        readiness_report_json_path: str = "data/ui/asterion_readiness_p4.json"
+        readiness_report_markdown_path: str = "data/ui/asterion_readiness_p4.md"
+
+        def build_runtime(self) -> LivePrereqReadinessRuntimeResource:
+            settings = AsterionColdPathSettings.from_env()
+            settings = AsterionColdPathSettings(
+                db_path=settings.db_path,
+                ddl_path=settings.ddl_path,
+                write_queue_path=settings.write_queue_path,
+                gamma_base_url=settings.gamma_base_url,
+                gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_page_limit=settings.gamma_page_limit,
+                gamma_max_pages=settings.gamma_max_pages,
+                gamma_sleep_s=settings.gamma_sleep_s,
+                gamma_active_only=settings.gamma_active_only,
+                gamma_closed=settings.gamma_closed,
+                gamma_archived=settings.gamma_archived,
+                clob_base_url=settings.clob_base_url,
+                clob_book_endpoint=settings.clob_book_endpoint,
+                clob_fee_rate_endpoint=settings.clob_fee_rate_endpoint,
+                wallet_registry_path=settings.wallet_registry_path,
+                chain_registry_path=settings.chain_registry_path,
+                capability_chain_id=settings.capability_chain_id,
+                capability_rpc_urls=list(settings.capability_rpc_urls),
+                signer_backend_kind=settings.signer_backend_kind,
+                signer_rpc_url=settings.signer_rpc_url,
+                submitter_backend_kind=settings.submitter_backend_kind,
+                submitter_api_base_url=settings.submitter_api_base_url,
+                chain_tx_backend_kind=settings.chain_tx_backend_kind,
+                forecast_primary_source=settings.forecast_primary_source,
+                forecast_fallback_sources=list(settings.forecast_fallback_sources),
+                watcher_chain_id=settings.watcher_chain_id,
+                watcher_rpc_urls=list(settings.watcher_rpc_urls),
+                readiness_report_json_path=self.readiness_report_json_path,
+                readiness_report_markdown_path=self.readiness_report_markdown_path,
+            )
+            return LivePrereqReadinessRuntimeResource(settings=settings)
+
+
 def build_runtime_resources(settings: AsterionColdPathSettings | None = None) -> dict[str, Any]:
     active = settings or AsterionColdPathSettings.from_env()
     return {
@@ -706,6 +781,7 @@ def build_runtime_resources(settings: AsterionColdPathSettings | None = None) ->
         "signer_runtime": SignerRuntimeResource(settings=active),
         "submitter_runtime": SubmitterRuntimeResource(settings=active),
         "chain_tx_runtime": ChainTxRuntimeResource(settings=active),
+        "live_prereq_readiness_runtime": LivePrereqReadinessRuntimeResource(settings=active),
         "forecast_runtime": ForecastRuntimeResource(settings=active),
         "watcher_rpc_pool": WatcherRpcPoolResource(settings=active),
     }
@@ -755,6 +831,10 @@ def build_dagster_resource_defs(settings: AsterionColdPathSettings | None = None
             chain_registry_path=active.chain_registry_path,
             capability_chain_id=active.capability_chain_id,
             capability_rpc_urls=list(active.capability_rpc_urls),
+        ),
+        "live_prereq_readiness_runtime": DagsterLivePrereqReadinessRuntimeResource(
+            readiness_report_json_path=active.readiness_report_json_path,
+            readiness_report_markdown_path=active.readiness_report_markdown_path,
         ),
         "forecast_runtime": DagsterForecastRuntimeResource(forecast_primary_source=active.forecast_primary_source),
         "watcher_rpc_pool": DagsterWatcherRpcPoolResource(watcher_chain_id=active.watcher_chain_id),

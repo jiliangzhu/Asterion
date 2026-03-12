@@ -9,7 +9,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from asterion_core.monitoring.health_monitor_v1 import (
+    collect_chain_tx_health,
+    collect_external_execution_health,
+    collect_queue_health,
+    collect_signer_health,
+    collect_submitter_health,
+)
 from asterion_core.storage.logger import get_logger
+from asterion_core.storage.write_queue import default_write_queue_path
 from asterion_core.storage.utils import safe_json_dumps
 from asterion_core.ui import (
     default_ui_db_replica_path,
@@ -20,13 +28,14 @@ from asterion_core.ui import (
     load_ui_replica_meta,
     validate_ui_lite_db,
 )
-from dagster_asterion.job_map import build_weather_cold_path_job_map
 
 
 log = get_logger(__name__)
 
 DEFAULT_READINESS_REPORT_JSON_PATH = "data/ui/asterion_readiness_p3.json"
 DEFAULT_READINESS_REPORT_MARKDOWN_PATH = "data/ui/asterion_readiness_p3.md"
+DEFAULT_P4_READINESS_REPORT_JSON_PATH = "data/ui/asterion_readiness_p4.json"
+DEFAULT_P4_READINESS_REPORT_MARKDOWN_PATH = "data/ui/asterion_readiness_p4.md"
 
 _COLD_PATH_TABLES = [
     "weather.weather_market_specs",
@@ -86,6 +95,7 @@ _DAILY_OPS_UI_TABLES = [
 
 class ReadinessTarget(str, Enum):
     P3_PAPER_EXECUTION = "p3_paper_execution"
+    P4_LIVE_PREREQUISITES = "p4_live_prerequisites"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -153,8 +163,12 @@ class ReadinessReport:
         )
 
     def to_markdown(self) -> str:
+        title = {
+            ReadinessTarget.P3_PAPER_EXECUTION: "# Asterion P3 Readiness Report",
+            ReadinessTarget.P4_LIVE_PREREQUISITES: "# Asterion P4 Live Prereq Readiness Report",
+        }[self.target]
         lines = [
-            "# Asterion P3 Readiness Report",
+            title,
             "",
             f"**Target**: `{self.target.value}`",
             f"**Generated**: {self.generated_at.astimezone(UTC).isoformat()}",
@@ -193,6 +207,8 @@ class ReadinessConfig:
     ui_lite_db_path: str = dataclasses.field(default_factory=default_ui_lite_db_path)
     ui_lite_meta_path: str = dataclasses.field(default_factory=default_ui_lite_meta_path)
     readiness_report_json_path: str = DEFAULT_READINESS_REPORT_JSON_PATH
+    readiness_report_markdown_path: str = DEFAULT_READINESS_REPORT_MARKDOWN_PATH
+    write_queue_path: str = dataclasses.field(default_factory=default_write_queue_path)
     require_agent_surface: bool = True
     require_ui_lite: bool = True
 
@@ -225,6 +241,43 @@ def evaluate_p3_readiness(config: ReadinessConfig) -> ReadinessReport:
     }
     return ReadinessReport(
         target=ReadinessTarget.P3_PAPER_EXECUTION,
+        generated_at=generated_at,
+        all_passed=all_passed,
+        go_decision=go_decision,
+        decision_reason=decision_reason,
+        data_hash=_stable_hash(hash_payload),
+        gate_results=gate_results,
+    )
+
+
+def evaluate_p4_live_prereq_readiness(config: ReadinessConfig) -> ReadinessReport:
+    gate_results = [
+        _evaluate_live_prereq_operator_surface(config),
+        _evaluate_signer_path_health(config),
+        _evaluate_submitter_shadow_path(config),
+        _evaluate_wallet_state_and_allowance(config),
+        _evaluate_external_execution_alignment(config),
+        _evaluate_ops_queue_and_chain_tx(config),
+    ]
+    all_passed = all(item.passed for item in gate_results)
+    go_decision = "GO" if all_passed else "NO-GO"
+    failed = [item.gate_name for item in gate_results if not item.passed]
+    decision_reason = (
+        "all readiness gates passed; ready for controlled live rollout decision"
+        if all_passed
+        else f"failed gates: {', '.join(failed)}; not ready for controlled live rollout decision"
+    )
+    generated_at = datetime.now(UTC)
+    hash_payload = {
+        "target": ReadinessTarget.P4_LIVE_PREREQUISITES.value,
+        "generated_at": _iso_utc(generated_at),
+        "all_passed": all_passed,
+        "go_decision": go_decision,
+        "decision_reason": decision_reason,
+        "gate_results": [item.to_dict() for item in gate_results],
+    }
+    return ReadinessReport(
+        target=ReadinessTarget.P4_LIVE_PREREQUISITES,
         generated_at=generated_at,
         all_passed=all_passed,
         go_decision=go_decision,
@@ -274,6 +327,8 @@ def _evaluate_portfolio_reconciliation(config: ReadinessConfig) -> ReadinessGate
 
 
 def _evaluate_agent_review_surface(config: ReadinessConfig) -> ReadinessGateResult:
+    from dagster_asterion.job_map import build_weather_cold_path_job_map
+
     if not config.require_agent_surface:
         return ReadinessGateResult(
             gate_name="agent_review_surface",
@@ -401,6 +456,254 @@ def _evaluate_daily_ops_surface(config: ReadinessConfig) -> ReadinessGateResult:
     metadata.update(ui_gate["metadata"])
     return ReadinessGateResult(
         gate_name="daily_ops_surface",
+        passed=not violations,
+        checks=checks,
+        violations=violations,
+        warnings=warnings,
+        metadata=metadata,
+    )
+
+
+def _evaluate_live_prereq_operator_surface(config: ReadinessConfig) -> ReadinessGateResult:
+    checks: dict[str, bool] = {}
+    violations: list[str] = []
+    metadata: dict[str, Any] = {}
+    if not Path(config.ui_lite_db_path).exists():
+        return ReadinessGateResult(
+            gate_name="live_prereq_operator_surface",
+            passed=False,
+            checks={"ui_lite.db_exists": False},
+            violations=[f"missing UI lite DB: {config.ui_lite_db_path}"],
+            warnings=[],
+            metadata=metadata,
+        )
+    ui_gate = _evaluate_ui_table_gate(
+        config.ui_lite_db_path,
+        required_tables=[
+            "ui.live_prereq_wallet_summary",
+            "ui.live_prereq_execution_summary",
+            "ui.execution_exception_summary",
+        ],
+        nonempty_tables=[
+            "ui.live_prereq_wallet_summary",
+            "ui.live_prereq_execution_summary",
+        ],
+    )
+    checks.update(ui_gate["checks"])
+    violations.extend(ui_gate["violations"])
+    metadata.update(ui_gate["metadata"])
+    return ReadinessGateResult(
+        gate_name="live_prereq_operator_surface",
+        passed=not violations,
+        checks=checks,
+        violations=violations,
+        warnings=list(ui_gate["warnings"]),
+        metadata=metadata,
+    )
+
+
+def _evaluate_signer_path_health(config: ReadinessConfig) -> ReadinessGateResult:
+    checks: dict[str, bool] = {}
+    violations: list[str] = []
+    warnings: list[str] = []
+    metadata: dict[str, Any] = {}
+    con = _connect_duckdb(config.db_path, read_only=True)
+    try:
+        signer_health = collect_signer_health(con)
+    finally:
+        con.close()
+    metadata["signer_health"] = dataclasses.asdict(signer_health)
+    request_count_ok = signer_health.request_count > 0
+    rejected_count_ok = signer_health.rejected_count == 0
+    checks["signer.request_count_positive"] = request_count_ok
+    checks["signer.rejected_count_zero"] = rejected_count_ok
+    if not request_count_ok:
+        violations.append("signer health has no request activity")
+    if not rejected_count_ok:
+        violations.append("signer health has rejected requests")
+    ui_rows = _query_ui_rows(
+        config.ui_lite_db_path,
+        """
+        SELECT wallet_id
+        FROM ui.live_prereq_wallet_summary
+        WHERE can_trade
+          AND latest_signer_status = 'rejected'
+        """,
+    )
+    wallet_status_ok = len(ui_rows) == 0
+    checks["wallet_summary.no_signer_rejects_for_can_trade"] = wallet_status_ok
+    metadata["signer_rejected_wallet_ids"] = [str(row[0]) for row in ui_rows]
+    if not wallet_status_ok:
+        violations.append("signer reject surfaced in live prereq wallet summary")
+    return ReadinessGateResult(
+        gate_name="signer_path_health",
+        passed=not violations,
+        checks=checks,
+        violations=violations,
+        warnings=warnings,
+        metadata=metadata,
+    )
+
+
+def _evaluate_submitter_shadow_path(config: ReadinessConfig) -> ReadinessGateResult:
+    checks: dict[str, bool] = {}
+    violations: list[str] = []
+    warnings: list[str] = []
+    metadata: dict[str, Any] = {}
+    con = _connect_duckdb(config.db_path, read_only=True)
+    try:
+        submitter_health = collect_submitter_health(con)
+    finally:
+        con.close()
+    metadata["submitter_health"] = dataclasses.asdict(submitter_health)
+    sign_only_ok = submitter_health.sign_only_signed_count > 0
+    submit_activity_ok = (submitter_health.submit_preview_count + submitter_health.submit_accepted_count + submitter_health.submit_rejected_count) > 0
+    checks["submitter.sign_only_signed_present"] = sign_only_ok
+    checks["submitter.submit_activity_present"] = submit_activity_ok
+    if not sign_only_ok:
+        violations.append("missing sign-only signed attempts")
+    if not submit_activity_ok:
+        violations.append("missing submitter activity")
+    ui_rows = _query_ui_rows(
+        config.ui_lite_db_path,
+        """
+        SELECT ticket_id, live_prereq_execution_status
+        FROM ui.live_prereq_execution_summary
+        WHERE live_prereq_execution_status IN ('sign_rejected', 'submit_rejected')
+        """,
+    )
+    status_ok = len(ui_rows) == 0
+    checks["execution_summary.no_sign_or_submit_rejects"] = status_ok
+    metadata["submitter_rejected_ticket_ids"] = [str(row[0]) for row in ui_rows]
+    if not status_ok:
+        violations.append("submitter shadow path has sign_rejected or submit_rejected executions")
+    return ReadinessGateResult(
+        gate_name="submitter_shadow_path",
+        passed=not violations,
+        checks=checks,
+        violations=violations,
+        warnings=warnings,
+        metadata=metadata,
+    )
+
+
+def _evaluate_wallet_state_and_allowance(config: ReadinessConfig) -> ReadinessGateResult:
+    checks: dict[str, bool] = {}
+    violations: list[str] = []
+    warnings: list[str] = []
+    metadata: dict[str, Any] = {}
+    con = _connect_duckdb(config.db_path, read_only=True)
+    try:
+        observation_count = _table_count(con, "runtime.external_balance_observations")
+    finally:
+        con.close()
+    checks["runtime.external_balance_observations.nonempty"] = observation_count > 0
+    metadata["external_balance_observation_count"] = observation_count
+    if observation_count <= 0:
+        violations.append("missing external balance observations")
+    ui_rows = _query_ui_rows(
+        config.ui_lite_db_path,
+        """
+        SELECT wallet_id, wallet_readiness_status
+        FROM ui.live_prereq_wallet_summary
+        WHERE can_trade
+          AND wallet_readiness_status <> 'ready'
+        """,
+    )
+    ready_ok = len(ui_rows) == 0
+    checks["wallet_summary.can_trade_wallets_ready"] = ready_ok
+    metadata["wallet_readiness_failures"] = [
+        {"wallet_id": str(row[0]), "wallet_readiness_status": str(row[1])}
+        for row in ui_rows
+    ]
+    if not ready_ok:
+        violations.append("live prereq wallet summary shows non-ready can_trade wallets")
+    return ReadinessGateResult(
+        gate_name="wallet_state_and_allowance",
+        passed=not violations,
+        checks=checks,
+        violations=violations,
+        warnings=warnings,
+        metadata=metadata,
+    )
+
+
+def _evaluate_external_execution_alignment(config: ReadinessConfig) -> ReadinessGateResult:
+    checks: dict[str, bool] = {}
+    violations: list[str] = []
+    warnings: list[str] = []
+    metadata: dict[str, Any] = {}
+    con = _connect_duckdb(config.db_path, read_only=True)
+    try:
+        external_health = collect_external_execution_health(con)
+    finally:
+        con.close()
+    metadata["external_execution_health"] = dataclasses.asdict(external_health)
+    mismatch_ok = external_health.external_reconciliation_mismatch_count == 0
+    unverified_ok = external_health.external_reconciliation_unverified_count == 0
+    checks["external_execution.mismatch_count_zero"] = mismatch_ok
+    checks["external_execution.unverified_count_zero"] = unverified_ok
+    if not mismatch_ok:
+        violations.append("external reconciliation mismatches present")
+    if not unverified_ok:
+        violations.append("external reconciliation unverified rows present")
+    ui_rows = _query_ui_rows(
+        config.ui_lite_db_path,
+        """
+        SELECT ticket_id, live_prereq_execution_status
+        FROM ui.live_prereq_execution_summary
+        WHERE live_prereq_execution_status IN ('external_unverified', 'external_mismatch')
+        """,
+    )
+    status_ok = len(ui_rows) == 0
+    checks["execution_summary.no_external_mismatch_or_unverified"] = status_ok
+    metadata["external_execution_failures"] = [
+        {"ticket_id": str(row[0]), "live_prereq_execution_status": str(row[1])}
+        for row in ui_rows
+    ]
+    if not status_ok:
+        violations.append("live prereq execution summary shows external mismatch or unverified status")
+    return ReadinessGateResult(
+        gate_name="external_execution_alignment",
+        passed=not violations,
+        checks=checks,
+        violations=violations,
+        warnings=warnings,
+        metadata=metadata,
+    )
+
+
+def _evaluate_ops_queue_and_chain_tx(config: ReadinessConfig) -> ReadinessGateResult:
+    checks: dict[str, bool] = {}
+    violations: list[str] = []
+    warnings: list[str] = []
+    metadata: dict[str, Any] = {}
+    con = _connect_duckdb(config.db_path, read_only=True)
+    try:
+        chain_tx_health = collect_chain_tx_health(con)
+    finally:
+        con.close()
+    queue_health = collect_queue_health(config.write_queue_path)
+    metadata["chain_tx_health"] = dataclasses.asdict(chain_tx_health)
+    metadata["queue_health"] = dataclasses.asdict(queue_health)
+    approve_present = chain_tx_health.approve_attempt_count > 0
+    approve_rejected_ok = chain_tx_health.approve_rejected_count == 0
+    latest_approve_ok = chain_tx_health.latest_approve_status != "rejected"
+    queue_ok = queue_health.dead_tasks_1h == 0
+    checks["chain_tx.approve_attempt_present"] = approve_present
+    checks["chain_tx.approve_rejected_count_zero"] = approve_rejected_ok
+    checks["chain_tx.latest_approve_not_rejected"] = latest_approve_ok
+    checks["queue.dead_tasks_1h_zero"] = queue_ok
+    if not approve_present:
+        violations.append("missing approve_usdc activity")
+    if not approve_rejected_ok:
+        violations.append("approve_usdc attempts include rejected rows")
+    if not latest_approve_ok:
+        violations.append("latest approve_usdc status is rejected")
+    if not queue_ok:
+        violations.append("writer queue has dead tasks in the last hour")
+    return ReadinessGateResult(
+        gate_name="ops_queue_and_chain_tx",
         passed=not violations,
         checks=checks,
         violations=violations,
@@ -548,6 +851,18 @@ def _evaluate_ui_table_gate(
     return {"checks": checks, "violations": violations, "warnings": warnings, "metadata": metadata}
 
 
+def _query_ui_rows(db_path: str, query: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
+    if not Path(db_path).exists():
+        return []
+    con = _connect_duckdb(db_path, read_only=True)
+    try:
+        return list(con.execute(query, params or []).fetchall())
+    except Exception:  # noqa: BLE001
+        return []
+    finally:
+        con.close()
+
+
 def _connect_duckdb(db_path: str, *, read_only: bool):
     try:
         import duckdb  # type: ignore
@@ -606,10 +921,13 @@ def _write_text_atomic(path: Path, content: str) -> None:
 __all__ = [
     "DEFAULT_READINESS_REPORT_JSON_PATH",
     "DEFAULT_READINESS_REPORT_MARKDOWN_PATH",
+    "DEFAULT_P4_READINESS_REPORT_JSON_PATH",
+    "DEFAULT_P4_READINESS_REPORT_MARKDOWN_PATH",
     "ReadinessConfig",
     "ReadinessGateResult",
     "ReadinessReport",
     "ReadinessTarget",
     "evaluate_p3_readiness",
+    "evaluate_p4_live_prereq_readiness",
     "write_readiness_report",
 ]

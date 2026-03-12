@@ -38,6 +38,7 @@ from asterion_core.contracts import (
     WeatherMarketSpecRecord,
     stable_object_id,
 )
+from asterion_core.monitoring import ReadinessGateResult, ReadinessReport, ReadinessTarget
 from asterion_core.signer import SignatureAuditStatus
 from asterion_core.storage.write_queue import WriteQueueConfig
 from dagster_asterion import (
@@ -54,6 +55,7 @@ from dagster_asterion.handlers import (
     run_weather_paper_execution_job,
     run_weather_data_qa_review_job,
     run_weather_external_execution_reconciliation_job,
+    run_weather_live_prereq_readiness_job,
     run_weather_market_discovery_job,
     run_weather_forecast_refresh,
     run_weather_forecast_replay_job,
@@ -73,6 +75,7 @@ from dagster_asterion.resources import (
     ChainTxRuntimeResource,
     ForecastRuntimeResource,
     GammaDiscoveryRuntimeResource,
+    LivePrereqReadinessRuntimeResource,
     SignerRuntimeResource,
     SubmitterRuntimeResource,
     WalletStateObservationRuntimeResource,
@@ -300,6 +303,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_submitter_smoke",
             "weather_external_execution_reconciliation",
             "weather_chain_tx_smoke",
+            "weather_live_prereq_readiness",
             "weather_forecast_refresh",
             "weather_forecast_replay",
             "weather_paper_execution",
@@ -320,6 +324,10 @@ class ColdPathJobMapTest(unittest.TestCase):
             ["weather_submitter_smoke", "weather_wallet_state_refresh"],
         )
         self.assertEqual(jobs["weather_chain_tx_smoke"].upstream_jobs, ["weather_wallet_state_refresh"])
+        self.assertEqual(
+            jobs["weather_live_prereq_readiness"].upstream_jobs,
+            ["weather_external_execution_reconciliation", "weather_chain_tx_smoke"],
+        )
         self.assertEqual(jobs["weather_forecast_refresh"].upstream_jobs, ["weather_spec_sync"])
         self.assertEqual(jobs["weather_market_discovery"].mode, "scheduled")
         self.assertEqual(jobs["weather_watcher_backfill"].mode, "scheduled")
@@ -329,6 +337,7 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_submitter_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_external_execution_reconciliation"].mode, "scheduled")
         self.assertEqual(jobs["weather_chain_tx_smoke"].mode, "manual")
+        self.assertEqual(jobs["weather_live_prereq_readiness"].mode, "scheduled")
         self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
         self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
         self.assertEqual(jobs["weather_data_qa_review"].upstream_jobs, ["weather_forecast_replay"])
@@ -345,6 +354,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_forecast_refresh_hourly",
             "weather_wallet_state_refresh_hourly",
             "weather_external_execution_reconciliation_hourly",
+            "weather_live_prereq_readiness_hourly",
             "weather_watcher_backfill_bihourly",
             "weather_resolution_reconciliation_bihourly",
         ])
@@ -361,6 +371,7 @@ class ColdPathResourcesTest(unittest.TestCase):
         signer_runtime = SignerRuntimeResource(settings=settings)
         submitter_runtime = SubmitterRuntimeResource(settings=settings)
         chain_tx_runtime = ChainTxRuntimeResource(settings=settings)
+        readiness_runtime = LivePrereqReadinessRuntimeResource(settings=settings)
         forecast_runtime = ForecastRuntimeResource(settings=settings)
         watcher_rpc = WatcherRpcPoolResource(settings=settings)
         reader = object()
@@ -379,6 +390,7 @@ class ColdPathResourcesTest(unittest.TestCase):
         self.assertEqual(chain_tx_runtime.resolve_chain_registry_path(), settings.chain_registry_path)
         self.assertIs(chain_tx_runtime.build_chain_tx_reader(reader=reader), reader)
         self.assertEqual(chain_tx_runtime.build_chain_tx_service()._backend.__class__.__name__, "DisabledChainTxBackend")
+        self.assertTrue(readiness_runtime.resolve_readiness_report_json_path().endswith("asterion_readiness_p4.json"))
         self.assertIsInstance(forecast_runtime.build_cache(), InMemoryForecastCache)
         with self.assertRaises(ValueError):
             watcher_rpc.build_rpc_pool()
@@ -388,6 +400,7 @@ class ColdPathResourcesTest(unittest.TestCase):
         self.assertIn("duckdb", resource_defs)
         self.assertIn("signer_runtime", resource_defs)
         self.assertIn("chain_tx_runtime", resource_defs)
+        self.assertIn("live_prereq_readiness_runtime", resource_defs)
         if HAS_DAGSTER:
             self.assertNotIsInstance(resource_defs["duckdb"], DuckDBResource)
         else:
@@ -1090,6 +1103,66 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         self.assertEqual(result.metadata["tx_kind"], "approve_usdc")
         self.assertEqual(result.metadata["tx_mode"], "dry_run")
         self.assertEqual(result.metadata["attempt_id"], "ctxatt_1")
+
+    def test_weather_live_prereq_readiness_writes_report_and_refreshes_ui(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        report = ReadinessReport(
+            target=ReadinessTarget.P4_LIVE_PREREQUISITES,
+            generated_at=datetime(2026, 3, 12, 12, 0, tzinfo=timezone.utc),
+            all_passed=True,
+            go_decision="GO",
+            decision_reason="all readiness gates passed; ready for controlled live rollout decision",
+            data_hash="hash_p4",
+            gate_results=[
+                ReadinessGateResult(
+                    gate_name="live_prereq_operator_surface",
+                    passed=True,
+                    checks={"ok": True},
+                    violations=[],
+                    warnings=[],
+                    metadata={},
+                )
+            ],
+        )
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("dagster_asterion.handlers._resolve_connection_db_path", return_value="data/asterion.duckdb")
+            )
+            evaluate = stack.enter_context(
+                patch("dagster_asterion.handlers.evaluate_p4_live_prereq_readiness", return_value=report)
+            )
+            write_report = stack.enter_context(patch("dagster_asterion.handlers.write_readiness_report"))
+            refresh_replica = stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.refresh_ui_db_replica_once",
+                    return_value=type("ReplicaRefreshResultStub", (), {"ok": True})(),
+                )
+            )
+            build_lite = stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.build_ui_lite_db_once",
+                    return_value=type("UiLiteBuildResultStub", (), {"ok": True, "error": None})(),
+                )
+            )
+            result = run_weather_live_prereq_readiness_job(
+                object(),
+                queue_cfg,
+                ui_replica_db_path="data/ui/asterion_ui.duckdb",
+                ui_replica_meta_path="data/ui/asterion_ui.meta.json",
+                ui_lite_db_path="data/ui/asterion_ui_lite.duckdb",
+                ui_lite_meta_path="data/ui/asterion_ui_lite.meta.json",
+                readiness_report_json_path="data/ui/asterion_readiness_p4.json",
+                readiness_report_markdown_path="data/ui/asterion_readiness_p4.md",
+                run_id="run_live_prereq",
+            )
+        evaluate.assert_called_once()
+        write_report.assert_called_once()
+        refresh_replica.assert_called_once()
+        build_lite.assert_called_once()
+        self.assertEqual(result.metadata["target"], "p4_live_prerequisites")
+        self.assertEqual(result.metadata["go_decision"], "GO")
+        self.assertEqual(result.metadata["failed_gate_names"], [])
+        self.assertTrue(result.metadata["ui_lite_ok"])
 
     def test_weather_external_execution_reconciliation_routes_to_results_and_journal(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")

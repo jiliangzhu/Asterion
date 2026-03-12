@@ -2,7 +2,7 @@
 
 **版本**: v1.2
 **更新日期**: 2026-03-12
-**状态**: P4 implementation in progress (`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` completed)
+**状态**: P4 implementation in progress (`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` completed)
 
 ---
 
@@ -148,7 +148,7 @@ python3 -m unittest discover -s tests -v
 
 ## 🏗️ 技术架构
 
-### 当前已落地模块（P4-09）
+### 当前已落地模块（P4-10）
 
 ```
 asterion_core/              # 平台核心
@@ -216,6 +216,7 @@ agents/                     # AI Agent
 - `blockchain/chain_tx_v1.py`、`runtime.chain_tx_attempts` 已在 `P4-07` 落地，用于 approve-first gas / nonce / signing / shadow-broadcast scaffold
 - `runtime.external_fill_observations`、`weather_external_execution_reconciliation` 与 external-aware `trading.reconciliation_results` 已在 `P4-08` 落地，用于 shadow external execution reconciliation
 - `ui.live_prereq_execution_summary`、`ui.live_prereq_wallet_summary` 与扩展后的 `ui.execution_*` 已在 `P4-09` 落地，用于 operator live-prereq read model
+- `evaluate_p4_live_prereq_readiness(...)` 与 `weather_live_prereq_readiness` 已在 `P4-10` 落地，用于 minimum ops hardening、hourly P4 readiness report 以及 `ui.phase_readiness_summary`
 - `weather_chain_tx_smoke` 已成为 `P4-07` 的 canonical chain-tx manual entry；当前只开放 `approve_usdc`
 - `weather_signer_audit_smoke`、`weather_order_signing_smoke`、`weather_submitter_smoke` 与 `weather_external_execution_reconciliation` 已成为 `P4` signer / order-signing / submitter / reconciliation 的 canonical entry
 - `daily_review_agent.py` 仍未落地；当前只完成 `ui.daily_review_input` 等 review input surface
