@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS runtime.chain_tx_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    wallet_id TEXT NOT NULL,
+    tx_kind TEXT NOT NULL,
+    tx_mode TEXT NOT NULL,
+    chain_id INTEGER NOT NULL,
+    funder TEXT NOT NULL,
+    token_id TEXT,
+    allowance_target TEXT,
+    nonce INTEGER,
+    gas_limit BIGINT,
+    max_fee_per_gas BIGINT,
+    max_priority_fee_per_gas BIGINT,
+    payload_hash TEXT NOT NULL,
+    tx_payload_json TEXT NOT NULL,
+    signed_payload_ref TEXT,
+    tx_hash TEXT,
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at TIMESTAMP NOT NULL
+);

@@ -282,6 +282,45 @@ class DeterministicOfficialOrderSigningBackend(OrderSigningBackend):
         return _disabled_response(request)
 
 
+class DeterministicTransactionSignerBackend(OrderSigningBackend):
+    def sign_order(self, request: SignOrderRequest) -> OrderSigningResult:
+        payload_hash = hash_signer_payload(_sign_order_request_payload(request))
+        return OrderSigningResult(
+            request_id=request.request_id,
+            status="rejected",
+            signature=None,
+            error="tx_stub_order_signing_disabled",
+            payload_hash=payload_hash,
+            submit_payload_json=_build_official_submit_payload(
+                request,
+                signature=None,
+                backend_kind="tx_stub",
+                signed=False,
+                error="tx_stub_order_signing_disabled",
+            ),
+            completed_at=_normalize_timestamp(request.timestamp),
+        )
+
+    def sign_transaction(self, request: SignerRequest) -> SignerResponse:
+        payload_hash = hash_signer_payload(request.payload)
+        signature = f"txstub_{stable_object_id('txsig', {'request_id': request.request_id, 'payload_hash': payload_hash})}"
+        signed_payload_ref = stable_object_id(
+            "txsref",
+            {"request_id": request.request_id, "payload_hash": payload_hash},
+        )
+        return SignerResponse(
+            request_id=request.request_id,
+            status=SignatureAuditStatus.SUCCEEDED.value,
+            signature=signature,
+            signed_payload_ref=signed_payload_ref,
+            error=None,
+            completed_at=_normalize_timestamp(request.timestamp),
+        )
+
+    def derive_api_credentials(self, request: SignerRequest) -> SignerResponse:
+        return _disabled_response(request)
+
+
 class PyClobClientOrderSigningBackend(OrderSigningBackend):
     def __init__(self) -> None:
         if importlib.util.find_spec("py_clob_client") is None:

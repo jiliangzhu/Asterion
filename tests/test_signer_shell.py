@@ -17,6 +17,7 @@ from asterion_core.execution import build_execution_context
 from asterion_core.execution.order_router_v1 import RoutedCanonicalOrder
 from asterion_core.signer import (
     DeterministicOfficialOrderSigningBackend,
+    DeterministicTransactionSignerBackend,
     DisabledSignerBackend,
     SignOrderRequest,
     SignerRequest,
@@ -195,6 +196,25 @@ class SignerShellUnitTest(unittest.TestCase):
         self.assertEqual(left.submit_payload_json, right.submit_payload_json)
         self.assertIn("order", left.submit_payload_json)
         self.assertEqual(left.submit_payload_json["backend_kind"], "official_stub")
+
+    def test_tx_stub_signs_transaction_deterministically(self) -> None:
+        context = build_signing_context_from_account_capability(
+            _account_capability(),
+            signing_purpose=SigningPurpose.TRANSACTION,
+            chain_id=137,
+        )
+        request = SignerRequest(
+            request_id="req_tx_1",
+            requester="operator",
+            timestamp=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+            context=context,
+            payload={"tx_kind": "approve_usdc", "amount": "100"},
+        )
+        left = DeterministicTransactionSignerBackend().sign_transaction(request)
+        right = DeterministicTransactionSignerBackend().sign_transaction(request)
+        self.assertEqual(left.status, SignatureAuditStatus.SUCCEEDED.value)
+        self.assertEqual(left.signature, right.signature)
+        self.assertEqual(left.signed_payload_ref, right.signed_payload_ref)
 
     def test_signature_audit_log_to_row_maps_extended_columns(self) -> None:
         row = signature_audit_log_to_row(

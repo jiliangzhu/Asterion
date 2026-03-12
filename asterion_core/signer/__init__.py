@@ -2,6 +2,7 @@
 
 from .signer_service_v1 import (
     DeterministicOfficialOrderSigningBackend,
+    DeterministicTransactionSignerBackend,
     DisabledSignerBackend,
     OrderSigningBackend,
     OrderSigningResult,
@@ -31,6 +32,7 @@ from .signer_service_v1 import (
 
 __all__ = [
     "DeterministicOfficialOrderSigningBackend",
+    "DeterministicTransactionSignerBackend",
     "DisabledSignerBackend",
     "OrderSigningBackend",
     "OrderSigningResult",

@@ -3,7 +3,7 @@
 **版本**: v1.0
 **更新日期**: 2026-03-12
 **阶段**: `P4`
-**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` 已完成）
+**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` 已完成）
 **目标**: 在 `P3 paper execution` 已关闭的基础上，补齐 `live prerequisites`：真实外部只读数据、capability refresh、signer boundary、submitter dry-run/shadow path、chain transaction scaffolding、external reconciliation、operator/readiness/ops hardening，并保持默认安全边界。
 
 ---
@@ -104,6 +104,10 @@
   - `weather_submitter_smoke` 已成为 canonical submitter dry-run / shadow-submit smoke entry
   - `runtime.submit_attempts` 已扩展消费 `submit_order` attempts，仍保持 canonical attempt ledger
   - `runtime.external_order_observations` 已落地为 canonical order-level external observation ledger，默认仍不触发真实网络 submit
+- `P4-07` 已完成：
+  - `weather_chain_tx_smoke` 已成为 canonical approve-first chain-tx smoke entry
+  - `runtime.chain_tx_attempts` 已落地为 canonical chain transaction attempt ledger
+  - `approve_usdc` 已具备 gas / nonce / transaction-signing / shadow-broadcast scaffold，`split / merge / redeem` 仅冻结进 rejected stub
 
 ### 2.2 P4 Start-State Register
 
@@ -410,13 +414,13 @@ Gamma / CLOB public / Open-Meteo / NWS / Polygon RPC
 
 ### P4-07 Chain Transaction Gas / Nonce / Broadcast Scaffold
 
-- **goal**: 为 approve / split / merge / redeem 等链上动作提供 canonical gas / nonce / signing / broadcast scaffold。
-- **code landing area**: 新增 `asterion_core/blockchain/`、`asterion_core/signer/`、`dagster_asterion/resources.py`
+- **goal**: 为 approve / split / merge / redeem 等链上动作提供 canonical gas / nonce / signing / broadcast scaffold，并在本轮按 `Approve优先` 跑通 `approve_usdc`。
+- **code landing area**: `asterion_core/blockchain/chain_tx_v1.py`、`asterion_core/signer/`、`dagster_asterion/resources.py`、`dagster_asterion/handlers.py`、`dagster_asterion/job_map.py`
 - **input tables**: `capability.account_trading_capabilities`、`runtime.external_balance_observations`
 - **output tables**: `runtime.chain_tx_attempts`、`meta.signature_audit_logs`、`runtime.journal_events`
-- **contracts consumed**: `SigningContext`、transaction request/response contract、Gas Manager design
-- **tests required**: gas estimator tests、nonce manager tests、transaction signing tests、mock broadcast tests
-- **exit criteria**: approve / redeem 等链上动作拥有统一 attempt ledger 与 audit path，但仍保持 `default-off`
+- **contracts consumed**: `SigningContext`、`ChainTxRequest`、`ChainTxAttemptRecord`、Gas Manager design
+- **tests required**: gas / nonce scaffold tests、transaction signing tests、mock shadow-broadcast tests
+- **exit criteria**: `approve_usdc` 拥有统一 attempt ledger 与 audit path，`split / merge / redeem` 已冻结进同一 tx scaffold，但 public smoke path 仍只开放 `approve_usdc`
 
 ### P4-08 External Execution Reconciliation
 

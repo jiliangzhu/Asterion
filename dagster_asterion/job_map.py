@@ -145,6 +145,23 @@ _JOB_SPECS = [
         default_schedule_key=None,
     ),
     ColdPathJobSpec(
+        job_name="weather_chain_tx_smoke",
+        description="Run the canonical manual chain transaction scaffold smoke for approve_usdc and persist chain tx attempts plus signer audit and journal events.",
+        mode="manual",
+        upstream_jobs=["weather_wallet_state_refresh"],
+        input_tables=[
+            "capability.account_trading_capabilities",
+            "runtime.external_balance_observations",
+        ],
+        output_tables=[
+            "runtime.chain_tx_attempts",
+            "meta.signature_audit_logs",
+            "runtime.journal_events",
+        ],
+        handler_name="run_weather_chain_tx_smoke_job",
+        default_schedule_key=None,
+    ),
+    ColdPathJobSpec(
         job_name="weather_forecast_replay",
         description="Replay persisted forecast/pricing outputs from canonical replay keys.",
         mode="manual",

@@ -30,6 +30,7 @@ class MigrationFilesTest(unittest.TestCase):
                 "0010_signature_audit_boundary.sql",
                 "0011_runtime_submit_attempts.sql",
                 "0012_runtime_external_order_observations.sql",
+                "0013_runtime_chain_tx_attempts.sql",
             ],
         )
 
@@ -71,6 +72,8 @@ class MigrationFilesTest(unittest.TestCase):
         self.assertIn("runtime.submit_attempts", contents["0011_runtime_submit_attempts.sql"])
         self.assertIn("attempt_mode TEXT NOT NULL", contents["0011_runtime_submit_attempts.sql"])
         self.assertIn("runtime.external_order_observations", contents["0012_runtime_external_order_observations.sql"])
+        self.assertIn("runtime.chain_tx_attempts", contents["0013_runtime_chain_tx_attempts.sql"])
+        self.assertIn("tx_kind TEXT NOT NULL", contents["0013_runtime_chain_tx_attempts.sql"])
 
 
 @unittest.skipUnless(HAS_DUCKDB, "duckdb is required for migration application tests")
@@ -89,7 +92,7 @@ class ApplyMigrationsTest(unittest.TestCase):
                 clear=False,
             ):
                 applied = apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=str(root)))
-            self.assertEqual(len(applied), 12)
+            self.assertEqual(len(applied), 13)
 
 
 if __name__ == "__main__":

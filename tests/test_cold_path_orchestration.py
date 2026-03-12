@@ -38,6 +38,7 @@ from asterion_core.contracts import (
     WeatherMarketSpecRecord,
     stable_object_id,
 )
+from asterion_core.signer import SignatureAuditStatus
 from asterion_core.storage.write_queue import WriteQueueConfig
 from dagster_asterion import (
     DAGSTER_AVAILABLE,
@@ -49,6 +50,7 @@ from dagster_asterion import (
 from dagster_asterion.handlers import (
     SettlementVerificationInput,
     run_weather_capability_refresh_job,
+    run_weather_chain_tx_smoke_job,
     run_weather_paper_execution_job,
     run_weather_data_qa_review_job,
     run_weather_market_discovery_job,
@@ -67,6 +69,7 @@ from dagster_asterion.handlers import (
 from dagster_asterion.resources import (
     DuckDBResource,
     CapabilityRefreshRuntimeResource,
+    ChainTxRuntimeResource,
     ForecastRuntimeResource,
     GammaDiscoveryRuntimeResource,
     SignerRuntimeResource,
@@ -107,6 +110,7 @@ def _settings() -> AsterionColdPathSettings:
         signer_rpc_url=None,
         submitter_backend_kind="disabled",
         submitter_api_base_url=None,
+        chain_tx_backend_kind="disabled",
         forecast_primary_source="openmeteo",
         forecast_fallback_sources=["nws", "openmeteo"],
         watcher_chain_id=137,
@@ -293,6 +297,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_signer_audit_smoke",
             "weather_order_signing_smoke",
             "weather_submitter_smoke",
+            "weather_chain_tx_smoke",
             "weather_forecast_refresh",
             "weather_forecast_replay",
             "weather_paper_execution",
@@ -308,6 +313,7 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_signer_audit_smoke"].upstream_jobs, ["weather_capability_refresh"])
         self.assertEqual(jobs["weather_order_signing_smoke"].upstream_jobs, ["weather_paper_execution"])
         self.assertEqual(jobs["weather_submitter_smoke"].upstream_jobs, ["weather_order_signing_smoke"])
+        self.assertEqual(jobs["weather_chain_tx_smoke"].upstream_jobs, ["weather_wallet_state_refresh"])
         self.assertEqual(jobs["weather_forecast_refresh"].upstream_jobs, ["weather_spec_sync"])
         self.assertEqual(jobs["weather_market_discovery"].mode, "scheduled")
         self.assertEqual(jobs["weather_watcher_backfill"].mode, "scheduled")
@@ -315,6 +321,7 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_signer_audit_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_order_signing_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_submitter_smoke"].mode, "manual")
+        self.assertEqual(jobs["weather_chain_tx_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
         self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
         self.assertEqual(jobs["weather_data_qa_review"].upstream_jobs, ["weather_forecast_replay"])
@@ -345,6 +352,7 @@ class ColdPathResourcesTest(unittest.TestCase):
         wallet_state_runtime = WalletStateObservationRuntimeResource(settings=settings)
         signer_runtime = SignerRuntimeResource(settings=settings)
         submitter_runtime = SubmitterRuntimeResource(settings=settings)
+        chain_tx_runtime = ChainTxRuntimeResource(settings=settings)
         forecast_runtime = ForecastRuntimeResource(settings=settings)
         watcher_rpc = WatcherRpcPoolResource(settings=settings)
         reader = object()
@@ -360,6 +368,9 @@ class ColdPathResourcesTest(unittest.TestCase):
         self.assertIs(wallet_state_runtime.build_wallet_state_reader(reader=reader), reader)
         self.assertEqual(signer_runtime.build_signer_service()._backend.__class__.__name__, "DisabledSignerBackend")
         self.assertEqual(submitter_runtime.build_submitter_service()._backend.__class__.__name__, "DisabledSubmitterBackend")
+        self.assertEqual(chain_tx_runtime.resolve_chain_registry_path(), settings.chain_registry_path)
+        self.assertIs(chain_tx_runtime.build_chain_tx_reader(reader=reader), reader)
+        self.assertEqual(chain_tx_runtime.build_chain_tx_service()._backend.__class__.__name__, "DisabledChainTxBackend")
         self.assertIsInstance(forecast_runtime.build_cache(), InMemoryForecastCache)
         with self.assertRaises(ValueError):
             watcher_rpc.build_rpc_pool()
@@ -368,6 +379,7 @@ class ColdPathResourcesTest(unittest.TestCase):
         resource_defs = build_dagster_resource_defs(_settings())
         self.assertIn("duckdb", resource_defs)
         self.assertIn("signer_runtime", resource_defs)
+        self.assertIn("chain_tx_runtime", resource_defs)
         if HAS_DAGSTER:
             self.assertNotIsInstance(resource_defs["duckdb"], DuckDBResource)
         else:
@@ -900,6 +912,167 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         self.assertEqual(result.metadata["accepted_count"], 0)
         self.assertEqual(result.metadata["rejected_count"], 0)
         self.assertEqual(result.metadata["attempt_ids"], ["satt_sign_1"])
+
+    def test_weather_chain_tx_smoke_routes_to_chain_tx_attempts_signature_audit_and_journal(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        account_capability = AccountTradingCapability(
+            wallet_id="wallet_weather_1",
+            wallet_type="eoa",
+            signature_type=1,
+            funder="0x1111111111111111111111111111111111111111",
+            allowance_targets=["0x2222222222222222222222222222222222222222"],
+            can_use_relayer=True,
+            can_trade=True,
+            restricted_reason=None,
+        )
+        signer_service = type(
+            "SignerServiceStub",
+            (),
+            {
+                "sign_transaction": lambda self, request, *, queue_cfg, run_id=None: type(
+                    "InvocationResultStub",
+                    (),
+                    {
+                        "payload_hash": "phash_sig_tx_1",
+                        "task_ids": ["task_sig_requested", "task_sig_final"],
+                        "response": type(
+                            "SignerResponseStub",
+                            (),
+                            {
+                                "request_id": request.request_id,
+                                "status": SignatureAuditStatus.SUCCEEDED.value,
+                                "signature": "txstub_sig_1",
+                                "signed_payload_ref": "txsref_1",
+                                "error": None,
+                                "completed_at": datetime(2026, 3, 12, 10, 0),
+                            },
+                        )(),
+                    },
+                )()
+            },
+        )()
+        chain_tx_service = type(
+            "ChainTxServiceStub",
+            (),
+            {
+                "submit_transaction": lambda self, request, *, signed_payload_json, queue_cfg, run_id=None: type(
+                    "InvocationResultStub",
+                    (),
+                    {
+                        "payload_hash": "phash_ctx_1",
+                        "task_ids": ["task_ctx_requested", "task_ctx_final"],
+                        "response": type(
+                            "ChainTxResultStub",
+                            (),
+                            {
+                                "request_id": request.request_id,
+                                "status": "previewed",
+                                "payload_hash": "phash_ctx_1",
+                                "tx_payload_json": {"backend_kind": "dry_run_preview", "status": "previewed"},
+                                "tx_hash": None,
+                                "error": None,
+                                "completed_at": datetime(2026, 3, 12, 10, 0),
+                            },
+                        )(),
+                    },
+                )()
+            },
+        )()
+        chain_registry = type(
+            "ChainRegistryStub",
+            (),
+            {
+                "chain_id": 137,
+                "usdc_e_asset_type": "usdc_e",
+                "usdc_e_token_id": "usdc_e",
+                "usdc_e_contract_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+                "allowance_targets": {"relayer": "0x2222222222222222222222222222222222222222"},
+            },
+        )()
+        chain_tx_request = type(
+            "ChainTxRequestStub",
+            (),
+            {
+                "request_id": "run_chain_tx",
+                "requester": "operator",
+                "timestamp": datetime(2026, 3, 12, 10, 0),
+                "wallet_id": "wallet_weather_1",
+                "tx_kind": type("TxKindStub", (), {"value": "approve_usdc"})(),
+                "tx_mode": type("TxModeStub", (), {"value": "dry_run"})(),
+                "chain_id": 137,
+                "funder": "0x1111111111111111111111111111111111111111",
+                "spender": "0x2222222222222222222222222222222222222222",
+                "token_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+                "token_id": "usdc_e",
+                "amount": Decimal("100"),
+                "nonce": 12,
+                "gas_estimate": type(
+                    "GasEstimateStub",
+                    (),
+                    {"gas_limit": 120000, "max_fee_per_gas": 100, "max_priority_fee_per_gas": 10},
+                )(),
+            },
+        )()
+        chain_tx_attempt = type(
+            "ChainTxAttemptStub",
+            (),
+            {
+                "attempt_id": "ctxatt_1",
+                "status": "previewed",
+                "payload_hash": "phash_ctx_1",
+                "tx_hash": None,
+            },
+        )()
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("dagster_asterion.handlers.load_account_trading_capability", return_value=account_capability)
+            )
+            stack.enter_context(patch("dagster_asterion.handlers.load_polygon_chain_registry", return_value=chain_registry))
+            stack.enter_context(
+                patch("dagster_asterion.handlers.load_latest_wallet_state_gate", return_value={"native_gas_balance": Decimal("1")})
+            )
+            stack.enter_context(
+                patch("dagster_asterion.handlers.build_approve_usdc_request", return_value=chain_tx_request)
+            )
+            enqueue_attempts = stack.enter_context(
+                patch("dagster_asterion.handlers.enqueue_chain_tx_attempt_upserts", return_value="task_chain_tx_attempt")
+            )
+            stack.enter_context(
+                patch("dagster_asterion.handlers.build_chain_tx_attempt_record", return_value=chain_tx_attempt)
+            )
+            result = run_weather_chain_tx_smoke_job(
+                object(),
+                queue_cfg,
+                signer_service=signer_service,
+                chain_tx_service=chain_tx_service,
+                chain_registry_path="config/chain_registry.polygon.json",
+                chain_tx_reader=object(),
+                params_json={
+                    "wallet_id": "wallet_weather_1",
+                    "requester": "operator",
+                    "tx_kind": "approve_usdc",
+                    "tx_mode": "dry_run",
+                    "spender": "0x2222222222222222222222222222222222222222",
+                    "amount": "100",
+                },
+                run_id="run_chain_tx",
+                observed_at=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+            )
+        enqueue_attempts.assert_called_once()
+        self.assertEqual(
+            result.task_ids,
+            [
+                "task_sig_requested",
+                "task_sig_final",
+                "task_ctx_requested",
+                "task_ctx_final",
+                "task_chain_tx_attempt",
+            ],
+        )
+        self.assertEqual(result.metadata["wallet_id"], "wallet_weather_1")
+        self.assertEqual(result.metadata["tx_kind"], "approve_usdc")
+        self.assertEqual(result.metadata["tx_mode"], "dry_run")
+        self.assertEqual(result.metadata["attempt_id"], "ctxatt_1")
 
     def test_weather_paper_execution_rejects_invalid_selectors(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")

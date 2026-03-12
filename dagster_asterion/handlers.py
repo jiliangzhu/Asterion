@@ -15,8 +15,16 @@ from agents.weather import (
     run_rule2spec_agent_review,
 )
 from asterion_core.blockchain import (
+    ChainTxKind,
+    ChainTxMode,
+    ChainTxServiceShell,
+    build_approve_usdc_request,
+    build_chain_tx_attempt_record,
+    build_transaction_signer_request,
     build_wallet_state_observations,
+    enqueue_chain_tx_attempt_upserts,
     load_observable_account_capabilities,
+    load_latest_wallet_state_gate,
     load_polygon_chain_registry,
 )
 from asterion_core.contracts import (
@@ -251,6 +259,26 @@ class SubmitterSmokeRequest:
             raise ValueError("attempt_ids are required")
         if not self.requester:
             raise ValueError("requester is required")
+
+
+@dataclass(frozen=True)
+class ChainTxSmokeRequest:
+    wallet_id: str
+    requester: str
+    tx_kind: ChainTxKind
+    tx_mode: ChainTxMode
+    spender: str
+    amount: Decimal
+
+    def __post_init__(self) -> None:
+        if not self.wallet_id or not self.requester:
+            raise ValueError("wallet_id and requester are required")
+        if self.tx_kind is not ChainTxKind.APPROVE_USDC:
+            raise ValueError("weather_chain_tx_smoke only supports approve_usdc in P4-07")
+        if not self.spender:
+            raise ValueError("spender is required")
+        if self.amount <= 0:
+            raise ValueError("amount must be positive")
 
 
 def run_weather_market_discovery_job(
@@ -686,6 +714,101 @@ def run_weather_submitter_smoke_job(
             "preview_count": preview_count,
             "payload_hashes": payload_hashes,
             "observation_ids": observation_ids,
+        },
+    )
+
+
+def run_weather_chain_tx_smoke_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    signer_service: SignerServiceShell,
+    chain_tx_service: ChainTxServiceShell,
+    chain_registry_path: str,
+    chain_tx_reader,
+    params_json: dict[str, Any],
+    run_id: str | None = None,
+    observed_at: datetime | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    normalized_request = _normalize_chain_tx_smoke_request(params_json)
+    normalized_observed_at = _normalize_datetime(observed_at) or datetime.now(UTC).replace(tzinfo=None)
+    account_capability = load_account_trading_capability(con, wallet_id=normalized_request.wallet_id)
+    chain_registry = load_polygon_chain_registry(chain_registry_path)
+    load_latest_wallet_state_gate(
+        con,
+        wallet_id=normalized_request.wallet_id,
+        chain_registry=chain_registry,
+        spender=normalized_request.spender,
+    )
+
+    chain_tx_request = build_approve_usdc_request(
+        account_capability=account_capability,
+        chain_registry=chain_registry,
+        chain_tx_reader=chain_tx_reader,
+        requester=normalized_request.requester,
+        request_id=request_id,
+        timestamp=normalized_observed_at,
+        tx_mode=normalized_request.tx_mode,
+        spender=normalized_request.spender,
+        amount=normalized_request.amount,
+    )
+    signer_request = build_transaction_signer_request(chain_tx_request, account_capability)
+    signer_invocation = signer_service.sign_transaction(
+        signer_request,
+        queue_cfg=queue_cfg,
+        run_id=request_id,
+    )
+
+    signed_payload_json = {
+        "backend_kind": "tx_stub" if signer_invocation.response.status == "succeeded" else "disabled",
+        "request_id": signer_request.request_id,
+        "wallet_id": normalized_request.wallet_id,
+        "tx_kind": chain_tx_request.tx_kind.value,
+        "tx_mode": chain_tx_request.tx_mode.value,
+        "signature": signer_invocation.response.signature,
+        "signed_payload_ref": signer_invocation.response.signed_payload_ref,
+        "unsigned_tx": dict(signer_request.payload),
+    }
+    if signer_invocation.response.status != "succeeded":
+        signed_payload_json["error"] = signer_invocation.response.error
+
+    chain_tx_invocation = chain_tx_service.submit_transaction(
+        chain_tx_request,
+        signed_payload_json=signed_payload_json,
+        queue_cfg=queue_cfg,
+        run_id=request_id,
+    )
+    attempt = build_chain_tx_attempt_record(
+        chain_tx_request,
+        chain_tx_invocation.response,
+        signed_payload_ref=signer_invocation.response.signed_payload_ref,
+    )
+    task_ids = list(signer_invocation.task_ids)
+    task_ids.extend(chain_tx_invocation.task_ids)
+    task_ids.extend(
+        _append_task_id(
+            enqueue_chain_tx_attempt_upserts(
+                queue_cfg,
+                attempts=[attempt],
+                run_id=request_id,
+            )
+        )
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_chain_tx_smoke",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=1,
+        metadata={
+            "request_id": request_id,
+            "wallet_id": normalized_request.wallet_id,
+            "tx_kind": chain_tx_request.tx_kind.value,
+            "tx_mode": chain_tx_request.tx_mode.value,
+            "attempt_id": attempt.attempt_id,
+            "status": attempt.status,
+            "payload_hash": attempt.payload_hash,
+            "tx_hash": attempt.tx_hash,
         },
     )
 
@@ -1805,6 +1928,21 @@ def _normalize_submitter_smoke_request(params_json: dict[str, Any]) -> Submitter
         attempt_ids=attempt_ids or [],
         requester=str(params_json.get("requester") or ""),
         submit_mode=SubmitMode(raw_mode),
+    )
+
+
+def _normalize_chain_tx_smoke_request(params_json: dict[str, Any]) -> ChainTxSmokeRequest:
+    if not isinstance(params_json, dict):
+        raise ValueError("params_json must be a dictionary")
+    raw_tx_kind = str(params_json.get("tx_kind") or "").strip().lower()
+    raw_tx_mode = str(params_json.get("tx_mode") or "").strip().lower() or ChainTxMode.DRY_RUN.value
+    return ChainTxSmokeRequest(
+        wallet_id=str(params_json.get("wallet_id") or ""),
+        requester=str(params_json.get("requester") or ""),
+        tx_kind=ChainTxKind(raw_tx_kind),
+        tx_mode=ChainTxMode(raw_tx_mode),
+        spender=str(params_json.get("spender") or "").strip(),
+        amount=Decimal(str(params_json.get("amount") or "0")),
     )
 
 

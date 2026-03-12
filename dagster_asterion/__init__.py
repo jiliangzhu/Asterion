@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 
 from .handlers import (
+    ChainTxSmokeRequest,
     ColdPathHandlerResult,
     OrderSigningSmokeRequest,
     PaperExecutionBatchRequest,
@@ -10,6 +11,7 @@ from .handlers import (
     SubmitterSmokeRequest,
     SettlementVerificationInput,
     run_weather_capability_refresh_job,
+    run_weather_chain_tx_smoke_job,
     run_weather_data_qa_review_job,
     run_weather_market_discovery_job,
     run_weather_forecast_refresh,
@@ -42,6 +44,7 @@ from .resources import (
     DAGSTER_AVAILABLE,
     AsterionColdPathSettings,
     CapabilityRefreshRuntimeResource,
+    ChainTxRuntimeResource,
     DuckDBResource,
     ForecastRuntimeResource,
     GammaDiscoveryRuntimeResource,
@@ -76,6 +79,8 @@ else:
 __all__ = [
     "AsterionColdPathSettings",
     "CapabilityRefreshRuntimeResource",
+    "ChainTxRuntimeResource",
+    "ChainTxSmokeRequest",
     "ColdPathHandlerResult",
     "ColdPathJobSpec",
     "ColdPathRunRequest",
@@ -110,6 +115,7 @@ __all__ = [
     "resolve_default_enabled_schedule_specs",
     "run_weather_data_qa_review_job",
     "run_weather_capability_refresh_job",
+    "run_weather_chain_tx_smoke_job",
     "run_weather_market_discovery_job",
     "run_weather_forecast_refresh",
     "run_weather_forecast_replay_job",
