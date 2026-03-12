@@ -6,14 +6,16 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from asterion_core.contracts import AccountTradingCapability, CanonicalOrderContract, stable_object_id
-from asterion_core.execution.order_router_v1 import RoutedCanonicalOrder
 from asterion_core.journal import build_journal_event, enqueue_journal_event_upserts
 from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.utils import safe_json_dumps
 from asterion_core.storage.write_queue import WriteQueueConfig
+
+if TYPE_CHECKING:
+    from asterion_core.execution.order_router_v1 import RoutedCanonicalOrder
 
 
 SIGNATURE_AUDIT_LOG_COLUMNS = [

@@ -13,7 +13,13 @@ from .portfolio_v3 import (
     release_reservation_to_inventory,
     reservation_requirements_for_order,
 )
-from .reconciliation_v1 import build_reconciliation_result, classify_reconciliation_status, reconciliation_journal_payload
+from .reconciliation_v1 import (
+    build_external_execution_reconciliation_result,
+    build_reconciliation_result,
+    classify_external_execution_reconciliation_status,
+    classify_reconciliation_status,
+    reconciliation_journal_payload,
+)
 
 __all__ = [
     "available_inventory_quantity_for_ticket",
@@ -21,8 +27,10 @@ __all__ = [
     "apply_fill_to_inventory",
     "apply_reservation_to_inventory",
     "build_exposure_snapshot",
+    "build_external_execution_reconciliation_result",
     "build_reservation",
     "build_reconciliation_result",
+    "classify_external_execution_reconciliation_status",
     "classify_reconciliation_status",
     "finalize_reservation",
     "load_inventory_positions",

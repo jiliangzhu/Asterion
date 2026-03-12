@@ -3,7 +3,7 @@
 **版本**: v1.0
 **更新日期**: 2026-03-12
 **阶段**: `P4`
-**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` 已完成）
+**状态**: implementation active（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` 已完成）
 **目标**: 在 `P3 paper execution` 已关闭的基础上，补齐 `live prerequisites`：真实外部只读数据、capability refresh、signer boundary、submitter dry-run/shadow path、chain transaction scaffolding、external reconciliation、operator/readiness/ops hardening，并保持默认安全边界。
 
 ---
@@ -108,6 +108,14 @@
   - `weather_chain_tx_smoke` 已成为 canonical approve-first chain-tx smoke entry
   - `runtime.chain_tx_attempts` 已落地为 canonical chain transaction attempt ledger
   - `approve_usdc` 已具备 gas / nonce / transaction-signing / shadow-broadcast scaffold，`split / merge / redeem` 仅冻结进 rejected stub
+- `P4-08` 已完成：
+  - `runtime.external_fill_observations` 已落地，并由 `weather_submitter_smoke` 的 `shadow_submit` 路径生成 deterministic external fills
+  - `weather_external_execution_reconciliation` 已成为 canonical external reconciliation job
+  - `trading.reconciliation_results` 已扩展为 external-aware reconciliation ledger；`runtime.external_balance_observations` 在本阶段仅作为 readiness/reference gate，不直接与 paper inventory 做数量对账
+- `P4-09` 已完成：
+  - `ui.execution_ticket_summary` 已拆分 paper-local 与 external reconciliation 语义，保留 `reconciliation_*` 作为 paper-local 视图，并新增 `external_*` / `live_prereq_*` 字段
+  - `ui.execution_run_summary` 与 `ui.execution_exception_summary` 已扩展 live-prereq 聚合与异常切片
+  - `ui.live_prereq_execution_summary` 与 `ui.live_prereq_wallet_summary` 已落地，用于 operator live-prereq read model
 
 ### 2.2 P4 Start-State Register
 
@@ -119,12 +127,13 @@
 - 当前 repo 中已存在 `asterion_core/signer/`，并已支持 `official_stub` order signing backend，但真实 backend 仍保持 `default-off`
 - 当前 repo 中的 `asterion_core/blockchain/` 仅包含 read-only wallet observation helpers，还没有 live submit / broadcast / nonce / gas management path
 
-#### Register B: `meta.signature_audit_logs` 已接入 shell audit，`runtime.submit_attempts` 与 `runtime.external_order_observations` 已接入 sign-only / submitter dry-run path，但真实 submit 与 external fill observation 仍未落地
+#### Register B: `meta.signature_audit_logs` 已接入 shell audit，`runtime.submit_attempts`、`runtime.external_order_observations` 与 `runtime.external_fill_observations` 已接入 sign-only / submitter shadow path，但真实 submit 仍未落地
 
 - `0010_signature_audit_boundary.sql` 已扩充 `meta.signature_audit_logs`
 - `0011_runtime_submit_attempts.sql` 已新增 `runtime.submit_attempts`
 - `0012_runtime_external_order_observations.sql` 已新增 `runtime.external_order_observations`
-- 当前 signer shell 已写 request / response / payload hash，official-order-compatible signing 已进入 sign-only attempt ledger，submitter dry-run / shadow path 已消费该审计链，但真实 submit 与 external fill observation 仍未落地
+- `0014_runtime_external_fill_observations.sql` 已新增 `runtime.external_fill_observations`
+- 当前 signer shell 已写 request / response / payload hash，official-order-compatible signing 已进入 sign-only attempt ledger，submitter dry-run / shadow path 已消费该审计链，但真实 submit 仍未落地
 
 #### Register C: capability contract 与 canonical refresh path 已闭合，但 downstream live path 仍未消费其全部信号
 
@@ -141,8 +150,8 @@
 
 #### Register E: reconciliation 仍是 paper-local deterministic reconciliation
 
-- 当前 `trading.reconciliation_results` 只比对本地 paper ledger 与 deterministic expectation
-- 还没有 external CLOB / chain observations 驱动的 reconciliation
+- 当前 `trading.reconciliation_results` 已支持 external execution reconciliation
+- 但 `runtime.external_balance_observations` 仍只作为 readiness/reference gate，不直接充当 paper-vs-chain balance source of truth
 
 ### 2.3 冲突处理顺序
 
@@ -424,13 +433,13 @@ Gamma / CLOB public / Open-Meteo / NWS / Polygon RPC
 
 ### P4-08 External Execution Reconciliation
 
-- **goal**: 将 external order/fill/balance observations 接入当前 reconciliation，使 `trading.reconciliation_results` 能表达本地账本与外部真实状态之间的差异。
+- **goal**: 将 external order/fill observations 接入当前 reconciliation，并将 external balance observations 作为 readiness/reference gate，使 `trading.reconciliation_results` 能表达本地账本与外部真实状态之间的差异。
 - **code landing area**: `asterion_core/risk/reconciliation_v1.py`、`asterion_core/risk/portfolio_v3.py`、`asterion_core/journal/journal_v3.py`
 - **input tables**: `trading.orders`、`trading.fills`、`trading.inventory_positions`、`runtime.external_order_observations`、`runtime.external_fill_observations`、`runtime.external_balance_observations`
 - **output tables**: `trading.reconciliation_results`、`runtime.journal_events`
 - **contracts consumed**: `Order`、`Fill`、`Reservation`、`InventoryPosition`、`ReconciliationResult`
 - **tests required**: mismatch-classification unit tests、DuckDB reconciliation integration tests、rerun stability tests
-- **exit criteria**: reconciliation 已不再是 paper-local only，并能稳定区分 local-vs-external mismatch
+- **exit criteria**: reconciliation 已不再是 paper-local only；external fills 已进入 canonical shadow path；balance observations 以 gate/reference 方式接入且不直接与 paper inventory 做数量对账
 
 ### P4-09 Operator Live-Prereq Read Model
 
@@ -440,7 +449,7 @@ Gamma / CLOB public / Open-Meteo / NWS / Polygon RPC
 - **output tables**: 扩展 `ui.execution_*`、新增 `ui.live_prereq_wallet_summary`、新增 `ui.live_prereq_execution_summary`、`ui.phase_readiness_summary`
 - **contracts consumed**: existing `ui.*` contract plus runtime observation tables
 - **tests required**: UI lite contract tests、DuckDB read-model integration tests、attention-required classification tests
-- **exit criteria**: operator 不回查 raw runtime tables，也能判断 live-prereq blockers 与 wallet readiness
+- **exit criteria**: 已完成；operator 不回查 raw runtime tables，也能判断 live-prereq blockers 与 wallet readiness，且 `ui.execution_ticket_summary.reconciliation_*` 已固定回到 paper-local 语义
 
 ### P4-10 Minimum Ops Hardening
 

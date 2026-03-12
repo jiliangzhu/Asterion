@@ -2,7 +2,7 @@
 
 **版本**: v1.2
 **更新日期**: 2026-03-12
-**状态**: P4 implementation in progress (`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` completed)
+**状态**: P4 implementation in progress (`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` completed)
 
 ---
 
@@ -148,7 +148,7 @@ python3 -m unittest discover -s tests -v
 
 ## 🏗️ 技术架构
 
-### 当前已落地模块（P4-07）
+### 当前已落地模块（P4-09）
 
 ```
 asterion_core/              # 平台核心
@@ -214,8 +214,10 @@ agents/                     # AI Agent
 - `signer/signer_service_v1.py`、`meta.signature_audit_logs`、`runtime.submit_attempts` 已在 `P4-04` / `P4-05` 落地，用于 signer shell、official-order-compatible signing 与 sign-only / submit attempt ledger
 - `execution/live_submitter_v1.py`、`runtime.external_order_observations` 已在 `P4-06` 落地，用于 canonical submitter dry-run / shadow path
 - `blockchain/chain_tx_v1.py`、`runtime.chain_tx_attempts` 已在 `P4-07` 落地，用于 approve-first gas / nonce / signing / shadow-broadcast scaffold
+- `runtime.external_fill_observations`、`weather_external_execution_reconciliation` 与 external-aware `trading.reconciliation_results` 已在 `P4-08` 落地，用于 shadow external execution reconciliation
+- `ui.live_prereq_execution_summary`、`ui.live_prereq_wallet_summary` 与扩展后的 `ui.execution_*` 已在 `P4-09` 落地，用于 operator live-prereq read model
 - `weather_chain_tx_smoke` 已成为 `P4-07` 的 canonical chain-tx manual entry；当前只开放 `approve_usdc`
-- `weather_signer_audit_smoke`、`weather_order_signing_smoke` 与 `weather_submitter_smoke` 已成为 `P4` signer / order-signing / submitter 的 canonical manual entry
+- `weather_signer_audit_smoke`、`weather_order_signing_smoke`、`weather_submitter_smoke` 与 `weather_external_execution_reconciliation` 已成为 `P4` signer / order-signing / submitter / reconciliation 的 canonical entry
 - `daily_review_agent.py` 仍未落地；当前只完成 `ui.daily_review_input` 等 review input surface
 - `P4` 当前 canonical 实施入口见 [P4_Implementation_Plan.md](./docs/10-implementation/phase-plans/P4_Implementation_Plan.md)
 - `P3` 的 canonical closeout 与 runbook 入口见 [P3_Closeout_Checklist.md](./docs/10-implementation/checklists/P3_Closeout_Checklist.md)、[P3_Paper_Execution_Runbook.md](./docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md)
@@ -318,7 +320,7 @@ agents/                     # AI Agent
 - ✅ real data ingress / capability refresh / signer boundary
 - ✅ submitter dry-run / shadow path
 - ⏳ chain tx scaffold
-- ⏳ external reconciliation / readiness / controlled rollout criteria
+- ⏳ readiness / controlled rollout criteria
 - 当前实施入口：[P4_Implementation_Plan.md](./docs/10-implementation/phase-plans/P4_Implementation_Plan.md)
 
 ---

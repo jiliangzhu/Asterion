@@ -53,6 +53,7 @@ from dagster_asterion.handlers import (
     run_weather_chain_tx_smoke_job,
     run_weather_paper_execution_job,
     run_weather_data_qa_review_job,
+    run_weather_external_execution_reconciliation_job,
     run_weather_market_discovery_job,
     run_weather_forecast_refresh,
     run_weather_forecast_replay_job,
@@ -297,6 +298,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_signer_audit_smoke",
             "weather_order_signing_smoke",
             "weather_submitter_smoke",
+            "weather_external_execution_reconciliation",
             "weather_chain_tx_smoke",
             "weather_forecast_refresh",
             "weather_forecast_replay",
@@ -313,6 +315,10 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_signer_audit_smoke"].upstream_jobs, ["weather_capability_refresh"])
         self.assertEqual(jobs["weather_order_signing_smoke"].upstream_jobs, ["weather_paper_execution"])
         self.assertEqual(jobs["weather_submitter_smoke"].upstream_jobs, ["weather_order_signing_smoke"])
+        self.assertEqual(
+            jobs["weather_external_execution_reconciliation"].upstream_jobs,
+            ["weather_submitter_smoke", "weather_wallet_state_refresh"],
+        )
         self.assertEqual(jobs["weather_chain_tx_smoke"].upstream_jobs, ["weather_wallet_state_refresh"])
         self.assertEqual(jobs["weather_forecast_refresh"].upstream_jobs, ["weather_spec_sync"])
         self.assertEqual(jobs["weather_market_discovery"].mode, "scheduled")
@@ -321,6 +327,7 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_signer_audit_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_order_signing_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_submitter_smoke"].mode, "manual")
+        self.assertEqual(jobs["weather_external_execution_reconciliation"].mode, "scheduled")
         self.assertEqual(jobs["weather_chain_tx_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
         self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
@@ -337,6 +344,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_capability_refresh_hourly",
             "weather_forecast_refresh_hourly",
             "weather_wallet_state_refresh_hourly",
+            "weather_external_execution_reconciliation_hourly",
             "weather_watcher_backfill_bihourly",
             "weather_resolution_reconciliation_bihourly",
         ])
@@ -886,6 +894,12 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                     return_value="task_external_observation",
                 )
             )
+            enqueue_fill_observations = stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.enqueue_external_fill_observation_upserts",
+                    return_value="task_external_fill_observation",
+                )
+            )
             result = run_weather_submitter_smoke_job(
                 object(),
                 queue_cfg,
@@ -896,6 +910,7 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             )
         enqueue_attempts.assert_called_once()
         enqueue_observations.assert_called_once()
+        enqueue_fill_observations.assert_called_once()
         self.assertEqual(
             result.task_ids,
             [
@@ -903,6 +918,7 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                 "task_submit_final",
                 "task_submit_attempt",
                 "task_external_observation",
+                "task_external_fill_observation",
             ],
         )
         self.assertEqual(result.metadata["wallet_id"], "wallet_weather_1")
@@ -911,6 +927,7 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         self.assertEqual(result.metadata["preview_count"], 1)
         self.assertEqual(result.metadata["accepted_count"], 0)
         self.assertEqual(result.metadata["rejected_count"], 0)
+        self.assertEqual(result.metadata["external_fill_count"], 0)
         self.assertEqual(result.metadata["attempt_ids"], ["satt_sign_1"])
 
     def test_weather_chain_tx_smoke_routes_to_chain_tx_attempts_signature_audit_and_journal(self) -> None:
@@ -1073,6 +1090,107 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         self.assertEqual(result.metadata["tx_kind"], "approve_usdc")
         self.assertEqual(result.metadata["tx_mode"], "dry_run")
         self.assertEqual(result.metadata["attempt_id"], "ctxatt_1")
+
+    def test_weather_external_execution_reconciliation_routes_to_results_and_journal(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        submit_attempt = type(
+            "SubmitAttemptStub",
+            (),
+            {
+                "attempt_id": "satt_submit_1",
+                "request_id": "subreq_1",
+                "ticket_id": "tt_1",
+                "order_id": "ordr_1",
+                "wallet_id": "wallet_weather_1",
+                "execution_context_id": "ectx_1",
+            },
+        )()
+        order = type(
+            "OrderStub",
+            (),
+            {
+                "order_id": "ordr_1",
+                "wallet_id": "wallet_weather_1",
+                "funder": "0x1111111111111111111111111111111111111111",
+                "signature_type": 1,
+                "status": type("OrderStatusStub", (), {"value": "posted"})(),
+                "filled_size": Decimal("0"),
+                "token_id": "tok_yes",
+                "market_id": "mkt_weather_1",
+            },
+        )()
+        external_order_observation = type(
+            "ExternalOrderObservationStub",
+            (),
+            {
+                "observation_id": "eordobs_1",
+                "external_status": "accepted",
+            },
+        )()
+        wallet_observation = ExternalBalanceObservation(
+            observation_id="ebal_1",
+            wallet_id="wallet_weather_1",
+            funder="0x1111111111111111111111111111111111111111",
+            signature_type=1,
+            asset_type="usdc_e",
+            token_id="usdc_e",
+            market_id=None,
+            outcome=None,
+            observation_kind=ExternalBalanceObservationKind.WALLET_BALANCE,
+            allowance_target=None,
+            chain_id=137,
+            block_number=123,
+            observed_quantity=Decimal("100"),
+            source="polygon_rpc",
+            observed_at=datetime(2026, 3, 12, 10, 0),
+            raw_observation_json={"kind": "wallet_balance"},
+        )
+        reconciliation_result = type(
+            "ReconciliationResultStub",
+            (),
+            {
+                "reconciliation_id": "recon_ext_1",
+                "status": type("ReconStatusStub", (), {"value": "ok"})(),
+            },
+        )()
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("dagster_asterion.handlers._load_shadow_submit_attempts_for_external_reconciliation", return_value=[submit_attempt])
+            )
+            stack.enter_context(patch("dagster_asterion.handlers._load_order_for_reconciliation", return_value=order))
+            stack.enter_context(
+                patch("dagster_asterion.handlers._load_latest_external_order_observation", return_value=external_order_observation)
+            )
+            stack.enter_context(
+                patch("dagster_asterion.handlers._load_latest_external_fill_observations", return_value=[])
+            )
+            stack.enter_context(
+                patch("dagster_asterion.handlers._load_latest_wallet_observation_reference", return_value=wallet_observation)
+            )
+            stack.enter_context(
+                patch("dagster_asterion.handlers.build_external_execution_reconciliation_result", return_value=reconciliation_result)
+            )
+            stack.enter_context(
+                patch("dagster_asterion.handlers.reconciliation_journal_payload", return_value={"reconciliation_id": "recon_ext_1"})
+            )
+            enqueue_results = stack.enter_context(
+                patch("dagster_asterion.handlers.enqueue_reconciliation_result_upserts", return_value="task_reconciliation")
+            )
+            enqueue_journal = stack.enter_context(
+                patch("dagster_asterion.handlers.enqueue_journal_event_upserts", return_value="task_journal")
+            )
+            result = run_weather_external_execution_reconciliation_job(
+                object(),
+                queue_cfg,
+                run_id="run_external_reconciliation",
+                observed_at=datetime(2026, 3, 12, 10, 6, tzinfo=timezone.utc),
+            )
+        enqueue_results.assert_called_once()
+        enqueue_journal.assert_called_once()
+        self.assertEqual(result.task_ids, ["task_reconciliation", "task_journal"])
+        self.assertEqual(result.metadata["attempt_count"], 1)
+        self.assertEqual(result.metadata["reconciliation_count"], 1)
+        self.assertEqual(result.metadata["reconciliation_mismatch_count"], 0)
 
     def test_weather_paper_execution_rejects_invalid_selectors(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")

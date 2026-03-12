@@ -25,6 +25,8 @@ _REQUIRED_UI_TABLES = [
     "ui.execution_ticket_summary",
     "ui.execution_run_summary",
     "ui.execution_exception_summary",
+    "ui.live_prereq_execution_summary",
+    "ui.live_prereq_wallet_summary",
     "ui.paper_run_journal_summary",
     "ui.daily_ops_summary",
     "ui.daily_review_input",
@@ -506,48 +508,79 @@ def _build_ui_lite_contract(
                 )
                 WHERE rn = 1
             ),
-            latest_reconciliation_event_by_ticket AS (
+            latest_sign_attempt AS (
                 SELECT
                     ticket_id,
-                    request_id,
-                    reconciliation_id
+                    attempt_id,
+                    status,
+                    created_at
                 FROM (
                     SELECT
-                        json_extract_string(try_cast(payload_json AS JSON), '$.ticket_id') AS ticket_id,
-                        json_extract_string(try_cast(payload_json AS JSON), '$.request_id') AS request_id,
-                        json_extract_string(try_cast(payload_json AS JSON), '$.reconciliation_id') AS reconciliation_id,
+                        ticket_id,
+                        attempt_id,
+                        status,
                         created_at,
                         ROW_NUMBER() OVER (
-                            PARTITION BY json_extract_string(try_cast(payload_json AS JSON), '$.ticket_id')
-                            ORDER BY created_at DESC, entity_id DESC
+                            PARTITION BY ticket_id
+                            ORDER BY created_at DESC, attempt_id DESC
                         ) AS rn
-                    FROM src.runtime.journal_events
-                    WHERE event_type IN ('reconciliation.checked', 'reconciliation.mismatch')
-                      AND json_extract_string(try_cast(payload_json AS JSON), '$.ticket_id') IS NOT NULL
+                    FROM src.runtime.submit_attempts
+                    WHERE attempt_kind = 'sign_order'
+                      AND attempt_mode = 'sign_only'
                 )
                 WHERE rn = 1
             ),
-            latest_reconciliation_event_by_request AS (
+            latest_submit_attempt AS (
                 SELECT
                     ticket_id,
-                    request_id,
-                    reconciliation_id
+                    attempt_id,
+                    attempt_mode,
+                    status,
+                    created_at
                 FROM (
                     SELECT
-                        json_extract_string(try_cast(payload_json AS JSON), '$.ticket_id') AS ticket_id,
-                        json_extract_string(try_cast(payload_json AS JSON), '$.request_id') AS request_id,
-                        json_extract_string(try_cast(payload_json AS JSON), '$.reconciliation_id') AS reconciliation_id,
+                        ticket_id,
+                        attempt_id,
+                        attempt_mode,
+                        status,
                         created_at,
                         ROW_NUMBER() OVER (
-                            PARTITION BY json_extract_string(try_cast(payload_json AS JSON), '$.request_id')
-                            ORDER BY created_at DESC, entity_id DESC
+                            PARTITION BY ticket_id
+                            ORDER BY created_at DESC, attempt_id DESC
                         ) AS rn
-                    FROM src.runtime.journal_events
-                    WHERE event_type IN ('reconciliation.checked', 'reconciliation.mismatch')
-                      AND json_extract_string(try_cast(payload_json AS JSON), '$.ticket_id') IS NULL
-                      AND json_extract_string(try_cast(payload_json AS JSON), '$.request_id') IS NOT NULL
+                    FROM src.runtime.submit_attempts
+                    WHERE attempt_kind = 'submit_order'
                 )
                 WHERE rn = 1
+            ),
+            latest_external_order_observation AS (
+                SELECT
+                    ticket_id,
+                    observation_id,
+                    external_status,
+                    observed_at
+                FROM (
+                    SELECT
+                        ticket_id,
+                        observation_id,
+                        external_status,
+                        observed_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY ticket_id
+                            ORDER BY observed_at DESC, observation_id DESC
+                        ) AS rn
+                    FROM src.runtime.external_order_observations
+                )
+                WHERE rn = 1
+            ),
+            external_fill_agg AS (
+                SELECT
+                    ticket_id,
+                    COUNT(*) AS external_fill_count,
+                    SUM(size) AS external_filled_size,
+                    MAX(observed_at) AS external_last_fill_at
+                FROM src.runtime.external_fill_observations
+                GROUP BY ticket_id
             ),
             fill_agg AS (
                 SELECT
@@ -604,6 +637,54 @@ def _build_ui_lite_contract(
                             ORDER BY timestamp DESC, transition_id DESC
                         ) AS rn
                     FROM src.trading.order_state_transitions
+                )
+                WHERE rn = 1
+            ),
+            latest_paper_reconciliation AS (
+                SELECT
+                    order_id,
+                    reconciliation_id,
+                    status,
+                    discrepancy
+                FROM (
+                    SELECT
+                        order_id,
+                        reconciliation_id,
+                        status,
+                        discrepancy,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY order_id
+                            ORDER BY created_at DESC, reconciliation_id DESC
+                        ) AS rn
+                    FROM src.trading.reconciliation_results
+                    WHERE COALESCE(reconciliation_scope, 'paper_local') = 'paper_local'
+                )
+                WHERE rn = 1
+            ),
+            latest_external_reconciliation AS (
+                SELECT
+                    order_id,
+                    reconciliation_id,
+                    status,
+                    discrepancy,
+                    reconciliation_scope,
+                    source_system
+                FROM (
+                    SELECT
+                        order_id,
+                        reconciliation_id,
+                        status,
+                        discrepancy,
+                        reconciliation_scope,
+                        source_system,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY order_id
+                            ORDER BY created_at DESC, reconciliation_id DESC
+                        ) AS rn
+                    FROM src.trading.reconciliation_results
+                    WHERE reconciliation_scope = 'external_execution'
                 )
                 WHERE rn = 1
             ),
@@ -702,11 +783,29 @@ def _build_ui_lite_contract(
                 COALESCE(transition_status.to_status, transition.to_status, ord.status) AS latest_transition_to_status,
                 COALESCE(transition_status.reason, transition.reason) AS latest_transition_reason,
                 COALESCE(transition_status.timestamp, transition.timestamp) AS latest_transition_at,
-                reconciliation.reconciliation_id,
-                reconciliation.status AS reconciliation_status,
-                reconciliation.discrepancy AS reconciliation_discrepancy,
+                paper_reconciliation.reconciliation_id,
+                paper_reconciliation.status AS reconciliation_status,
+                paper_reconciliation.discrepancy AS reconciliation_discrepancy,
+                external_reconciliation.reconciliation_id AS external_reconciliation_id,
+                external_reconciliation.status AS external_reconciliation_status,
+                external_reconciliation.discrepancy AS external_reconciliation_discrepancy,
+                external_reconciliation.reconciliation_scope AS external_reconciliation_scope,
+                external_reconciliation.source_system AS external_reconciliation_source_system,
+                sign_attempt.attempt_id AS latest_sign_attempt_id,
+                sign_attempt.status AS latest_sign_attempt_status,
+                sign_attempt.created_at AS latest_sign_attempt_created_at,
+                submit_attempt.attempt_id AS latest_submit_attempt_id,
+                submit_attempt.attempt_mode AS latest_submit_mode,
+                submit_attempt.status AS latest_submit_status,
+                submit_attempt.created_at AS latest_submit_created_at,
+                external_order.observation_id AS external_order_observation_id,
+                external_order.external_status AS external_order_status,
+                external_order.observed_at AS external_order_observed_at,
+                COALESCE(external_fill.external_fill_count, 0) AS external_fill_count,
+                external_fill.external_filled_size,
+                external_fill.external_last_fill_at,
                 CASE
-                    WHEN reconciliation.status IS NOT NULL AND reconciliation.status <> 'ok' THEN 'reconciliation_mismatch'
+                    WHEN paper_reconciliation.status IS NOT NULL AND paper_reconciliation.status <> 'ok' THEN 'reconciliation_mismatch'
                     WHEN gate.allowed = FALSE THEN 'rejected_by_gate'
                     WHEN ord.status = 'filled' THEN 'filled'
                     WHEN ord.status = 'partial_filled' THEN 'partial_filled'
@@ -715,11 +814,29 @@ def _build_ui_lite_contract(
                     ELSE 'pending_gate'
                 END AS execution_result,
                 CASE
-                    WHEN reconciliation.status IS NOT NULL AND reconciliation.status <> 'ok' THEN TRUE
+                    WHEN paper_reconciliation.status IS NOT NULL AND paper_reconciliation.status <> 'ok' THEN TRUE
                     WHEN gate.allowed = FALSE THEN TRUE
                     WHEN ord.status IN ('cancelled', 'rejected') THEN TRUE
                     ELSE FALSE
                 END AS operator_attention_required,
+                CASE
+                    WHEN sign_attempt.attempt_id IS NULL THEN 'not_signed'
+                    WHEN sign_attempt.status = 'rejected' THEN 'sign_rejected'
+                    WHEN submit_attempt.attempt_id IS NULL THEN 'signed_not_submitted'
+                    WHEN submit_attempt.attempt_mode = 'dry_run' AND submit_attempt.status = 'previewed' THEN 'preview_only'
+                    WHEN submit_attempt.status = 'rejected' OR external_order.external_status = 'rejected' THEN 'submit_rejected'
+                    WHEN external_reconciliation.status = 'external_state_unverified' THEN 'external_unverified'
+                    WHEN external_reconciliation.status IN ('external_order_mismatch', 'external_fill_mismatch') THEN 'external_mismatch'
+                    WHEN submit_attempt.status = 'accepted' AND external_reconciliation.status = 'ok' THEN 'shadow_aligned'
+                    ELSE 'signed_not_submitted'
+                END AS live_prereq_execution_status,
+                CASE
+                    WHEN sign_attempt.status = 'rejected' THEN TRUE
+                    WHEN submit_attempt.status = 'rejected' OR external_order.external_status = 'rejected' THEN TRUE
+                    WHEN external_reconciliation.status = 'external_state_unverified' THEN TRUE
+                    WHEN external_reconciliation.status IN ('external_order_mismatch', 'external_fill_mismatch') THEN TRUE
+                    ELSE FALSE
+                END AS live_prereq_attention_required,
                 'quote_based' AS paper_fill_mode,
                 COALESCE(journal_ticket.event_id, journal_request.event_id) AS latest_journal_event_id,
                 COALESCE(journal_ticket.event_type, journal_request.event_type) AS latest_journal_event_type,
@@ -744,16 +861,12 @@ def _build_ui_lite_contract(
             LEFT JOIN latest_transition_by_status transition_status
                 ON transition_status.order_id = ord.order_id
                AND transition_status.to_status = ord.status
-            LEFT JOIN latest_reconciliation_event_by_ticket reconciliation_event_ticket
-                ON reconciliation_event_ticket.ticket_id = ticket.ticket_id
-            LEFT JOIN latest_reconciliation_event_by_request reconciliation_event_request
-                ON reconciliation_event_request.request_id = ticket.request_id
-               AND reconciliation_event_ticket.reconciliation_id IS NULL
-            LEFT JOIN src.trading.reconciliation_results reconciliation
-                ON reconciliation.reconciliation_id = COALESCE(
-                    reconciliation_event_ticket.reconciliation_id,
-                    reconciliation_event_request.reconciliation_id
-                )
+            LEFT JOIN latest_paper_reconciliation paper_reconciliation ON paper_reconciliation.order_id = ord.order_id
+            LEFT JOIN latest_external_reconciliation external_reconciliation ON external_reconciliation.order_id = ord.order_id
+            LEFT JOIN latest_sign_attempt sign_attempt ON sign_attempt.ticket_id = ticket.ticket_id
+            LEFT JOIN latest_submit_attempt submit_attempt ON submit_attempt.ticket_id = ticket.ticket_id
+            LEFT JOIN latest_external_order_observation external_order ON external_order.ticket_id = ticket.ticket_id
+            LEFT JOIN external_fill_agg external_fill ON external_fill.ticket_id = ticket.ticket_id
             LEFT JOIN latest_journal_by_ticket journal_ticket ON journal_ticket.ticket_id = ticket.ticket_id
             LEFT JOIN latest_journal_by_request journal_request
                 ON journal_request.request_id = ticket.request_id
@@ -778,6 +891,15 @@ def _build_ui_lite_contract(
                 SUM(CASE WHEN order_status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
                 SUM(CASE WHEN reconciliation_status = 'ok' THEN 1 ELSE 0 END) AS reconciliation_ok_count,
                 SUM(CASE WHEN reconciliation_status IS NOT NULL AND reconciliation_status <> 'ok' THEN 1 ELSE 0 END) AS reconciliation_mismatch_count,
+                SUM(CASE WHEN latest_sign_attempt_id IS NOT NULL THEN 1 ELSE 0 END) AS sign_requested_count,
+                SUM(CASE WHEN latest_sign_attempt_status = 'rejected' THEN 1 ELSE 0 END) AS sign_rejected_count,
+                SUM(CASE WHEN latest_submit_mode = 'dry_run' AND latest_submit_status = 'previewed' THEN 1 ELSE 0 END) AS submit_preview_count,
+                SUM(CASE WHEN latest_submit_status = 'accepted' THEN 1 ELSE 0 END) AS submit_accepted_count,
+                SUM(CASE WHEN latest_submit_status = 'rejected' THEN 1 ELSE 0 END) AS submit_rejected_count,
+                SUM(CASE WHEN external_reconciliation_status = 'ok' THEN 1 ELSE 0 END) AS external_reconciliation_ok_count,
+                SUM(CASE WHEN external_reconciliation_status IN ('external_order_mismatch', 'external_fill_mismatch') THEN 1 ELSE 0 END) AS external_reconciliation_mismatch_count,
+                SUM(CASE WHEN external_reconciliation_status = 'external_state_unverified' THEN 1 ELSE 0 END) AS external_reconciliation_unverified_count,
+                SUM(CASE WHEN live_prereq_attention_required THEN 1 ELSE 0 END) AS live_prereq_attention_required_count,
                 SUM(CASE WHEN operator_attention_required THEN 1 ELSE 0 END) AS attention_required_count,
                 MAX(latest_journal_created_at) AS latest_event_at
             FROM ui.execution_ticket_summary
@@ -804,12 +926,215 @@ def _build_ui_lite_contract(
                 gate_reason,
                 reconciliation_status,
                 reconciliation_discrepancy,
+                latest_sign_attempt_status,
+                latest_submit_status,
+                latest_submit_mode,
+                external_order_status,
+                external_reconciliation_status,
+                live_prereq_execution_status,
+                live_prereq_attention_required,
                 latest_transition_to_status,
                 latest_transition_reason,
                 latest_journal_event_type,
                 operator_attention_required
             FROM ui.execution_ticket_summary
-            WHERE operator_attention_required
+            WHERE operator_attention_required OR live_prereq_attention_required
+            """,
+            table_row_counts=table_row_counts,
+        )
+        _create_table_from_src(
+            con,
+            target="ui.live_prereq_execution_summary",
+            sql_body="""
+            SELECT
+                run_id,
+                ticket_id,
+                request_id,
+                wallet_id,
+                strategy_id,
+                strategy_version,
+                market_id,
+                order_id,
+                execution_context_id,
+                latest_sign_attempt_id,
+                latest_sign_attempt_status,
+                latest_sign_attempt_created_at,
+                latest_submit_attempt_id,
+                latest_submit_mode,
+                latest_submit_status,
+                latest_submit_created_at,
+                external_order_status,
+                external_order_observed_at,
+                external_fill_count,
+                external_filled_size,
+                external_last_fill_at,
+                external_reconciliation_status,
+                external_reconciliation_discrepancy,
+                live_prereq_execution_status,
+                live_prereq_attention_required
+            FROM ui.execution_ticket_summary
+            WHERE latest_sign_attempt_id IS NOT NULL
+               OR latest_submit_attempt_id IS NOT NULL
+               OR external_order_observation_id IS NOT NULL
+               OR external_reconciliation_id IS NOT NULL
+            """,
+            table_row_counts=table_row_counts,
+        )
+        _create_table_from_src(
+            con,
+            target="ui.live_prereq_wallet_summary",
+            sql_body="""
+            WITH wallet_base AS (
+                SELECT
+                    wallet_id,
+                    funder,
+                    signature_type,
+                    can_trade,
+                    restricted_reason,
+                    can_use_relayer,
+                    CASE
+                        WHEN allowance_targets IS NULL OR allowance_targets = '[]' THEN 0
+                        ELSE json_array_length(try_cast(allowance_targets AS JSON))
+                    END AS configured_allowance_target_count
+                FROM src.capability.account_trading_capabilities
+            ),
+            latest_native_gas AS (
+                SELECT wallet_id, observed_quantity, observed_at
+                FROM (
+                    SELECT
+                        wallet_id,
+                        observed_quantity,
+                        observed_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY wallet_id
+                            ORDER BY observed_at DESC, observation_id DESC
+                        ) AS rn
+                    FROM src.runtime.external_balance_observations
+                    WHERE observation_kind = 'wallet_balance'
+                      AND asset_type = 'native_gas'
+                )
+                WHERE rn = 1
+            ),
+            latest_usdc_balance AS (
+                SELECT wallet_id, observed_quantity, observed_at
+                FROM (
+                    SELECT
+                        wallet_id,
+                        observed_quantity,
+                        observed_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY wallet_id
+                            ORDER BY observed_at DESC, observation_id DESC
+                        ) AS rn
+                    FROM src.runtime.external_balance_observations
+                    WHERE observation_kind = 'wallet_balance'
+                      AND token_id = 'usdc_e'
+                )
+                WHERE rn = 1
+            ),
+            allowance_agg AS (
+                SELECT
+                    wallet_id,
+                    COUNT(DISTINCT allowance_target) AS observed_allowance_target_count,
+                    COUNT(DISTINCT CASE WHEN observed_quantity > 0 THEN allowance_target END) AS approved_allowance_target_count,
+                    MAX(observed_at) AS latest_allowance_observed_at
+                FROM src.runtime.external_balance_observations
+                WHERE observation_kind = 'token_allowance'
+                  AND token_id = 'usdc_e'
+                GROUP BY wallet_id
+            ),
+            latest_signer AS (
+                SELECT funder, status, error, created_at
+                FROM (
+                    SELECT
+                        funder,
+                        status,
+                        error,
+                        COALESCE(created_at, timestamp) AS created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY funder
+                            ORDER BY COALESCE(created_at, timestamp) DESC, log_id DESC
+                        ) AS rn
+                    FROM src.meta.signature_audit_logs
+                    WHERE funder IS NOT NULL
+                )
+                WHERE rn = 1
+            ),
+            latest_chain_tx AS (
+                SELECT wallet_id, attempt_id, tx_kind, tx_mode, status, error, created_at
+                FROM (
+                    SELECT
+                        wallet_id,
+                        attempt_id,
+                        tx_kind,
+                        tx_mode,
+                        status,
+                        error,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY wallet_id
+                            ORDER BY created_at DESC, attempt_id DESC
+                        ) AS rn
+                    FROM src.runtime.chain_tx_attempts
+                )
+                WHERE rn = 1
+            )
+            SELECT
+                wallet.wallet_id,
+                wallet.funder,
+                wallet.signature_type,
+                wallet.can_trade,
+                wallet.restricted_reason,
+                wallet.can_use_relayer,
+                wallet.configured_allowance_target_count,
+                native_gas.observed_quantity AS latest_native_gas_quantity,
+                native_gas.observed_at AS latest_native_gas_observed_at,
+                usdc_balance.observed_quantity AS latest_usdc_balance_quantity,
+                usdc_balance.observed_at AS latest_usdc_balance_observed_at,
+                COALESCE(allowance.observed_allowance_target_count, 0) AS observed_allowance_target_count,
+                COALESCE(allowance.approved_allowance_target_count, 0) AS approved_allowance_target_count,
+                allowance.latest_allowance_observed_at,
+                signer.status AS latest_signer_status,
+                signer.error AS latest_signer_error,
+                signer.created_at AS latest_signer_created_at,
+                chain_tx.attempt_id AS latest_chain_tx_attempt_id,
+                chain_tx.tx_kind AS latest_chain_tx_kind,
+                chain_tx.tx_mode AS latest_chain_tx_mode,
+                chain_tx.status AS latest_chain_tx_status,
+                chain_tx.error AS latest_chain_tx_error,
+                chain_tx.created_at AS latest_chain_tx_created_at,
+                CASE
+                    WHEN wallet.can_trade = FALSE THEN 'capability_blocked'
+                    WHEN native_gas.observed_at IS NULL OR usdc_balance.observed_at IS NULL THEN 'missing_wallet_state_observation'
+                    WHEN wallet.configured_allowance_target_count > COALESCE(allowance.observed_allowance_target_count, 0) THEN 'allowance_unverified'
+                    WHEN wallet.configured_allowance_target_count > 0 AND COALESCE(allowance.approved_allowance_target_count, 0) = 0 THEN 'allowance_action_required'
+                    WHEN chain_tx.tx_kind = 'approve_usdc' AND chain_tx.status = 'rejected' THEN 'approve_action_required'
+                    ELSE 'ready'
+                END AS wallet_readiness_status,
+                printf(
+                    '[%s%s%s%s%s%s]',
+                    CASE WHEN wallet.can_trade = FALSE THEN '"capability_blocked"' ELSE '' END,
+                    CASE WHEN native_gas.observed_at IS NULL THEN CASE WHEN wallet.can_trade = FALSE THEN ',"missing_native_gas_observation"' ELSE '"missing_native_gas_observation"' END ELSE '' END,
+                    CASE WHEN usdc_balance.observed_at IS NULL THEN CASE WHEN wallet.can_trade = FALSE OR native_gas.observed_at IS NULL THEN ',"missing_usdc_balance_observation"' ELSE '"missing_usdc_balance_observation"' END ELSE '' END,
+                    CASE WHEN wallet.configured_allowance_target_count > COALESCE(allowance.observed_allowance_target_count, 0) THEN CASE WHEN wallet.can_trade = FALSE OR native_gas.observed_at IS NULL OR usdc_balance.observed_at IS NULL THEN ',"allowance_target_unobserved"' ELSE '"allowance_target_unobserved"' END ELSE '' END,
+                    CASE WHEN wallet.configured_allowance_target_count > 0 AND COALESCE(allowance.approved_allowance_target_count, 0) = 0 THEN CASE WHEN wallet.can_trade = FALSE OR native_gas.observed_at IS NULL OR usdc_balance.observed_at IS NULL OR wallet.configured_allowance_target_count > COALESCE(allowance.observed_allowance_target_count, 0) THEN ',"allowance_not_approved"' ELSE '"allowance_not_approved"' END ELSE '' END,
+                    CASE WHEN chain_tx.tx_kind = 'approve_usdc' AND chain_tx.status = 'rejected' THEN CASE WHEN wallet.can_trade = FALSE OR native_gas.observed_at IS NULL OR usdc_balance.observed_at IS NULL OR wallet.configured_allowance_target_count > COALESCE(allowance.observed_allowance_target_count, 0) OR (wallet.configured_allowance_target_count > 0 AND COALESCE(allowance.approved_allowance_target_count, 0) = 0) THEN ',"latest_approve_usdc_rejected"' ELSE '"latest_approve_usdc_rejected"' END ELSE '' END
+                ) AS wallet_readiness_blockers_json,
+                CASE
+                    WHEN wallet.can_trade = FALSE THEN TRUE
+                    WHEN native_gas.observed_at IS NULL OR usdc_balance.observed_at IS NULL THEN TRUE
+                    WHEN wallet.configured_allowance_target_count > COALESCE(allowance.observed_allowance_target_count, 0) THEN TRUE
+                    WHEN wallet.configured_allowance_target_count > 0 AND COALESCE(allowance.approved_allowance_target_count, 0) = 0 THEN TRUE
+                    WHEN chain_tx.tx_kind = 'approve_usdc' AND chain_tx.status = 'rejected' THEN TRUE
+                    WHEN signer.status = 'rejected' THEN TRUE
+                    ELSE FALSE
+                END AS attention_required
+            FROM wallet_base wallet
+            LEFT JOIN latest_native_gas native_gas ON native_gas.wallet_id = wallet.wallet_id
+            LEFT JOIN latest_usdc_balance usdc_balance ON usdc_balance.wallet_id = wallet.wallet_id
+            LEFT JOIN allowance_agg allowance ON allowance.wallet_id = wallet.wallet_id
+            LEFT JOIN latest_signer signer ON signer.funder = wallet.funder
+            LEFT JOIN latest_chain_tx chain_tx ON chain_tx.wallet_id = wallet.wallet_id
             """,
             table_row_counts=table_row_counts,
         )

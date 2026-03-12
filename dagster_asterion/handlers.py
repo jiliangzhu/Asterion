@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+import json
 from typing import Any
 
 from agents.common import build_agent_client_from_env, enqueue_agent_artifact_upserts
@@ -28,11 +29,18 @@ from asterion_core.blockchain import (
     load_polygon_chain_registry,
 )
 from asterion_core.contracts import (
+    BalanceType,
     ForecastReplayRequest,
     ExternalBalanceObservation,
+    ExternalBalanceObservationKind,
+    ExternalFillObservation,
+    Order,
+    OrderSide,
+    OrderStatus,
     ProposalStatus,
     ResolutionSpec,
     RouteAction,
+    TimeInForce,
     UMAProposal,
     stable_object_id,
     new_request_id,
@@ -41,11 +49,13 @@ from asterion_core.execution import (
     DisabledSubmitterBackend,
     SubmitMode,
     SubmitterServiceShell,
+    ShadowFillMode,
     SafeDefaultChainAccountCapabilityReader,
     apply_fills_to_order,
     bind_trade_ticket_handoff,
     build_execution_context,
     build_execution_context_record,
+    build_external_fill_observations,
     build_external_order_observation,
     build_order_from_intent,
     build_paper_order,
@@ -58,6 +68,7 @@ from asterion_core.execution import (
     canonical_order_handoff_payload,
     enqueue_account_capability_upserts,
     enqueue_execution_context_upserts,
+    enqueue_external_fill_observation_upserts,
     enqueue_external_order_observation_upserts,
     enqueue_market_capability_upserts,
     evaluate_execution_gate,
@@ -98,9 +109,11 @@ from asterion_core.risk import (
     apply_fill_to_inventory,
     apply_fill_to_reservation,
     apply_reservation_to_inventory,
+    build_external_execution_reconciliation_result,
     build_exposure_snapshot,
     build_reservation,
     build_reconciliation_result,
+    classify_external_execution_reconciliation_status,
     finalize_reservation,
     classify_reconciliation_status,
     load_inventory_positions,
@@ -109,6 +122,7 @@ from asterion_core.risk import (
     release_reservation_to_inventory,
 )
 from asterion_core.signer import (
+    SubmitAttemptRecord,
     build_sign_order_request_from_routed_order,
     load_sign_only_attempts,
     SignerRequest,
@@ -118,7 +132,6 @@ from asterion_core.signer import (
     build_signing_context_from_account_capability,
     enqueue_submit_attempt_upserts,
 )
-from asterion_core.contracts import OrderStatus
 from asterion_core.runtime import (
     StrategyContext,
     StrategyRegistration,
@@ -253,12 +266,15 @@ class SubmitterSmokeRequest:
     attempt_ids: list[str]
     requester: str
     submit_mode: SubmitMode
+    shadow_fill_mode: ShadowFillMode = ShadowFillMode.NONE
 
     def __post_init__(self) -> None:
         if not self.attempt_ids:
             raise ValueError("attempt_ids are required")
         if not self.requester:
             raise ValueError("requester is required")
+        if self.submit_mode is SubmitMode.DRY_RUN and self.shadow_fill_mode is not ShadowFillMode.NONE:
+            raise ValueError("shadow_fill_mode requires submit_mode=shadow_submit")
 
 
 @dataclass(frozen=True)
@@ -642,6 +658,7 @@ def run_weather_submitter_smoke_job(
     task_ids: list[str] = []
     submit_attempts = []
     observations = []
+    fill_observations: list[ExternalFillObservation] = []
     preview_count = 0
     accepted_count = 0
     rejected_count = 0
@@ -656,6 +673,7 @@ def run_weather_submitter_smoke_job(
             ),
             timestamp=normalized_observed_at,
             submit_mode=normalized_request.submit_mode,
+            shadow_fill_mode=normalized_request.shadow_fill_mode,
         )
         invocation = submitter_service.submit_order(
             submit_request,
@@ -666,6 +684,12 @@ def run_weather_submitter_smoke_job(
         observation = build_external_order_observation(
             submit_attempt,
             observed_at=invocation.response.completed_at,
+        )
+        fill_observations.extend(
+            build_external_fill_observations(
+                submit_attempt,
+                observed_at=invocation.response.completed_at,
+            )
         )
         submit_attempts.append(submit_attempt)
         observations.append(observation)
@@ -698,6 +722,15 @@ def run_weather_submitter_smoke_job(
             )
         )
     )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_external_fill_observation_upserts(
+                queue_cfg,
+                observations=fill_observations,
+                run_id=request_id,
+            )
+        )
+    )
     return ColdPathHandlerResult(
         job_name="weather_submitter_smoke",
         run_id=request_id,
@@ -708,10 +741,12 @@ def run_weather_submitter_smoke_job(
             "attempt_ids": list(normalized_request.attempt_ids),
             "wallet_id": wallet_id,
             "submit_mode": normalized_request.submit_mode.value,
+            "shadow_fill_mode": normalized_request.shadow_fill_mode.value,
             "submit_count": len(submit_attempts),
             "accepted_count": accepted_count,
             "rejected_count": rejected_count,
             "preview_count": preview_count,
+            "external_fill_count": len(fill_observations),
             "payload_hashes": payload_hashes,
             "observation_ids": observation_ids,
         },
@@ -809,6 +844,107 @@ def run_weather_chain_tx_smoke_job(
             "status": attempt.status,
             "payload_hash": attempt.payload_hash,
             "tx_hash": attempt.tx_hash,
+        },
+    )
+
+
+def run_weather_external_execution_reconciliation_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    run_id: str | None = None,
+    observed_at: datetime | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    normalized_observed_at = _normalize_datetime(observed_at) or datetime.now(UTC).replace(tzinfo=None)
+    submit_attempts = _load_shadow_submit_attempts_for_external_reconciliation(con)
+
+    reconciliation_results = []
+    journal_events = []
+    for attempt in submit_attempts:
+        if not attempt.order_id:
+            raise ValueError("external execution reconciliation requires submit attempts with order_id")
+        order = _load_order_for_reconciliation(con, order_id=attempt.order_id)
+        if order is None:
+            raise ValueError(f"external execution reconciliation missing local order for {attempt.order_id}")
+        external_order_observation = _load_latest_external_order_observation(con, attempt_id=attempt.attempt_id)
+        external_fill_observations = _load_latest_external_fill_observations(con, attempt_id=attempt.attempt_id)
+        wallet_observation_ref = _load_latest_wallet_observation_reference(con, wallet_id=attempt.wallet_id)
+        external_fill_observation_id = (
+            stable_object_id("efillagg", {"attempt_id": attempt.attempt_id})
+            if external_fill_observations
+            else None
+        )
+        reconciliation_result = build_external_execution_reconciliation_result(
+            order=order,
+            ticket_id=attempt.ticket_id,
+            execution_context_id=attempt.execution_context_id,
+            external_order_observation_id=external_order_observation.observation_id if external_order_observation else None,
+            external_fill_observation_id=external_fill_observation_id,
+            external_balance_observation_id=wallet_observation_ref.observation_id if wallet_observation_ref else None,
+            external_order_status=external_order_observation.external_status if external_order_observation else None,
+            external_fill_observations=external_fill_observations,
+            wallet_observation_ref=wallet_observation_ref,
+            created_at=normalized_observed_at,
+        )
+        reconciliation_results.append(reconciliation_result)
+        journal_payload = reconciliation_journal_payload(
+            result=reconciliation_result,
+            order=order,
+            ticket_id=attempt.ticket_id,
+            request_id=attempt.request_id,
+        )
+        journal_events.append(
+            build_journal_event(
+                event_type="reconciliation.checked",
+                entity_type="reconciliation",
+                entity_id=reconciliation_result.reconciliation_id,
+                run_id=request_id,
+                payload_json=journal_payload,
+                created_at=normalized_observed_at,
+            )
+        )
+        if reconciliation_result.status.value != "ok":
+            journal_events.append(
+                build_journal_event(
+                    event_type="reconciliation.mismatch",
+                    entity_type="reconciliation",
+                    entity_id=reconciliation_result.reconciliation_id,
+                    run_id=request_id,
+                    payload_json=journal_payload,
+                    created_at=normalized_observed_at,
+                )
+            )
+
+    task_ids: list[str] = []
+    task_ids.extend(
+        _append_task_id(
+            enqueue_reconciliation_result_upserts(
+                queue_cfg,
+                results=reconciliation_results,
+                run_id=request_id,
+            )
+        )
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_journal_event_upserts(
+                queue_cfg,
+                journal_events=journal_events,
+                run_id=request_id,
+            )
+        )
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_external_execution_reconciliation",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=len(reconciliation_results),
+        metadata={
+            "attempt_count": len(submit_attempts),
+            "reconciliation_count": len(reconciliation_results),
+            "reconciliation_mismatch_count": sum(1 for item in reconciliation_results if item.status.value != "ok"),
+            "wallet_ids": sorted({item.wallet_id for item in submit_attempts}),
         },
     )
 
@@ -1853,6 +1989,19 @@ def _append_task_id(task_id: str | None) -> list[str]:
     return [task_id] if task_id is not None else []
 
 
+def _load_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        loaded = json.loads(value)
+        if not isinstance(loaded, dict):
+            raise ValueError("expected JSON object")
+        return dict(loaded)
+    raise TypeError("expected dict or JSON object string")
+
+
 def _normalize_datetime(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -1924,10 +2073,12 @@ def _normalize_submitter_smoke_request(params_json: dict[str, Any]) -> Submitter
         raise ValueError("params_json must be a dictionary")
     attempt_ids = _coerce_optional_str_list(params_json.get("attempt_ids"))
     raw_mode = str(params_json.get("submit_mode") or "").strip().lower() or SubmitMode.DRY_RUN.value
+    raw_shadow_fill_mode = str(params_json.get("shadow_fill_mode") or "").strip().lower() or ShadowFillMode.NONE.value
     return SubmitterSmokeRequest(
         attempt_ids=attempt_ids or [],
         requester=str(params_json.get("requester") or ""),
         submit_mode=SubmitMode(raw_mode),
+        shadow_fill_mode=ShadowFillMode(raw_shadow_fill_mode),
     )
 
 
@@ -1943,6 +2094,287 @@ def _normalize_chain_tx_smoke_request(params_json: dict[str, Any]) -> ChainTxSmo
         tx_mode=ChainTxMode(raw_tx_mode),
         spender=str(params_json.get("spender") or "").strip(),
         amount=Decimal(str(params_json.get("amount") or "0")),
+    )
+
+
+def _load_shadow_submit_attempts_for_external_reconciliation(con) -> list[SubmitAttemptRecord]:
+    rows = con.execute(
+        """
+        SELECT
+            attempt_id,
+            request_id,
+            ticket_id,
+            order_id,
+            wallet_id,
+            execution_context_id,
+            exchange,
+            attempt_kind,
+            attempt_mode,
+            canonical_order_hash,
+            payload_hash,
+            submit_payload_json,
+            signed_payload_ref,
+            status,
+            error,
+            created_at
+        FROM runtime.submit_attempts
+        WHERE attempt_kind = 'submit_order'
+          AND attempt_mode = 'shadow_submit'
+        ORDER BY created_at ASC, attempt_id ASC
+        """
+    ).fetchall()
+    return [_submit_attempt_from_row(row) for row in rows]
+
+
+def _submit_attempt_from_row(row: tuple[Any, ...]) -> SubmitAttemptRecord:
+    return SubmitAttemptRecord(
+        attempt_id=str(row[0]),
+        request_id=str(row[1]),
+        ticket_id=str(row[2]),
+        order_id=str(row[3]) if row[3] is not None else None,
+        wallet_id=str(row[4]),
+        execution_context_id=str(row[5]),
+        exchange=str(row[6]),
+        attempt_kind=str(row[7]),
+        attempt_mode=str(row[8]),
+        canonical_order_hash=str(row[9]),
+        payload_hash=str(row[10]),
+        submit_payload_json=_load_json_dict(row[11]),
+        signed_payload_ref=str(row[12]) if row[12] is not None else "",
+        status=str(row[13]),
+        error=str(row[14]) if row[14] is not None else None,
+        created_at=_normalize_datetime(row[15]) or datetime.now(UTC).replace(tzinfo=None),
+    )
+
+
+def _load_latest_external_order_observation(con, *, attempt_id: str):
+    row = con.execute(
+        """
+        SELECT
+            observation_id,
+            attempt_id,
+            request_id,
+            ticket_id,
+            order_id,
+            wallet_id,
+            execution_context_id,
+            exchange,
+            observation_kind,
+            submit_mode,
+            canonical_order_hash,
+            external_order_id,
+            external_status,
+            observed_at,
+            error,
+            raw_observation_json
+        FROM runtime.external_order_observations
+        WHERE attempt_id = ?
+        ORDER BY observed_at DESC, observation_id DESC
+        LIMIT 1
+        """,
+        [attempt_id],
+    ).fetchone()
+    if row is None:
+        return None
+    return type(
+        "ExternalOrderObservationView",
+        (),
+        {
+            "observation_id": str(row[0]),
+            "attempt_id": str(row[1]),
+            "request_id": str(row[2]),
+            "ticket_id": str(row[3]),
+            "order_id": str(row[4]) if row[4] is not None else None,
+            "wallet_id": str(row[5]),
+            "execution_context_id": str(row[6]),
+            "exchange": str(row[7]),
+            "observation_kind": str(row[8]),
+            "submit_mode": str(row[9]),
+            "canonical_order_hash": str(row[10]),
+            "external_order_id": str(row[11]) if row[11] is not None else None,
+            "external_status": str(row[12]),
+            "observed_at": _normalize_datetime(row[13]) or datetime.now(UTC).replace(tzinfo=None),
+            "error": str(row[14]) if row[14] is not None else None,
+            "raw_observation_json": _load_json_dict(row[15]),
+        },
+    )()
+
+
+def _load_latest_external_fill_observations(con, *, attempt_id: str) -> list[ExternalFillObservation]:
+    rows = con.execute(
+        """
+        SELECT
+            observation_id,
+            attempt_id,
+            request_id,
+            ticket_id,
+            order_id,
+            wallet_id,
+            execution_context_id,
+            exchange,
+            observation_kind,
+            external_order_id,
+            external_trade_id,
+            market_id,
+            token_id,
+            outcome,
+            side,
+            price,
+            size,
+            fee,
+            fee_rate_bps,
+            external_status,
+            observed_at,
+            error,
+            raw_observation_json
+        FROM runtime.external_fill_observations
+        WHERE attempt_id = ?
+        ORDER BY observed_at DESC, observation_id DESC
+        """,
+        [attempt_id],
+    ).fetchall()
+    latest_by_trade_id: dict[str, ExternalFillObservation] = {}
+    for row in rows:
+        trade_id = str(row[10])
+        if trade_id in latest_by_trade_id:
+            continue
+        latest_by_trade_id[trade_id] = ExternalFillObservation(
+            observation_id=str(row[0]),
+            attempt_id=str(row[1]),
+            request_id=str(row[2]),
+            ticket_id=str(row[3]),
+            order_id=str(row[4]) if row[4] is not None else None,
+            wallet_id=str(row[5]),
+            execution_context_id=str(row[6]),
+            exchange=str(row[7]),
+            observation_kind=ExternalFillObservationKind(str(row[8])),
+            external_order_id=str(row[9]) if row[9] is not None else None,
+            external_trade_id=trade_id,
+            market_id=str(row[11]),
+            token_id=str(row[12]),
+            outcome=str(row[13]),
+            side=str(row[14]),
+            price=Decimal(str(row[15])),
+            size=Decimal(str(row[16])),
+            fee=Decimal(str(row[17])),
+            fee_rate_bps=int(row[18]),
+            external_status=str(row[19]),
+            observed_at=_normalize_datetime(row[20]) or datetime.now(UTC).replace(tzinfo=None),
+            error=str(row[21]) if row[21] is not None else None,
+            raw_observation_json=_load_json_dict(row[22]),
+        )
+    return list(latest_by_trade_id.values())
+
+
+def _load_latest_wallet_observation_reference(con, *, wallet_id: str) -> ExternalBalanceObservation | None:
+    row = con.execute(
+        """
+        SELECT
+            observation_id,
+            wallet_id,
+            funder,
+            signature_type,
+            asset_type,
+            token_id,
+            market_id,
+            outcome,
+            observation_kind,
+            allowance_target,
+            chain_id,
+            block_number,
+            observed_quantity,
+            source,
+            observed_at,
+            raw_observation_json
+        FROM runtime.external_balance_observations
+        WHERE wallet_id = ?
+        ORDER BY observed_at DESC, observation_id DESC
+        LIMIT 1
+        """,
+        [wallet_id],
+    ).fetchone()
+    if row is None:
+        return None
+    return ExternalBalanceObservation(
+        observation_id=str(row[0]),
+        wallet_id=str(row[1]),
+        funder=str(row[2]),
+        signature_type=int(row[3]),
+        asset_type=str(row[4]),
+        token_id=str(row[5]) if row[5] is not None else None,
+        market_id=str(row[6]) if row[6] is not None else None,
+        outcome=str(row[7]) if row[7] is not None else None,
+        observation_kind=ExternalBalanceObservationKind(str(row[8])),
+        allowance_target=str(row[9]) if row[9] is not None else None,
+        chain_id=int(row[10]),
+        block_number=int(row[11]) if row[11] is not None else None,
+        observed_quantity=Decimal(str(row[12])),
+        source=str(row[13]),
+        observed_at=_normalize_datetime(row[14]) or datetime.now(UTC).replace(tzinfo=None),
+        raw_observation_json=_load_json_dict(row[15]),
+    )
+
+
+def _load_order_for_reconciliation(con, *, order_id: str) -> Order | None:
+    row = con.execute(
+        """
+        SELECT
+            order_id,
+            client_order_id,
+            wallet_id,
+            market_id,
+            token_id,
+            outcome,
+            side,
+            price,
+            size,
+            route_action,
+            time_in_force,
+            expiration,
+            fee_rate_bps,
+            signature_type,
+            funder,
+            status,
+            filled_size,
+            remaining_size,
+            avg_fill_price,
+            reservation_id,
+            exchange_order_id,
+            created_at,
+            updated_at
+        FROM trading.orders
+        WHERE order_id = ?
+        """,
+        [order_id],
+    ).fetchone()
+    if row is None:
+        return None
+    expiration = _normalize_datetime(row[11])
+    avg_fill_price = Decimal(str(row[18])) if row[18] is not None else None
+    return Order(
+        order_id=str(row[0]),
+        client_order_id=str(row[1]),
+        wallet_id=str(row[2]),
+        market_id=str(row[3]),
+        token_id=str(row[4]),
+        outcome=str(row[5]),
+        side=OrderSide(str(row[6])),
+        price=Decimal(str(row[7])),
+        size=Decimal(str(row[8])),
+        route_action=RouteAction(str(row[9])),
+        time_in_force=TimeInForce(str(row[10])),
+        expiration=expiration,
+        fee_rate_bps=int(row[12]),
+        signature_type=int(row[13]),
+        funder=str(row[14]),
+        status=OrderStatus(str(row[15])),
+        filled_size=Decimal(str(row[16])),
+        remaining_size=Decimal(str(row[17])),
+        avg_fill_price=avg_fill_price,
+        reservation_id=str(row[19]) if row[19] is not None else None,
+        exchange_order_id=str(row[20]) if row[20] is not None else None,
+        created_at=_normalize_datetime(row[21]) or datetime.now(UTC).replace(tzinfo=None),
+        updated_at=_normalize_datetime(row[22]) or datetime.now(UTC).replace(tzinfo=None),
     )
 
 

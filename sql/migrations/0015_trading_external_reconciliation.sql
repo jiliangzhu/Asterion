@@ -1,0 +1,10 @@
+ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS order_id TEXT;
+ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS ticket_id TEXT;
+ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS execution_context_id TEXT;
+ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS reconciliation_scope TEXT DEFAULT 'paper_local';
+ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS source_system TEXT DEFAULT 'paper_local';
+ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS local_state TEXT;
+ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS remote_state TEXT;
+ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS external_order_observation_id TEXT;
+ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS external_fill_observation_id TEXT;
+ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS external_balance_observation_id TEXT;

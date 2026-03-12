@@ -44,6 +44,9 @@ class ReconciliationStatus(str, Enum):
     RESERVATION_MISMATCH = "reservation_mismatch"
     EXPOSURE_MISMATCH = "exposure_mismatch"
     FILL_MISMATCH = "fill_mismatch"
+    EXTERNAL_ORDER_MISMATCH = "external_order_mismatch"
+    EXTERNAL_FILL_MISMATCH = "external_fill_mismatch"
+    EXTERNAL_STATE_UNVERIFIED = "external_state_unverified"
 
 
 def reservation_asset_type_for_side(side: OrderSide) -> str:
@@ -269,6 +272,9 @@ class ReconciliationResult:
     wallet_id: str
     funder: str
     signature_type: int
+    order_id: str | None
+    ticket_id: str | None
+    execution_context_id: str | None
     asset_type: str
     token_id: str | None
     market_id: str | None
@@ -279,6 +285,13 @@ class ReconciliationResult:
     status: ReconciliationStatus
     resolution: str | None
     created_at: datetime
+    reconciliation_scope: str = "paper_local"
+    source_system: str = "paper_local"
+    local_state: str | None = None
+    remote_state: str | None = None
+    external_order_observation_id: str | None = None
+    external_fill_observation_id: str | None = None
+    external_balance_observation_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.reconciliation_id:
@@ -287,6 +300,8 @@ class ReconciliationResult:
             raise ValueError("wallet_id, funder, and asset_type are required")
         if self.signature_type < 0:
             raise ValueError("signature_type must be non-negative")
+        if not self.reconciliation_scope or not self.source_system:
+            raise ValueError("reconciliation_scope and source_system are required")
         numeric_fields = (
             self.local_quantity,
             self.remote_quantity,

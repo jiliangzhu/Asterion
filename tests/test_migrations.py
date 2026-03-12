@@ -31,6 +31,8 @@ class MigrationFilesTest(unittest.TestCase):
                 "0011_runtime_submit_attempts.sql",
                 "0012_runtime_external_order_observations.sql",
                 "0013_runtime_chain_tx_attempts.sql",
+                "0014_runtime_external_fill_observations.sql",
+                "0015_trading_external_reconciliation.sql",
             ],
         )
 
@@ -74,6 +76,8 @@ class MigrationFilesTest(unittest.TestCase):
         self.assertIn("runtime.external_order_observations", contents["0012_runtime_external_order_observations.sql"])
         self.assertIn("runtime.chain_tx_attempts", contents["0013_runtime_chain_tx_attempts.sql"])
         self.assertIn("tx_kind TEXT NOT NULL", contents["0013_runtime_chain_tx_attempts.sql"])
+        self.assertIn("runtime.external_fill_observations", contents["0014_runtime_external_fill_observations.sql"])
+        self.assertIn("ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS reconciliation_scope TEXT DEFAULT 'paper_local';", contents["0015_trading_external_reconciliation.sql"])
 
 
 @unittest.skipUnless(HAS_DUCKDB, "duckdb is required for migration application tests")
@@ -92,7 +96,7 @@ class ApplyMigrationsTest(unittest.TestCase):
                 clear=False,
             ):
                 applied = apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=str(root)))
-            self.assertEqual(len(applied), 13)
+            self.assertEqual(len(applied), 15)
 
 
 if __name__ == "__main__":

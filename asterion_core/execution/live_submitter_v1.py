@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, ROUND_DOWN
 from enum import Enum
 from typing import Any
 
-from asterion_core.contracts import stable_object_id
+from asterion_core.contracts import ExternalFillObservation, ExternalFillObservationKind, stable_object_id
 from asterion_core.journal import build_journal_event, enqueue_journal_event_upserts
 from asterion_core.signer import SubmitAttemptRecord, hash_signer_payload
 from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
@@ -32,10 +33,42 @@ RUNTIME_EXTERNAL_ORDER_OBSERVATION_COLUMNS = [
     "raw_observation_json",
 ]
 
+RUNTIME_EXTERNAL_FILL_OBSERVATION_COLUMNS = [
+    "observation_id",
+    "attempt_id",
+    "request_id",
+    "ticket_id",
+    "order_id",
+    "wallet_id",
+    "execution_context_id",
+    "exchange",
+    "observation_kind",
+    "external_order_id",
+    "external_trade_id",
+    "market_id",
+    "token_id",
+    "outcome",
+    "side",
+    "price",
+    "size",
+    "fee",
+    "fee_rate_bps",
+    "external_status",
+    "observed_at",
+    "error",
+    "raw_observation_json",
+]
+
 
 class SubmitMode(str, Enum):
     DRY_RUN = "dry_run"
     SHADOW_SUBMIT = "shadow_submit"
+
+
+class ShadowFillMode(str, Enum):
+    NONE = "none"
+    PARTIAL = "partial"
+    FULL = "full"
 
 
 @dataclass(frozen=True)
@@ -52,6 +85,7 @@ class SubmitOrderRequest:
     exchange: str
     canonical_order_hash: str
     signed_payload_json: dict[str, Any]
+    shadow_fill_mode: ShadowFillMode = ShadowFillMode.NONE
 
     def __post_init__(self) -> None:
         if not self.request_id or not self.requester:
@@ -64,6 +98,8 @@ class SubmitOrderRequest:
             raise ValueError("execution_context_id and canonical_order_hash are required")
         if not isinstance(self.signed_payload_json, dict) or not self.signed_payload_json:
             raise ValueError("signed_payload_json must be a non-empty object")
+        if self.submit_mode is SubmitMode.DRY_RUN and self.shadow_fill_mode is not ShadowFillMode.NONE:
+            raise ValueError("shadow_fill_mode requires submit_mode=shadow_submit")
 
 
 @dataclass(frozen=True)
@@ -103,6 +139,12 @@ class ExternalOrderObservationRecord:
     observed_at: datetime
     error: str | None
     raw_observation_json: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _SubmitShadowFillContext:
+    external_order_id: str
+    shadow_fill_mode: ShadowFillMode
 
 
 @dataclass(frozen=True)
@@ -251,6 +293,7 @@ def build_submit_order_request_from_sign_attempt(
     request_id: str,
     timestamp: datetime,
     submit_mode: SubmitMode,
+    shadow_fill_mode: ShadowFillMode = ShadowFillMode.NONE,
 ) -> SubmitOrderRequest:
     if sign_attempt.attempt_kind != "sign_order" or sign_attempt.attempt_mode != "sign_only":
         raise ValueError("submitter requires sign_order/sign_only source attempts")
@@ -269,6 +312,7 @@ def build_submit_order_request_from_sign_attempt(
         exchange=sign_attempt.exchange,
         canonical_order_hash=sign_attempt.canonical_order_hash,
         signed_payload_json=dict(sign_attempt.submit_payload_json),
+        shadow_fill_mode=shadow_fill_mode,
     )
 
 
@@ -362,6 +406,79 @@ def build_external_order_observation(
     )
 
 
+def build_external_fill_observations(
+    attempt: SubmitAttemptRecord,
+    *,
+    observed_at: datetime,
+) -> list[ExternalFillObservation]:
+    if attempt.attempt_kind != "submit_order" or attempt.attempt_mode != SubmitMode.SHADOW_SUBMIT.value:
+        return []
+    if attempt.status != "accepted":
+        return []
+    fill_context = _extract_shadow_fill_context(attempt.submit_payload_json)
+    if fill_context is None or fill_context.shadow_fill_mode is ShadowFillMode.NONE:
+        return []
+    order_payload = _extract_signed_order_payload(attempt.submit_payload_json)
+    size = _quantize_decimal(Decimal(str(order_payload["size"])))
+    price = _quantize_decimal(Decimal(str(order_payload["price"])))
+    fee_rate_bps = int(order_payload["fee_rate_bps"])
+    filled_size = size if fill_context.shadow_fill_mode is ShadowFillMode.FULL else _quantize_decimal(size / Decimal("2"))
+    fee = _quantize_decimal((price * filled_size * Decimal(fee_rate_bps)) / Decimal("10000"))
+    external_status = "filled" if fill_context.shadow_fill_mode is ShadowFillMode.FULL else "partial_filled"
+    observation_kind = (
+        ExternalFillObservationKind.SHADOW_FILL_FULL
+        if fill_context.shadow_fill_mode is ShadowFillMode.FULL
+        else ExternalFillObservationKind.SHADOW_FILL_PARTIAL
+    )
+    normalized_observed_at = _normalize_timestamp(observed_at)
+    external_trade_id = stable_object_id(
+        "extfill",
+        {"attempt_id": attempt.attempt_id, "shadow_fill_mode": fill_context.shadow_fill_mode.value},
+    )
+    raw_observation_json = {
+        "attempt_id": attempt.attempt_id,
+        "request_id": attempt.request_id,
+        "external_order_id": fill_context.external_order_id,
+        "submit_payload": attempt.submit_payload_json,
+        "shadow_fill_mode": fill_context.shadow_fill_mode.value,
+        "external_status": external_status,
+    }
+    return [
+        ExternalFillObservation(
+            observation_id=stable_object_id(
+                "efillobs",
+                {
+                    "attempt_id": attempt.attempt_id,
+                    "external_trade_id": external_trade_id,
+                    "observed_at": normalized_observed_at.isoformat(timespec="seconds"),
+                },
+            ),
+            attempt_id=attempt.attempt_id,
+            request_id=attempt.request_id,
+            ticket_id=attempt.ticket_id,
+            order_id=attempt.order_id,
+            wallet_id=attempt.wallet_id,
+            execution_context_id=attempt.execution_context_id,
+            exchange=attempt.exchange,
+            observation_kind=observation_kind,
+            external_order_id=fill_context.external_order_id,
+            external_trade_id=external_trade_id,
+            market_id=str(order_payload["market_id"]),
+            token_id=str(order_payload["token_id"]),
+            outcome=str(order_payload["outcome"]),
+            side=str(order_payload["side"]),
+            price=price,
+            size=filled_size,
+            fee=fee,
+            fee_rate_bps=fee_rate_bps,
+            external_status=external_status,
+            observed_at=normalized_observed_at,
+            error=None,
+            raw_observation_json=raw_observation_json,
+        )
+    ]
+
+
 def enqueue_external_order_observation_upserts(
     queue_cfg: WriteQueueConfig,
     *,
@@ -380,6 +497,24 @@ def enqueue_external_order_observation_upserts(
     )
 
 
+def enqueue_external_fill_observation_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    observations: list[ExternalFillObservation],
+    run_id: str | None = None,
+) -> str | None:
+    if not observations:
+        return None
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="runtime.external_fill_observations",
+        pk_cols=["observation_id"],
+        columns=list(RUNTIME_EXTERNAL_FILL_OBSERVATION_COLUMNS),
+        rows=[external_fill_observation_to_row(item) for item in observations],
+        run_id=run_id,
+    )
+
+
 def external_order_observation_to_row(record: ExternalOrderObservationRecord) -> list[object]:
     return [
         record.observation_id,
@@ -394,6 +529,34 @@ def external_order_observation_to_row(record: ExternalOrderObservationRecord) ->
         record.submit_mode,
         record.canonical_order_hash,
         record.external_order_id,
+        record.external_status,
+        _sql_timestamp(record.observed_at),
+        record.error,
+        safe_json_dumps(record.raw_observation_json),
+    ]
+
+
+def external_fill_observation_to_row(record: ExternalFillObservation) -> list[object]:
+    return [
+        record.observation_id,
+        record.attempt_id,
+        record.request_id,
+        record.ticket_id,
+        record.order_id,
+        record.wallet_id,
+        record.execution_context_id,
+        record.exchange,
+        record.observation_kind.value,
+        record.external_order_id,
+        record.external_trade_id,
+        record.market_id,
+        record.token_id,
+        record.outcome,
+        record.side,
+        _decimal_to_sql(record.price),
+        _decimal_to_sql(record.size),
+        _decimal_to_sql(record.fee),
+        record.fee_rate_bps,
         record.external_status,
         _sql_timestamp(record.observed_at),
         record.error,
@@ -439,6 +602,7 @@ def _build_submit_payload(
         "execution_context_id": request.execution_context_id,
         "wallet_id": request.wallet_id,
         "canonical_order_hash": request.canonical_order_hash,
+        "shadow_fill_mode": request.shadow_fill_mode.value,
         "status": status,
         "external_order_id": external_order_id,
         "error": error,
@@ -449,6 +613,24 @@ def _build_submit_payload(
 def _extract_external_order_id(payload: dict[str, Any]) -> str | None:
     value = payload.get("external_order_id")
     return str(value) if value is not None else None
+
+
+def _extract_signed_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    value = payload.get("signed_payload")
+    if not isinstance(value, dict):
+        raise ValueError("submit payload is missing signed_payload")
+    order = value.get("order")
+    if not isinstance(order, dict):
+        raise ValueError("submit payload is missing signed order payload")
+    return dict(order)
+
+
+def _extract_shadow_fill_context(payload: dict[str, Any]) -> _SubmitShadowFillContext | None:
+    external_order_id = _extract_external_order_id(payload)
+    if not external_order_id:
+        return None
+    raw_mode = str(payload.get("shadow_fill_mode") or ShadowFillMode.NONE.value)
+    return _SubmitShadowFillContext(external_order_id=external_order_id, shadow_fill_mode=ShadowFillMode(raw_mode))
 
 
 def _normalize_timestamp(value: datetime) -> datetime:
@@ -463,3 +645,11 @@ def _sql_timestamp(value: datetime) -> str:
 
 def _append_task_id(task_id: str | None) -> list[str]:
     return [task_id] if task_id else []
+
+
+def _decimal_to_sql(value: Decimal) -> str:
+    return format(_quantize_decimal(value), ".8f")
+
+
+def _quantize_decimal(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)

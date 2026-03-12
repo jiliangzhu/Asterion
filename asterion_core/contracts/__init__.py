@@ -47,6 +47,8 @@ from .inventory import (
 from .observations import (
     ExternalBalanceObservation,
     ExternalBalanceObservationKind,
+    ExternalFillObservation,
+    ExternalFillObservationKind,
 )
 from .weather import (
     EvidencePackageLinkRecord,
@@ -85,6 +87,8 @@ __all__ = [
     "ExposureSnapshot",
     "ExternalBalanceObservation",
     "ExternalBalanceObservationKind",
+    "ExternalFillObservation",
+    "ExternalFillObservationKind",
     "Fill",
     "ForecastCacheKey",
     "ForecastReplayDiffRecord",

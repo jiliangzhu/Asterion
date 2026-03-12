@@ -7,6 +7,7 @@ from typing import Any
 from asterion_core.contracts import (
     ExposureSnapshot,
     ExternalBalanceObservation,
+    ExternalFillObservation,
     Fill,
     GateDecision,
     InventoryPosition,
@@ -186,6 +187,9 @@ TRADING_RECONCILIATION_COLUMNS = [
     "wallet_id",
     "funder",
     "signature_type",
+    "order_id",
+    "ticket_id",
+    "execution_context_id",
     "asset_type",
     "token_id",
     "market_id",
@@ -195,6 +199,13 @@ TRADING_RECONCILIATION_COLUMNS = [
     "discrepancy",
     "status",
     "resolution",
+    "reconciliation_scope",
+    "source_system",
+    "local_state",
+    "remote_state",
+    "external_order_observation_id",
+    "external_fill_observation_id",
+    "external_balance_observation_id",
     "created_at",
 ]
 
@@ -214,6 +225,32 @@ RUNTIME_EXTERNAL_BALANCE_OBSERVATION_COLUMNS = [
     "observed_quantity",
     "source",
     "observed_at",
+    "raw_observation_json",
+]
+
+RUNTIME_EXTERNAL_FILL_OBSERVATION_COLUMNS = [
+    "observation_id",
+    "attempt_id",
+    "request_id",
+    "ticket_id",
+    "order_id",
+    "wallet_id",
+    "execution_context_id",
+    "exchange",
+    "observation_kind",
+    "external_order_id",
+    "external_trade_id",
+    "market_id",
+    "token_id",
+    "outcome",
+    "side",
+    "price",
+    "size",
+    "fee",
+    "fee_rate_bps",
+    "external_status",
+    "observed_at",
+    "error",
     "raw_observation_json",
 ]
 
@@ -448,6 +485,24 @@ def enqueue_external_balance_observation_upserts(
     )
 
 
+def enqueue_external_fill_observation_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    observations: list[ExternalFillObservation],
+    run_id: str | None = None,
+) -> str | None:
+    if not observations:
+        return None
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="runtime.external_fill_observations",
+        pk_cols=["observation_id"],
+        columns=list(RUNTIME_EXTERNAL_FILL_OBSERVATION_COLUMNS),
+        rows=[external_fill_observation_to_row(item) for item in observations],
+        run_id=run_id,
+    )
+
+
 def strategy_run_to_row(record: StrategyRun) -> list[Any]:
     return [
         record.run_id,
@@ -631,6 +686,9 @@ def reconciliation_result_to_row(record: ReconciliationResult) -> list[Any]:
         record.wallet_id,
         record.funder,
         record.signature_type,
+        record.order_id,
+        record.ticket_id,
+        record.execution_context_id,
         record.asset_type,
         record.token_id,
         record.market_id,
@@ -640,6 +698,13 @@ def reconciliation_result_to_row(record: ReconciliationResult) -> list[Any]:
         _decimal_to_sql(record.discrepancy),
         _enum_value(record.status),
         record.resolution,
+        record.reconciliation_scope,
+        record.source_system,
+        record.local_state,
+        record.remote_state,
+        record.external_order_observation_id,
+        record.external_fill_observation_id,
+        record.external_balance_observation_id,
         _sql_timestamp(record.created_at),
     ]
 
@@ -661,6 +726,34 @@ def external_balance_observation_to_row(record: ExternalBalanceObservation) -> l
         _decimal_to_sql(record.observed_quantity),
         record.source,
         _sql_timestamp(record.observed_at),
+        safe_json_dumps(record.raw_observation_json),
+    ]
+
+
+def external_fill_observation_to_row(record: ExternalFillObservation) -> list[Any]:
+    return [
+        record.observation_id,
+        record.attempt_id,
+        record.request_id,
+        record.ticket_id,
+        record.order_id,
+        record.wallet_id,
+        record.execution_context_id,
+        record.exchange,
+        _enum_value(record.observation_kind),
+        record.external_order_id,
+        record.external_trade_id,
+        record.market_id,
+        record.token_id,
+        record.outcome,
+        record.side,
+        _decimal_to_sql(record.price),
+        _decimal_to_sql(record.size),
+        _decimal_to_sql(record.fee),
+        record.fee_rate_bps,
+        record.external_status,
+        _sql_timestamp(record.observed_at),
+        record.error,
         safe_json_dumps(record.raw_observation_json),
     ]
 

@@ -9,11 +9,14 @@ from unittest.mock import patch
 from asterion_core.execution import (
     DisabledSubmitterBackend,
     ShadowSubmitterBackend,
+    ShadowFillMode,
     SubmitMode,
     SubmitterServiceShell,
+    build_external_fill_observations,
     build_external_order_observation,
     build_submit_attempt_from_signed_payload,
     build_submit_order_request_from_sign_attempt,
+    external_fill_observation_to_row,
     external_order_observation_to_row,
 )
 from asterion_core.signer import SubmitAttemptRecord
@@ -47,7 +50,15 @@ def _signed_attempt() -> SubmitAttemptRecord:
             "ticket_id": "tt_1",
             "execution_context_id": "ectx_1",
             "canonical_order_hash": "coh_1",
-            "order": {"token_id": "tok_yes", "price": "0.63", "size": "10"},
+            "order": {
+                "market_id": "mkt_weather_1",
+                "token_id": "tok_yes",
+                "outcome": "YES",
+                "side": "buy",
+                "price": "0.63",
+                "size": "10",
+                "fee_rate_bps": 30,
+            },
             "signature": "stubsig_1",
         },
         signed_payload_ref="satt_sign_1",
@@ -69,6 +80,17 @@ class SubmitterShellUnitTest(unittest.TestCase):
         self.assertEqual(request.source_attempt_id, "satt_sign_1")
         self.assertEqual(request.submit_mode, SubmitMode.DRY_RUN)
         self.assertEqual(request.wallet_id, "wallet_weather_1")
+
+    def test_submitter_rejects_shadow_fill_mode_for_dry_run(self) -> None:
+        with self.assertRaises(ValueError):
+            build_submit_order_request_from_sign_attempt(
+                _signed_attempt(),
+                requester="operator",
+                request_id="subreq_1",
+                timestamp=datetime(2026, 3, 12, 10, 5, tzinfo=timezone.utc),
+                submit_mode=SubmitMode.DRY_RUN,
+                shadow_fill_mode=ShadowFillMode.PARTIAL,
+            )
 
     def test_submitter_rejects_non_sign_only_attempt(self) -> None:
         invalid = _signed_attempt()
@@ -139,6 +161,24 @@ class SubmitterShellUnitTest(unittest.TestCase):
         self.assertEqual(attempt.attempt_mode, "dry_run")
         self.assertEqual(observation.external_status, "preview")
         self.assertEqual(external_order_observation_to_row(observation)[0], observation.observation_id)
+
+    def test_shadow_submit_generates_external_fill_observation(self) -> None:
+        request = build_submit_order_request_from_sign_attempt(
+            _signed_attempt(),
+            requester="operator",
+            request_id="subreq_1",
+            timestamp=datetime(2026, 3, 12, 10, 5, tzinfo=timezone.utc),
+            submit_mode=SubmitMode.SHADOW_SUBMIT,
+            shadow_fill_mode=ShadowFillMode.PARTIAL,
+        )
+        shell = SubmitterServiceShell(ShadowSubmitterBackend())
+        with patch("asterion_core.execution.live_submitter_v1.enqueue_journal_event_upserts", return_value="task_journal"):
+            invocation = shell.submit_order(request, queue_cfg=WriteQueueConfig(path=":memory:"), run_id="run_submit")
+        attempt = build_submit_attempt_from_signed_payload(request, invocation.response)
+        observations = build_external_fill_observations(attempt, observed_at=invocation.response.completed_at)
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0].external_status, "partial_filled")
+        self.assertEqual(external_fill_observation_to_row(observations[0])[0], observations[0].observation_id)
 
     def test_submitter_shell_has_no_arbitrary_submit_api(self) -> None:
         self.assertFalse(hasattr(SubmitterServiceShell(), "submit_message"))

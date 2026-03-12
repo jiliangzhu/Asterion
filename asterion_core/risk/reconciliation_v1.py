@@ -6,6 +6,8 @@ from decimal import Decimal, ROUND_DOWN
 from asterion_core.contracts import (
     BalanceType,
     ExposureSnapshot,
+    ExternalBalanceObservation,
+    ExternalFillObservation,
     Fill,
     InventoryPosition,
     Order,
@@ -48,6 +50,9 @@ def build_reconciliation_result(
         wallet_id=order.wallet_id,
         funder=order.funder,
         signature_type=order.signature_type,
+        order_id=order.order_id,
+        ticket_id=None,
+        execution_context_id=None,
         asset_type=asset_type,
         token_id=token_id,
         market_id=market_id,
@@ -58,6 +63,63 @@ def build_reconciliation_result(
         status=status,
         resolution="paper_local_match" if status is ReconciliationStatus.OK else "manual_review_required",
         created_at=created_at or datetime.now(UTC),
+    )
+
+
+def build_external_execution_reconciliation_result(
+    *,
+    order: Order,
+    ticket_id: str,
+    execution_context_id: str,
+    external_order_observation_id: str | None,
+    external_fill_observation_id: str | None,
+    external_balance_observation_id: str | None,
+    external_order_status: str | None,
+    external_fill_observations: list[ExternalFillObservation],
+    wallet_observation_ref: ExternalBalanceObservation | None,
+    created_at: datetime | None = None,
+) -> ReconciliationResult:
+    remote_quantity = _q(sum((item.size for item in external_fill_observations), Decimal("0")))
+    local_quantity = _q(order.filled_size)
+    status = classify_external_execution_reconciliation_status(
+        order=order,
+        external_order_status=external_order_status,
+        external_fill_observations=external_fill_observations,
+        wallet_observation_ref=wallet_observation_ref,
+    )
+    discrepancy = _q(abs(local_quantity - remote_quantity))
+    return ReconciliationResult(
+        reconciliation_id=stable_object_id(
+            "recon",
+            {
+                "order_id": order.order_id,
+                "reconciliation_scope": "external_execution",
+                "source_system": "polymarket_clob",
+            },
+        ),
+        wallet_id=order.wallet_id,
+        funder=order.funder,
+        signature_type=order.signature_type,
+        order_id=order.order_id,
+        ticket_id=ticket_id,
+        execution_context_id=execution_context_id,
+        asset_type="external_execution",
+        token_id=order.token_id,
+        market_id=order.market_id,
+        balance_type=BalanceType.SETTLED,
+        local_quantity=local_quantity,
+        remote_quantity=remote_quantity,
+        discrepancy=discrepancy,
+        status=status,
+        resolution=_external_resolution_for_status(status),
+        created_at=created_at or datetime.now(UTC),
+        reconciliation_scope="external_execution",
+        source_system="polymarket_clob",
+        local_state=order.status.value,
+        remote_state=external_order_status,
+        external_order_observation_id=external_order_observation_id,
+        external_fill_observation_id=external_fill_observation_id,
+        external_balance_observation_id=external_balance_observation_id,
     )
 
 
@@ -73,6 +135,9 @@ def reconciliation_journal_payload(
         "order_id": order.order_id,
         "ticket_id": ticket_id,
         "request_id": request_id,
+        "execution_context_id": result.execution_context_id,
+        "reconciliation_scope": result.reconciliation_scope,
+        "source_system": result.source_system,
         "wallet_id": result.wallet_id,
         "asset_type": result.asset_type,
         "token_id": result.token_id,
@@ -83,6 +148,11 @@ def reconciliation_journal_payload(
         "discrepancy": _fmt(result.discrepancy),
         "status": result.status.value,
         "resolution": result.resolution,
+        "local_state": result.local_state,
+        "remote_state": result.remote_state,
+        "external_order_observation_id": result.external_order_observation_id,
+        "external_fill_observation_id": result.external_fill_observation_id,
+        "external_balance_observation_id": result.external_balance_observation_id,
     }
 
 
@@ -105,6 +175,23 @@ def classify_reconciliation_status(
         return ReconciliationStatus.INVENTORY_MISMATCH
     if not _exposure_matches(order=order, reservation=reservation, positions=positions, exposure_snapshot=exposure_snapshot):
         return ReconciliationStatus.EXPOSURE_MISMATCH
+    return ReconciliationStatus.OK
+
+
+def classify_external_execution_reconciliation_status(
+    *,
+    order: Order,
+    external_order_status: str | None,
+    external_fill_observations: list[ExternalFillObservation],
+    wallet_observation_ref: ExternalBalanceObservation | None,
+) -> ReconciliationStatus:
+    if external_order_status is None or wallet_observation_ref is None:
+        return ReconciliationStatus.EXTERNAL_STATE_UNVERIFIED
+    if not _external_order_status_matches_local(order.status.value, external_order_status):
+        return ReconciliationStatus.EXTERNAL_ORDER_MISMATCH
+    external_fill_total = _q(sum((item.size for item in external_fill_observations), Decimal("0")))
+    if external_fill_total != _q(order.filled_size):
+        return ReconciliationStatus.EXTERNAL_FILL_MISMATCH
     return ReconciliationStatus.OK
 
 
@@ -145,6 +232,26 @@ def _expected_reservation_remaining(*, order: Order) -> Decimal:
     if order.side.value == "buy":
         return _q(order.remaining_size * order.price)
     return _q(order.remaining_size)
+
+
+def _external_order_status_matches_local(local_status: str, external_status: str) -> bool:
+    if external_status == "accepted":
+        return local_status in {"posted", "partial_filled", "filled"}
+    if external_status == "rejected":
+        return local_status in {"cancelled", "rejected", "expired"}
+    return False
+
+
+def _external_resolution_for_status(status: ReconciliationStatus) -> str:
+    if status is ReconciliationStatus.OK:
+        return "external_execution_match"
+    if status is ReconciliationStatus.EXTERNAL_ORDER_MISMATCH:
+        return "external_order_state_diff"
+    if status is ReconciliationStatus.EXTERNAL_FILL_MISMATCH:
+        return "external_fill_quantity_diff"
+    if status is ReconciliationStatus.EXTERNAL_STATE_UNVERIFIED:
+        return "external_state_unverified"
+    return "manual_review_required"
 
 
 def _exposure_matches(
