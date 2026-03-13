@@ -6,6 +6,28 @@ import streamlit as st
 from ui.data_access import load_market_chain_analysis_data
 
 
+def _format_detail_value(value: object) -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, float):
+        return f"{value:.4f}".rstrip("0").rstrip(".") if value != int(value) else str(int(value))
+    return str(value)
+
+
+def _format_bucket_range(min_value: object, max_value: object) -> str:
+    if min_value is None and max_value is None:
+        return "N/A"
+    return f"{_format_detail_value(min_value)} - {_format_detail_value(max_value)}"
+
+
+def _detail_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [{"字段": str(row.get("字段") or ""), "值": _format_detail_value(row.get("值"))} for row in rows]
+    )
+
+
 def show() -> None:
     payload = load_market_chain_analysis_data()
     market_watch = payload["market_watch"]
@@ -56,12 +78,15 @@ def show() -> None:
         {"字段": "Market Source", "值": discovery.get("market_source")},
         {"字段": "Selected Horizon", "值": discovery.get("selected_horizon_days")},
         {"字段": "Location", "值": rule_parse.get("location_name")},
-        {"字段": "Bucket Range", "值": f"{rule_parse.get('bucket_min_value')} - {rule_parse.get('bucket_max_value')}"},
+        {
+            "字段": "Bucket Range",
+            "值": _format_bucket_range(rule_parse.get("bucket_min_value"), rule_parse.get("bucket_max_value")),
+        },
         {"字段": "Forecast Source", "值": forecast.get("source_used")},
         {"字段": "Forecast Item Count", "值": forecast.get("forecast_item_count")},
     ]
     st.markdown("#### Discovery / Spec / Forecast")
-    st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
+    st.dataframe(_detail_frame(detail_rows), width="stretch", hide_index=True)
 
     selected_markets = discovery.get("selected_markets") or []
     if selected_markets:
@@ -122,7 +147,7 @@ def show() -> None:
         else:
             selector_left, selector_right = st.columns([1.2, 1.1])
             with selector_left:
-                st.dataframe(filtered_frame, use_container_width=True, hide_index=True)
+                st.dataframe(filtered_frame, width="stretch", hide_index=True)
             with selector_right:
                 selected_market_id = st.selectbox(
                     "Selected Market Detail",
@@ -146,7 +171,7 @@ def show() -> None:
                 st.markdown("#### Selected Market Detail")
                 st.markdown("##### 1. Discovery")
                 st.dataframe(
-                    pd.DataFrame(
+                    _detail_frame(
                         [
                             {"字段": "Market ID", "值": selected_market.get("market_id")},
                             {"字段": "Question", "值": selected_market.get("question")},
@@ -155,28 +180,33 @@ def show() -> None:
                             {"字段": "Accepting Orders", "值": selected_market.get("accepting_orders")},
                         ]
                     ),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
                 st.markdown("##### 2. Spec")
                 st.dataframe(
-                    pd.DataFrame(
+                    _detail_frame(
                         [
                             {"字段": "Location", "值": spec_detail.get("location_name")},
                             {"字段": "Station", "值": spec_detail.get("station_id")},
                             {"字段": "Metric", "值": spec_detail.get("metric")},
-                            {"字段": "Bucket Range", "值": f"{spec_detail.get('bucket_min_value')} - {spec_detail.get('bucket_max_value')}"},
+                            {
+                                "字段": "Bucket Range",
+                                "值": _format_bucket_range(
+                                    spec_detail.get("bucket_min_value"), spec_detail.get("bucket_max_value")
+                                ),
+                            },
                             {"字段": "Authoritative Source", "值": spec_detail.get("authoritative_source")},
                         ]
                     ),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
                 st.markdown("##### 3. Forecast")
                 st.dataframe(
-                    pd.DataFrame(
+                    _detail_frame(
                         [
                             {"字段": "Forecast Run", "值": forecast_detail.get("forecast_run_id")},
                             {"字段": "Source Used", "值": forecast_detail.get("source_used")},
@@ -185,21 +215,21 @@ def show() -> None:
                             {"字段": "Forecast Items", "值": forecast.get("forecast_item_count")},
                         ]
                     ),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
                 st.markdown("##### 4. Fair Value")
                 fair_values = pricing_detail.get("fair_values") or []
                 if fair_values:
-                    st.dataframe(pd.DataFrame(fair_values), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(fair_values), width="stretch", hide_index=True)
                 else:
                     st.info("当前市场没有 fair value 结果。")
 
                 st.markdown("##### 5. Opportunity")
                 signals = signals_detail.get("signals") or []
                 if signals:
-                    st.dataframe(pd.DataFrame(signals), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(signals), width="stretch", hide_index=True)
                 else:
                     st.info("当前市场没有 watch-only signal。")
 
@@ -227,21 +257,21 @@ def show() -> None:
                             },
                         ]
                     ),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
     st.markdown("#### Fair Value")
     fair_values = pricing.get("fair_values") or []
     if fair_values:
-        st.dataframe(pd.DataFrame(fair_values), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(fair_values), width="stretch", hide_index=True)
     else:
         st.info("当前没有 fair value 结果。")
 
     st.markdown("#### Watch-Only Signals")
     signals = opportunity.get("signals") or []
     if signals:
-        st.dataframe(pd.DataFrame(signals), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(signals), width="stretch", hide_index=True)
     else:
         st.info("当前没有生成 watch-only signals。")
 
@@ -264,6 +294,6 @@ def show() -> None:
             ]
             if column in market_watch.columns
         ]
-        st.dataframe(market_watch[preferred_columns].head(20), use_container_width=True, hide_index=True)
+        st.dataframe(market_watch[preferred_columns].head(20), width="stretch", hide_index=True)
 
     st.caption("默认不会展示 2021 冻结样本，除非报告明确进入 frozen fallback mode。")

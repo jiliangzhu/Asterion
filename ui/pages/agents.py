@@ -49,7 +49,7 @@ def show() -> None:
             ]
             if column in review_frame.columns
         ]
-        st.dataframe(review_frame[columns], use_container_width=True, hide_index=True)
+        st.dataframe(review_frame[columns], width="stretch", hide_index=True)
 
     st.markdown("#### Agent Work by Type")
     if review_frame.empty:
@@ -67,10 +67,10 @@ def show() -> None:
                     "latest_subjects": ", ".join(frame["subject_id"].astype(str).head(5).tolist()) if "subject_id" in frame.columns else "",
                 }
             )
-        st.dataframe(pd.DataFrame(grouped_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(grouped_rows), width="stretch", hide_index=True)
 
     st.markdown("#### Weather Agents")
-    st.dataframe(pd.DataFrame(status["agents"]), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(status["agents"]), width="stretch", hide_index=True)
 
     st.markdown("#### Runtime Boundary")
     st.info(
@@ -85,4 +85,4 @@ def show() -> None:
             {"键": "ALIBABA_API_KEY", "值": "已配置" if os.getenv("ALIBABA_API_KEY") else "未配置"},
             {"键": "ASTERION_AGENT_PROVIDER", "值": os.getenv("ASTERION_AGENT_PROVIDER", "") or "默认自动选择"},
         ]
-        st.dataframe(pd.DataFrame(env_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(env_rows), width="stretch", hide_index=True)

@@ -81,7 +81,7 @@ def show() -> None:
             ]
             if column in filtered_tickets.columns
         ]
-        st.dataframe(filtered_tickets[preferred_columns], use_container_width=True, hide_index=True)
+        st.dataframe(filtered_tickets[preferred_columns], width="stretch", hide_index=True)
 
     st.markdown("#### Live-Prereq Execution Summary")
     if filtered_live.empty:
@@ -103,7 +103,7 @@ def show() -> None:
             ]
             if column in filtered_live.columns
         ]
-        st.dataframe(filtered_live[preferred_columns], use_container_width=True, hide_index=True)
+        st.dataframe(filtered_live[preferred_columns], width="stretch", hide_index=True)
 
     lower_left, lower_right = st.columns([1.15, 1])
     with lower_left:
@@ -111,17 +111,17 @@ def show() -> None:
         if runs.empty:
             st.info("当前没有 `ui.execution_run_summary` 数据。")
         else:
-            st.dataframe(runs.head(12), use_container_width=True, hide_index=True)
+            st.dataframe(runs.head(12), width="stretch", hide_index=True)
 
     with lower_right:
         st.markdown("#### Exception Summary")
         if exceptions.empty:
             st.success("当前 execution 没有异常行。")
         else:
-            st.dataframe(exceptions.head(12), use_container_width=True, hide_index=True)
+            st.dataframe(exceptions.head(12), width="stretch", hide_index=True)
 
     st.markdown("#### Daily Ops Projection")
     if daily_ops.empty:
         st.info("当前没有 `ui.daily_ops_summary` 数据。")
     else:
-        st.dataframe(daily_ops.head(10), use_container_width=True, hide_index=True)
+        st.dataframe(daily_ops.head(10), width="stretch", hide_index=True)

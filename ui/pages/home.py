@@ -78,7 +78,7 @@ def show() -> None:
                 ]
                 if column in exception_frame.columns
             ]
-            st.dataframe(exception_frame[columns].head(8), use_container_width=True, hide_index=True)
+            st.dataframe(exception_frame[columns].head(8), width="stretch", hide_index=True)
 
     with lower_right:
         st.markdown("#### Wallet Readiness")
@@ -95,7 +95,7 @@ def show() -> None:
                 ]
                 if column in wallet_attention.columns
             ]
-            st.dataframe(wallet_attention[columns].head(6), use_container_width=True, hide_index=True)
+            st.dataframe(wallet_attention[columns].head(6), width="stretch", hide_index=True)
 
     bottom_left, bottom_right = st.columns([1.1, 1])
     with bottom_left:
@@ -125,7 +125,7 @@ def show() -> None:
                 ]
                 if column in agent_data.columns
             ]
-            st.dataframe(agent_data[columns].head(6), use_container_width=True, hide_index=True)
+            st.dataframe(agent_data[columns].head(6), width="stretch", hide_index=True)
 
     st.markdown("#### 快速入口")
     st.info("使用左侧导航可快速切换到 Markets、Execution、Agents、System。")

@@ -73,11 +73,11 @@ def show() -> None:
     if phase_table.empty:
         st.warning("当前没有 `ui.phase_readiness_summary` 数据。请先运行 `weather_live_prereq_readiness`。")
     else:
-        st.dataframe(phase_table, use_container_width=True, hide_index=True)
+        st.dataframe(phase_table, width="stretch", hide_index=True)
 
     st.markdown("#### Runtime Component Surface")
     rows = _build_component_rows(status, readiness)
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     st.markdown("#### File Paths")
     path_rows = [
@@ -87,7 +87,7 @@ def show() -> None:
         {"路径类型": "Readiness Markdown", "路径": status["readiness_report_markdown_path"]},
         {"路径类型": "Weather Smoke Report", "路径": status["weather_smoke_report_path"]},
     ]
-    st.dataframe(pd.DataFrame(path_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(path_rows), width="stretch", hide_index=True)
 
     st.caption(
         "当前 UI 保持 controlled-live boundary：`GO` 只表示 ready for controlled live rollout decision，"
