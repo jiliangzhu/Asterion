@@ -268,9 +268,12 @@ def build_rule2spec_agent_input_payload(request: Rule2SpecAgentRequest) -> dict[
 
 def parse_rule2spec_agent_output(payload: dict[str, Any], *, request: Rule2SpecAgentRequest) -> Rule2SpecAgentOutput:
     findings = _parse_findings(payload.get("findings"), default_entity_type="weather_market", default_entity_id=request.market.market_id)
-    suggested_patch_json = dict(payload.get("suggested_patch_json") or {})
+    raw_patch = dict(payload.get("suggested_patch_json") or {})
+    if "city" in raw_patch:
+        raise ValueError("suggested_patch_json contains unsupported fields")
+    suggested_patch_json = {key: value for key, value in raw_patch.items() if key in ALLOWED_RULE2SPEC_PATCH_FIELDS}
     risk_flags = [str(item) for item in payload.get("risk_flags", [])]
-    verdict = AgentVerdict(str(payload["verdict"]))
+    verdict = _normalize_verdict(payload["verdict"])
     summary = str(payload["summary"])
     confidence = float(payload["confidence"])
     human_review_required = bool(
@@ -291,6 +294,29 @@ def parse_rule2spec_agent_output(payload: dict[str, Any], *, request: Rule2SpecA
         findings=findings,
         human_review_required=human_review_required,
     )
+
+
+def _normalize_verdict(raw: Any) -> AgentVerdict:
+    text = str(raw).strip().lower()
+    if text in {"pass", "review", "block"}:
+        return AgentVerdict(text)
+    if text in {"accepted", "approved"}:
+        return AgentVerdict.PASS
+    if text in {
+        "accept_with_patches",
+        "accept-with-patches",
+        "accepted_with_changes",
+        "accepted-with-changes",
+        "acceptable_with_changes",
+        "acceptable-with-changes",
+        "needs_changes",
+        "needs_patch",
+        "needs_review",
+    }:
+        return AgentVerdict.REVIEW
+    if text in {"reject", "rejected"}:
+        return AgentVerdict.BLOCK
+    raise ValueError(f"unsupported verdict: {raw}")
 
 
 def rule2spec_output_to_json(output: Rule2SpecAgentOutput) -> dict[str, Any]:
@@ -327,6 +353,19 @@ def _parse_findings(raw: Any, *, default_entity_type: str, default_entity_id: st
     if not isinstance(raw, list):
         raise ValueError("findings must be a list")
     for item in raw:
+        if isinstance(item, str):
+            findings.append(
+                AgentFinding(
+                    finding_code="model_finding",
+                    severity="info",
+                    entity_type=default_entity_type,
+                    entity_id=default_entity_id,
+                    field_name=None,
+                    summary=item,
+                    suggested_action=None,
+                )
+            )
+            continue
         if not isinstance(item, dict):
             raise ValueError("finding entry must be an object")
         findings.append(

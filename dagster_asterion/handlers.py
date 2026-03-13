@@ -347,6 +347,8 @@ def run_weather_market_discovery_job(
     active_only: bool,
     closed: bool | None,
     archived: bool | None,
+    tag_slug: str | None = "weather",
+    recent_within_days: int | None = 14,
     run_id: str | None = None,
 ) -> ColdPathHandlerResult:
     del con
@@ -360,6 +362,8 @@ def run_weather_market_discovery_job(
         active_only=bool(active_only),
         closed=closed,
         archived=archived,
+        tag_slug=tag_slug,
+        recent_within_days=recent_within_days,
         client=client,
         queue_cfg=queue_cfg,
         run_id=request_id,

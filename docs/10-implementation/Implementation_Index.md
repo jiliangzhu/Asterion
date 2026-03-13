@@ -40,6 +40,7 @@ docs/10-implementation/
     P1_Watch_Only_Replay_Cold_Path_Runbook.md
     P2_Cold_Path_Orchestration_Job_Map_Runbook.md
     P3_Paper_Execution_Runbook.md
+    P4_Real_Weather_Chain_Smoke_Runbook.md
     P4_Controlled_Live_Smoke_Runbook.md
     P4_Controlled_Rollout_Decision_Runbook.md
   migration-ledger/
@@ -90,6 +91,7 @@ docs/10-implementation/
 - [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
 - [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
 - [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
+- [P4_Real_Weather_Chain_Smoke_Runbook.md](./runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md)
 - [P4_Controlled_Live_Smoke_Runbook.md](./runbooks/P4_Controlled_Live_Smoke_Runbook.md)
 - [P4_Controlled_Rollout_Decision_Runbook.md](./runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
 
@@ -188,17 +190,18 @@ docs/10-implementation/
 2. [P4_Implementation_Plan.md](./phase-plans/P4_Implementation_Plan.md)
 3. [P4_Closeout_Checklist.md](./checklists/P4_Closeout_Checklist.md)
 4. [P4_Controlled_Rollout_Decision_Runbook.md](./runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
-5. [P4_Controlled_Live_Smoke_Runbook.md](./runbooks/P4_Controlled_Live_Smoke_Runbook.md)
-6. [P3_Closeout_Checklist.md](./checklists/P3_Closeout_Checklist.md)
-7. [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
-8. [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
-9. [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
-10. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
-11. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
-12. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
-13. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
-14. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
-15. 对应模块的 module note
+5. [P4_Real_Weather_Chain_Smoke_Runbook.md](./runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md)
+6. [P4_Controlled_Live_Smoke_Runbook.md](./runbooks/P4_Controlled_Live_Smoke_Runbook.md)
+7. [P3_Closeout_Checklist.md](./checklists/P3_Closeout_Checklist.md)
+8. [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
+9. [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
+10. [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
+11. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
+12. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
+13. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+14. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+15. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
+16. 对应模块的 module note
 
 ---
 

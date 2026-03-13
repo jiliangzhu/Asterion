@@ -64,6 +64,52 @@ def _raw_weather_market() -> dict:
     }
 
 
+def _raw_threshold_weather_market() -> dict:
+    return {
+        "id": "mkt_weather_threshold_1",
+        "conditionId": "cond_weather_threshold_1",
+        "question": "Will the high temperature in New York's Central Park be 60°F or higher on November 2, 2021?",
+        "description": "Threshold weather market",
+        "rules": "Resolve to Yes if the observed high temperature is 60°F or higher.",
+        "slug": "nyc-high-temp-60-or-higher",
+        "active": False,
+        "closed": True,
+        "archived": False,
+        "acceptingOrders": False,
+        "enableOrderBook": False,
+        "tags": ["Weather", "Temperature"],
+        "outcomes": "[\"Yes\", \"No\"]",
+        "clobTokenIds": "[\"tok_yes_threshold\", \"tok_no_threshold\"]",
+        "closeTime": "2021-11-02T23:59:59Z",
+        "endDate": "2021-11-02T23:59:59Z",
+        "createdAt": "2021-10-28T00:00:00Z",
+        "event": {"id": "evt_weather_threshold_1", "category": "Weather"},
+    }
+
+
+def _raw_highest_range_weather_market() -> dict:
+    return {
+        "id": "mkt_weather_highest_range_1",
+        "conditionId": "cond_weather_highest_range_1",
+        "question": "Will the highest temperature in Seattle be between 36-37°F on March 13?",
+        "description": "Highest temperature weather market",
+        "rules": "Resolve to Yes if the observed highest temperature is between 36°F and 37°F.",
+        "slug": "highest-temperature-in-seattle-on-march-13-2026-36to37f",
+        "active": True,
+        "closed": False,
+        "archived": False,
+        "acceptingOrders": True,
+        "enableOrderBook": True,
+        "tags": ["Weather", "Temperature"],
+        "outcomes": "[\"Yes\", \"No\"]",
+        "clobTokenIds": "[\"tok_yes_range\", \"tok_no_range\"]",
+        "closeTime": "2026-03-13T12:00:00Z",
+        "endDate": "2026-03-13T12:00:00Z",
+        "createdAt": "2026-03-12T00:00:00Z",
+        "event": {"id": "evt_weather_highest_range_1", "category": "Weather"},
+    }
+
+
 class Rule2SpecDraftTest(unittest.TestCase):
     def test_parse_rule2spec_draft_from_weather_market(self) -> None:
         client = _FakeClient([[_raw_weather_market()]])
@@ -89,6 +135,51 @@ class Rule2SpecDraftTest(unittest.TestCase):
         self.assertEqual(draft.bucket_max_value, 59.0)
         self.assertEqual(draft.authoritative_source, "unknown")
         self.assertIn("missing_authoritative_source", draft.risk_flags)
+
+    def test_parse_rule2spec_draft_from_threshold_weather_market(self) -> None:
+        client = _FakeClient([[_raw_threshold_weather_market()]])
+        market = run_weather_market_discovery(
+            base_url="https://gamma.example",
+            markets_endpoint="/markets",
+            page_limit=100,
+            max_pages=1,
+            sleep_s=0.0,
+            active_only=False,
+            closed=None,
+            archived=None,
+            client=client,
+        ).discovered_markets[0]
+
+        draft = parse_rule2spec_draft(market)
+
+        self.assertEqual(draft.market_id, "mkt_weather_threshold_1")
+        self.assertEqual(draft.location_name, "New York's Central Park")
+        self.assertEqual(draft.metric, "temperature_max")
+        self.assertEqual(draft.unit, "fahrenheit")
+        self.assertEqual(draft.bucket_min_value, 60.0)
+        self.assertEqual(draft.bucket_max_value, 200.0)
+        self.assertIn("threshold_market_template", draft.risk_flags)
+
+    def test_parse_rule2spec_draft_from_highest_range_weather_market(self) -> None:
+        client = _FakeClient([[_raw_highest_range_weather_market()]])
+        market = run_weather_market_discovery(
+            base_url="https://gamma.example",
+            markets_endpoint="/events",
+            page_limit=100,
+            max_pages=1,
+            sleep_s=0.0,
+            active_only=True,
+            closed=False,
+            archived=False,
+            client=client,
+        ).discovered_markets[0]
+
+        draft = parse_rule2spec_draft(market)
+
+        self.assertEqual(draft.location_name, "Seattle")
+        self.assertEqual(draft.metric, "temperature_max")
+        self.assertEqual(draft.bucket_min_value, 36.0)
+        self.assertEqual(draft.bucket_max_value, 37.0)
 
     def test_build_resolution_spec_from_draft_and_station_metadata(self) -> None:
         client = _FakeClient([[_raw_weather_market()]])

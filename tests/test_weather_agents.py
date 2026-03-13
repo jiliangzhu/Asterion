@@ -343,6 +343,140 @@ class Rule2SpecAgentTest(unittest.TestCase):
         self.assertEqual(artifacts.invocation.status, AgentInvocationStatus.PARSE_ERROR)
         self.assertIsNone(artifacts.output)
 
+    def test_rule2spec_agent_accepts_string_findings(self) -> None:
+        request = Rule2SpecAgentRequest(
+            market=_weather_market(),
+            draft=_draft(),
+            current_spec=_weather_spec(),
+            station_metadata=_station_metadata(),
+            station_override_summary={"has_override": True},
+        )
+        client = FakeAgentClient(
+            responses={
+                "rule2spec": {
+                    "verdict": "review",
+                    "confidence": 0.75,
+                    "summary": "string findings are tolerated",
+                    "risk_flags": ["threshold_market_template"],
+                    "suggested_patch_json": {"station_id": "KNYC"},
+                    "findings": ["station override confirmed"],
+                    "human_review_required": True,
+                }
+            }
+        )
+        artifacts = run_rule2spec_agent_review(client, request)
+        assert artifacts.output is not None
+        self.assertEqual(artifacts.invocation.status, AgentInvocationStatus.SUCCESS)
+        finding = artifacts.output.structured_output_json["findings"][0]
+        self.assertEqual(finding["finding_code"], "model_finding")
+        self.assertEqual(finding["summary"], "station override confirmed")
+
+    def test_rule2spec_agent_filters_unknown_patch_fields(self) -> None:
+        request = Rule2SpecAgentRequest(
+            market=_weather_market(),
+            draft=_draft(),
+            current_spec=_weather_spec(),
+            station_metadata=_station_metadata(),
+            station_override_summary={"has_override": True},
+        )
+        client = FakeAgentClient(
+            responses={
+                "rule2spec": {
+                    "verdict": "review",
+                    "confidence": 0.81,
+                    "summary": "extra draft fields should be ignored",
+                    "risk_flags": [],
+                    "suggested_patch_json": {
+                        "station_id": "KNYC",
+                        "authoritative_source": "weather.com",
+                        "condition_id": "cond_weather_1",
+                        "market_id": "mkt_weather_1",
+                    },
+                    "findings": [],
+                    "human_review_required": False,
+                }
+            }
+        )
+        artifacts = run_rule2spec_agent_review(client, request)
+        assert artifacts.output is not None
+        patch = artifacts.output.structured_output_json["suggested_patch_json"]
+        self.assertEqual(set(patch), {"station_id", "authoritative_source"})
+
+    def test_rule2spec_agent_normalizes_accepted_with_changes_verdict(self) -> None:
+        request = Rule2SpecAgentRequest(
+            market=_weather_market(),
+            draft=_draft(),
+            current_spec=_weather_spec(),
+            station_metadata=_station_metadata(),
+            station_override_summary={"has_override": True},
+        )
+        client = FakeAgentClient(
+            responses={
+                "rule2spec": {
+                    "verdict": "accepted_with_changes",
+                    "confidence": 0.85,
+                    "summary": "accepted with station-first corrections",
+                    "risk_flags": ["threshold_market_template"],
+                    "suggested_patch_json": {"station_id": "KNYC"},
+                    "findings": [],
+                    "human_review_required": True,
+                }
+            }
+        )
+        artifacts = run_rule2spec_agent_review(client, request)
+        assert artifacts.output is not None
+        self.assertEqual(artifacts.output.verdict, AgentVerdict.REVIEW)
+
+    def test_rule2spec_agent_normalizes_acceptable_with_changes_verdict(self) -> None:
+        request = Rule2SpecAgentRequest(
+            market=_weather_market(),
+            draft=_draft(),
+            current_spec=_weather_spec(),
+            station_metadata=_station_metadata(),
+            station_override_summary={"has_override": True},
+        )
+        client = FakeAgentClient(
+            responses={
+                "rule2spec": {
+                    "verdict": "acceptable_with_changes",
+                    "confidence": 0.84,
+                    "summary": "acceptable with station-first corrections",
+                    "risk_flags": ["threshold_market_template"],
+                    "suggested_patch_json": {"station_id": "KNYC"},
+                    "findings": [],
+                    "human_review_required": True,
+                }
+            }
+        )
+        artifacts = run_rule2spec_agent_review(client, request)
+        assert artifacts.output is not None
+        self.assertEqual(artifacts.output.verdict, AgentVerdict.REVIEW)
+
+    def test_rule2spec_agent_normalizes_needs_patch_verdict(self) -> None:
+        request = Rule2SpecAgentRequest(
+            market=_weather_market(),
+            draft=_draft(),
+            current_spec=_weather_spec(),
+            station_metadata=_station_metadata(),
+            station_override_summary={"has_override": True},
+        )
+        client = FakeAgentClient(
+            responses={
+                "rule2spec": {
+                    "verdict": "needs_patch",
+                    "confidence": 0.73,
+                    "summary": "needs a station-first patch",
+                    "risk_flags": [],
+                    "suggested_patch_json": {"station_id": "KNYC"},
+                    "findings": [],
+                    "human_review_required": True,
+                }
+            }
+        )
+        artifacts = run_rule2spec_agent_review(client, request)
+        assert artifacts.output is not None
+        self.assertEqual(artifacts.output.verdict, AgentVerdict.REVIEW)
+
 
 class DataQaAgentTest(unittest.TestCase):
     def test_data_qa_agent_low_risk_for_match(self) -> None:

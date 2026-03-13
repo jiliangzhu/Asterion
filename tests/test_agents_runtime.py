@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
+import subprocess
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
+from unittest import mock
 
 from agents.common import (
     AgentInvocationStatus,
@@ -10,9 +16,11 @@ from agents.common import (
     AnthropicAgentClient,
     FakeAgentClient,
     OpenAICompatibleAgentClient,
+    build_agent_client_from_env,
     build_agent_invocation_record,
     stable_agent_input_hash,
 )
+import agents.common.client as client_module
 
 
 HAS_HTTPX = importlib.util.find_spec("httpx") is not None
@@ -100,6 +108,69 @@ class AgentRuntimeContractsTest(unittest.TestCase):
             client.invoke(system_prompt="", user_prompt="", input_payload_json={}, metadata={"agent_type": "resolution"}).structured_output_json["verdict"],
             "block",
         )
+
+    def test_build_agent_client_from_env_supports_qwen_aliases(self) -> None:
+        env = {
+            "ALIBABA_API_KEY": "test-aliyun-key",
+            "QWEN_MODEL": "qwen-max",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            client = build_agent_client_from_env()
+        self.assertIsInstance(client, OpenAICompatibleAgentClient)
+        self.assertEqual(client._model_name, "qwen-max")
+        self.assertEqual(client._base_url, "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+
+    def test_build_agent_client_from_env_supports_qwen_api_key_alias(self) -> None:
+        env = {
+            "QWEN_API_KEY": "test-qwen-key",
+            "QWEN_MODEL": "qwen-max",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            client = build_agent_client_from_env()
+        self.assertIsInstance(client, OpenAICompatibleAgentClient)
+        self.assertEqual(client._model_name, "qwen-max")
+        self.assertEqual(client._base_url, "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+
+    def test_load_env_file_sets_defaults_without_overriding_existing_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_file = Path(tmpdir) / ".env"
+            env_file.write_text(
+                "ALIBABA_API_KEY=file-key\nQWEN_MODEL=qwen-plus\nASTERION_AGENT_PROVIDER=openai_compatible\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"QWEN_MODEL": "qwen-max"}, clear=True):
+                client_module._load_env_file(env_file)
+                self.assertEqual(os.environ["ALIBABA_API_KEY"], "file-key")
+                self.assertEqual(os.environ["QWEN_MODEL"], "qwen-max")
+                self.assertEqual(os.environ["ASTERION_AGENT_PROVIDER"], "openai_compatible")
+
+    def test_openai_compatible_client_uses_curl_fallback_for_dashscope(self) -> None:
+        class BrokenHttpClient:
+            def post(self, *args, **kwargs):
+                raise RuntimeError("simulated httpx transport failure")
+
+        client = OpenAICompatibleAgentClient(
+            api_key="test-key",
+            model_name="qwen-max",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            http_client=BrokenHttpClient(),
+        )
+
+        completed = subprocess.CompletedProcess(
+            args=["curl"],
+            returncode=0,
+            stdout=json.dumps({"choices": [{"message": {"content": "{\"ok\": true}"}}]}),
+            stderr="",
+        )
+        with mock.patch.object(client_module.subprocess, "run", return_value=completed) as run_mock:
+            response = client.invoke(
+                system_prompt="system",
+                user_prompt="user",
+                input_payload_json={"foo": "bar"},
+                metadata={"agent_type": "rule2spec"},
+            )
+        self.assertEqual(response.structured_output_json["ok"], True)
+        self.assertTrue(run_mock.called)
 
 
 @unittest.skipUnless(HAS_HTTPX, "httpx is required for provider adapter tests")

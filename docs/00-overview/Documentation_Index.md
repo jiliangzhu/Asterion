@@ -66,6 +66,7 @@ source-of-truth：
 - `runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md`
 - `runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md`
 - `runbooks/P3_Paper_Execution_Runbook.md`
+- `runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md`
 - `runbooks/P4_Controlled_Live_Smoke_Runbook.md`
 - `runbooks/P4_Controlled_Rollout_Decision_Runbook.md`
 - `migration-ledger/AlphaDesk_Migration_Ledger.md`

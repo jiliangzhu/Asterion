@@ -43,6 +43,7 @@ Asterion/
     │   │   ├── P1_Watch_Only_Replay_Cold_Path_Runbook.md
     │   │   ├── P2_Cold_Path_Orchestration_Job_Map_Runbook.md
     │   │   ├── P3_Paper_Execution_Runbook.md
+    │   │   ├── P4_Real_Weather_Chain_Smoke_Runbook.md
     │   │   ├── P4_Controlled_Live_Smoke_Runbook.md
     │   │   └── P4_Controlled_Rollout_Decision_Runbook.md
     │   ├── migration-ledger/
@@ -86,23 +87,25 @@ Asterion/
    - 这是 `P4` 是否已关闭、是否达到 `controlled live rollout decision` 条件的 closeout 审查入口
 8. 阅读 [P4_Controlled_Rollout_Decision_Runbook.md](./docs/10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
    - 这是 `P4` closeout 后的 rollout decision operator runbook
-9. 阅读 [P3_Closeout_Checklist.md](./docs/10-implementation/checklists/P3_Closeout_Checklist.md)
+9. 阅读 [P4_Real_Weather_Chain_Smoke_Runbook.md](./docs/10-implementation/runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md)
+   - 这是 `Gamma events/官网天气页 -> spec -> forecast -> pricing -> watch-only` 的真实数据 smoke runbook；默认只抓开盘且最近的天气市场
+10. 阅读 [P3_Closeout_Checklist.md](./docs/10-implementation/checklists/P3_Closeout_Checklist.md)
    - 这是 `P3` 是否具备 closeout 条件、是否可进入 `P4 planning` 的 closeout 审查入口
-10. 阅读 [P3_Paper_Execution_Runbook.md](./docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md)
+11. 阅读 [P3_Paper_Execution_Runbook.md](./docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md)
    - 这是 `P3 paper execution` 当前 canonical operator / daily ops / readiness 运行入口
-11. 如需进入 `P4` 之前的阶段边界，再阅读 [P3_Implementation_Plan.md](./docs/10-implementation/phase-plans/P3_Implementation_Plan.md)
-12. 阅读 [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./docs/10-implementation/checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+12. 如需进入 `P4` 之前的阶段边界，再阅读 [P3_Implementation_Plan.md](./docs/10-implementation/phase-plans/P3_Implementation_Plan.md)
+13. 阅读 [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./docs/10-implementation/checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
    - 如果目标是“彻底脱离 AlphaDesk 后再建独立 Git 仓库”，这份清单是当前唯一判断依据
-13. 阅读 [P2_Closeout_Checklist.md](./docs/10-implementation/checklists/P2_Closeout_Checklist.md)
+14. 阅读 [P2_Closeout_Checklist.md](./docs/10-implementation/checklists/P2_Closeout_Checklist.md)
    - 这是 `P2` 是否已经关闭、`P3` 是否可以开工、AlphaDesk Exit Gate 是否通过的唯一关闭依据
-14. 阅读 [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./docs/10-implementation/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
+15. 阅读 [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./docs/10-implementation/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
    - 这是 `watch-only / replay / cold path` 当前 canonical 入口和 operator 读路径
-15. 阅读 [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./docs/10-implementation/runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+16. 阅读 [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./docs/10-implementation/runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
    - 这是 `P2-07` 到 `P2-09` 的 canonical job map、schedule 和 handler 入口
-16. 如需回看 `P2` 的实施顺序，再阅读 [P2_Implementation_Plan.md](./docs/10-implementation/phase-plans/P2_Implementation_Plan.md)
-17. 如需回看 `P1` 阶段计划，再阅读 [P1_Implementation_Plan.md](./docs/10-implementation/phase-plans/P1_Implementation_Plan.md)
-18. 如需回看底座建设，再阅读 [P0_Implementation_Plan.md](./docs/10-implementation/phase-plans/P0_Implementation_Plan.md)
-19. 深入阅读详细设计文档（按需）
+17. 如需回看 `P2` 的实施顺序，再阅读 [P2_Implementation_Plan.md](./docs/10-implementation/phase-plans/P2_Implementation_Plan.md)
+18. 如需回看 `P1` 阶段计划，再阅读 [P1_Implementation_Plan.md](./docs/10-implementation/phase-plans/P1_Implementation_Plan.md)
+19. 如需回看底座建设，再阅读 [P0_Implementation_Plan.md](./docs/10-implementation/phase-plans/P0_Implementation_Plan.md)
+20. 深入阅读详细设计文档（按需）
 
 ### 1.1 文档归档规则
 
@@ -141,6 +144,41 @@ source .venv/bin/activate
 python3 -m pip install -e .
 python3 -m unittest discover -s tests -v
 ```
+
+### 2.2 Operator Console 与真实天气链路
+
+当前 UI 已收口成 `Operator Console`，默认以 canonical `ui.*` read models 为主数据源；`real_weather_chain_report.json` 只作为 weather smoke 辅助视图。
+
+推荐启动方式：
+
+```bash
+cd /Users/jayzhu/web3/Asterion
+./start_asterion.sh --all
+```
+
+当前 `--all` 的行为：
+
+- 启动真实天气市场链路 loop
+- 默认启用 weather agents
+- 尝试刷新 `P4` readiness / UI lite surfaces
+- 启动 Streamlit Operator Console
+
+Weather smoke 当前默认行为：
+
+- discovery 优先走 `Gamma events weather feed`
+- 只抓 `active=true`、`closed=false`、`archived=false` 的市场
+- horizon 按 `14 -> 30 -> 60 -> 90` 自适应
+- 会批量处理所有当前开盘且能完成站点映射的市场，而不是只处理单一城市
+- `rule2spec_agent` 默认启用
+- `data_qa_agent` / `resolution_agent` 若当前链路无 canonical 输入，会明确显示 `not_run`
+
+UI 当前重点页面：
+
+- `Home`：readiness、wallet/execution 概览、市场覆盖与最近 agent activity
+- `Markets`：所有 open recent markets 的详细分析
+- `Execution`：paper execution + live-prereq 主视图
+- `Agents`：每个 agent 实际做了什么、产出了什么、是否需要人工复核
+- `System`：readiness、UI surfaces、最小 health 摘要
 
 ### 3. Weather MVP 范围
 

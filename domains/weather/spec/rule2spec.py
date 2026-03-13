@@ -70,8 +70,16 @@ FROM weather.weather_markets
 """
 
 _TEMP_RANGE_TITLE_RE = re.compile(
-    r"(?i)will the (?P<metric>high|low) temperature in (?P<location>.+?) on (?P<date>[A-Za-z]+ \d{1,2}, \d{4}) be "
-    r"(?P<min>-?\d+(?:\.\d+)?)\s*[-to]+\s*(?P<max>-?\d+(?:\.\d+)?)\s*°?\s*(?P<unit>[FC])\??"
+    r"(?i)will the (?P<metric>high(?:est)?|low(?:est)?) temperature in (?P<location>.+?)"
+    r"(?:\s+on\s+(?P<date_before>[A-Za-z]+ \d{1,2}(?:st|nd|rd|th)?(?:, \d{4})?))?"
+    r"\s+be "
+    r"(?:between\s+)?(?P<min>-?\d+(?:\.\d+)?)\s*(?:-|to)\s*(?P<max>-?\d+(?:\.\d+)?)\s*°?\s*(?P<unit>[FC])"
+    r"(?:\s+on\s+(?P<date_after>[A-Za-z]+ \d{1,2}(?:st|nd|rd|th)?(?:, \d{4})?))?\??"
+)
+_TEMP_THRESHOLD_TITLE_RE = re.compile(
+    r"(?i)will the (?P<metric>high(?:est)?|low(?:est)?) temperature in (?P<location>.+?) be "
+    r"(?P<threshold>-?\d+(?:\.\d+)?)\s*°?\s*(?P<unit>[FC])\s*or\s*(?P<direction>higher|lower)"
+    r"(?:\s+on\s+(?P<date>[A-Za-z]+ \d{1,2}(?:st|nd|rd|th)?, \d{4}))?\??"
 )
 
 
@@ -120,15 +128,39 @@ def parse_rule2spec_draft(market: WeatherMarket) -> Rule2SpecDraft:
     risk_flags: list[str] = []
     parse_confidence = 1.0
 
-    if title_match is None:
-        raise ValueError(f"unsupported_weather_market_title:{market.title}")
+    if title_match is not None:
+        metric_name = _normalize_metric_name(title_match.group("metric"))
+        location_name = title_match.group("location").strip()
+        observation_date = _parse_range_date(
+            title_match.group("date_before") or title_match.group("date_after"),
+            market.end_date,
+            market.close_time,
+        )
+        bucket_min_value = float(title_match.group("min"))
+        bucket_max_value = float(title_match.group("max"))
+        unit = "fahrenheit" if title_match.group("unit").upper() == "F" else "celsius"
+    else:
+        threshold_match = _TEMP_THRESHOLD_TITLE_RE.search(market.title)
+        if threshold_match is None:
+            raise ValueError(f"unsupported_weather_market_title:{market.title}")
+        metric_name = _normalize_metric_name(threshold_match.group("metric"))
+        location_name = threshold_match.group("location").strip()
+        observation_date = _parse_threshold_date(
+            threshold_match.group("date"),
+            market.end_date,
+            market.close_time,
+        )
+        unit = "fahrenheit" if threshold_match.group("unit").upper() == "F" else "celsius"
+        threshold = float(threshold_match.group("threshold"))
+        if threshold_match.group("direction").lower() == "higher":
+            bucket_min_value = threshold
+            bucket_max_value = _default_upper_bound(unit)
+        else:
+            bucket_min_value = _default_lower_bound(unit)
+            bucket_max_value = threshold
+        risk_flags.append("threshold_market_template")
+        parse_confidence -= 0.05
 
-    metric_name = title_match.group("metric").lower()
-    location_name = title_match.group("location").strip()
-    observation_date = datetime.strptime(title_match.group("date"), "%B %d, %Y").date()
-    bucket_min_value = float(title_match.group("min"))
-    bucket_max_value = float(title_match.group("max"))
-    unit = "fahrenheit" if title_match.group("unit").upper() == "F" else "celsius"
     metric = "temperature_max" if metric_name == "high" else "temperature_min"
     observation_window_local = "daily_max" if metric_name == "high" else "daily_min"
 
@@ -360,6 +392,52 @@ def _fallback_sources_for(authoritative_source: str) -> list[str]:
     if authoritative_source == "open-meteo":
         return ["nws"]
     return ["nws", "open-meteo"]
+
+
+def _parse_threshold_date(raw_date: str | None, end_date: datetime | None, close_time: datetime | None) -> date:
+    if raw_date:
+        normalized = re.sub(r"(\d)(st|nd|rd|th)", r"\1", raw_date)
+        return datetime.strptime(normalized, "%B %d, %Y").date()
+    if end_date is not None:
+        return end_date.date()
+    if close_time is not None:
+        return close_time.date()
+    raise ValueError("threshold weather market is missing a parseable observation date")
+
+
+def _parse_range_date(raw_date: str | None, end_date: datetime | None, close_time: datetime | None) -> date:
+    if raw_date:
+        normalized = re.sub(r"(\d)(st|nd|rd|th)", r"\1", raw_date)
+        try:
+            return datetime.strptime(normalized, "%B %d, %Y").date()
+        except ValueError:
+            pass
+        month_day = re.fullmatch(r"([A-Za-z]+)\s+(\d{1,2})", normalized)
+        if month_day:
+            source = end_date or close_time
+            if source is None:
+                raise ValueError("range weather market date missing year and no end_date/close_time available")
+            month_name, day = month_day.groups()
+            return datetime.strptime(f"{month_name} {int(day):02d}, {source.year}", "%B %d, %Y").date()
+        raise ValueError(f"unsupported range weather market date: {raw_date}")
+    if end_date is not None:
+        return end_date.date()
+    if close_time is not None:
+        return close_time.date()
+    raise ValueError("range weather market is missing a parseable observation date")
+
+
+def _normalize_metric_name(raw_metric: str) -> str:
+    lowered = raw_metric.lower()
+    return "high" if lowered.startswith("high") else "low"
+
+
+def _default_upper_bound(unit: str) -> float:
+    return 200.0 if unit == "fahrenheit" else 100.0
+
+
+def _default_lower_bound(unit: str) -> float:
+    return -100.0 if unit == "fahrenheit" else -80.0
 
 
 def _extract_rounding_rule(rules: str) -> str:

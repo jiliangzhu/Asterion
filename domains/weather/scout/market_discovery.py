@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from asterion_core.clients.gamma import extract_event_id, infer_condition_id, iter_event_dicts
@@ -58,9 +59,13 @@ def discover_weather_markets(
     active_only: bool,
     closed: bool | None,
     archived: bool | None,
+    tag_slug: str | None = None,
+    recent_within_days: int | None = None,
+    asof: datetime | None = None,
     client,
 ) -> list[WeatherMarket]:
     found: dict[str, WeatherMarket] = {}
+    now = asof or datetime.now(timezone.utc)
 
     for page in range(max_pages):
         params = {
@@ -69,16 +74,19 @@ def discover_weather_markets(
             "active": True if active_only else None,
             "closed": closed,
             "archived": archived,
+            "tag_slug": tag_slug,
         }
         url = build_url(base_url, markets_endpoint, params)
         payload = client.get_json(url, context={"endpoint": markets_endpoint, "params": params, "page": page})
-        items = extract_items(payload)
+        items = _extract_candidate_markets(payload)
         if not items:
             break
 
         for market in items:
             normalized = normalize_weather_market(market)
             if normalized is None:
+                continue
+            if not _is_recent_market(normalized, asof=now, recent_within_days=recent_within_days):
                 continue
             found.setdefault(normalized.market_id, normalized)
 
@@ -162,6 +170,9 @@ def run_weather_market_discovery(
     active_only: bool,
     closed: bool | None,
     archived: bool | None,
+    tag_slug: str | None = None,
+    recent_within_days: int | None = None,
+    asof: datetime | None = None,
     client,
     queue_cfg: WriteQueueConfig | None = None,
     run_id: str | None = None,
@@ -175,6 +186,9 @@ def run_weather_market_discovery(
         active_only=active_only,
         closed=closed,
         archived=archived,
+        tag_slug=tag_slug,
+        recent_within_days=recent_within_days,
+        asof=asof,
         client=client,
     )
     task_id = None
@@ -251,8 +265,54 @@ def _extract_tags(market: dict[str, Any]) -> list[str]:
     return deduped
 
 
+def _extract_candidate_markets(payload: Any) -> list[dict[str, Any]]:
+    items = extract_items(payload)
+    if not items:
+        return []
+    flattened: list[dict[str, Any]] = []
+    for item in items:
+        nested_markets = item.get("markets")
+        if isinstance(nested_markets, list):
+            event_summary = {
+                "id": extract_event_id(item),
+                "title": _first_non_empty(item, "title", "question", "name"),
+                "slug": _first_non_empty(item, "slug"),
+                "category": _first_non_empty(item, "category"),
+                "subcategory": _first_non_empty(item, "subcategory"),
+                "tags": item.get("tags"),
+                "description": _first_non_empty(item, "description"),
+            }
+            for market in nested_markets:
+                if not isinstance(market, dict):
+                    continue
+                merged = dict(market)
+                existing_events = iter_event_dicts(merged)
+                if existing_events:
+                    merged["events"] = [event_summary, *existing_events]
+                else:
+                    merged["event"] = event_summary
+                flattened.append(merged)
+            continue
+        flattened.append(item)
+    return flattened
+
+
 def _extract_outcomes(market: dict[str, Any]) -> list[str]:
-    return _coerce_str_list(market.get("outcomes"))
+    outcomes = _coerce_str_list(market.get("outcomes"))
+    if outcomes:
+        return outcomes
+    tokens = market.get("tokens")
+    if isinstance(tokens, list):
+        extracted: list[str] = []
+        for item in tokens:
+            if not isinstance(item, dict):
+                continue
+            outcome = _first_non_empty(item, "outcome", "name", "label")
+            if outcome:
+                extracted.append(outcome)
+        if extracted:
+            return extracted
+    return []
 
 
 def _extract_token_ids(market: dict[str, Any]) -> list[str]:
@@ -278,14 +338,44 @@ def _extract_token_ids(market: dict[str, Any]) -> list[str]:
 
 
 def _is_weather_market(*, title: str, tags: list[str], market: dict[str, Any]) -> bool:
-    if any("weather" in tag.lower() for tag in tags):
+    if any(_is_weather_tag(tag) for tag in tags):
         return True
     for event in iter_event_dicts(market):
-        for key in ("category", "subcategory"):
+        for key in ("title", "slug", "category", "subcategory", "description"):
             value = as_str(event.get(key)).lower()
-            if "weather" in value:
+            if _contains_weather_signal(value):
                 return True
-    return "weather" in title.lower() or "temperature" in title.lower()
+    return _matches_weather_title(title)
+
+
+_WEATHER_TITLE_PATTERNS = (
+    re.compile(r"(?i)\b(high(?:est)?|low(?:est)?) temperature in .+ on [A-Za-z]+ \d{1,2}\b"),
+    re.compile(r"(?i)\bwill the (high(?:est)?|low(?:est)?) temperature in .+\b"),
+    re.compile(r"(?i)\bprecipitation in .+ in [A-Za-z]+\b"),
+)
+
+
+def _matches_weather_title(title: str) -> bool:
+    lowered = title.lower()
+    if "weather" in lowered:
+        return True
+    return any(pattern.search(title) for pattern in _WEATHER_TITLE_PATTERNS)
+
+
+def _is_weather_tag(tag: str) -> bool:
+    lowered = tag.lower()
+    return "weather" in lowered or lowered in {"global temp", "temperature", "weather & science"}
+
+
+def _contains_weather_signal(value: str) -> bool:
+    lowered = value.lower()
+    return (
+        "weather" in lowered
+        or "temperature" in lowered
+        or "precipitation" in lowered
+        or "hurricane" in lowered
+        or "sea ice" in lowered
+    )
 
 
 def _derive_status(*, market: dict[str, Any], active: bool, closed: bool, archived: bool) -> str:
@@ -299,6 +389,22 @@ def _derive_status(*, market: dict[str, Any], active: bool, closed: bool, archiv
     if active:
         return "active"
     return "inactive"
+
+
+def _is_recent_market(market: WeatherMarket, *, asof: datetime, recent_within_days: int | None) -> bool:
+    if recent_within_days is None:
+        return True
+    if recent_within_days <= 0:
+        raise ValueError("recent_within_days must be positive when provided")
+    target = market.close_time or market.end_date
+    if target is None:
+        return False
+    normalized_target = _normalize_aware_utc(target)
+    normalized_asof = _normalize_aware_utc(asof)
+    if normalized_target < normalized_asof:
+        return False
+    horizon = normalized_asof + timedelta(days=int(recent_within_days))
+    return normalized_target <= horizon
 
 
 def _coerce_str_list(value: Any) -> list[str]:
@@ -370,6 +476,12 @@ def _parse_datetime(value: Any) -> datetime | None:
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _normalize_aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _to_naive_utc(value: datetime | None) -> datetime | None:

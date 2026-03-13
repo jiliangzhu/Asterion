@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
+
+
+QWEN_OPENAI_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 
 
 @dataclass(frozen=True)
@@ -162,17 +167,7 @@ class OpenAICompatibleAgentClient:
                 },
             ],
         }
-        response = self._http_client.post(
-            self._base_url,
-            headers={
-                "content-type": "application/json",
-                "authorization": f"Bearer {self._api_key}",
-            },
-            json=payload,
-            timeout=timeout_seconds,
-        )
-        response.raise_for_status()
-        raw = response.json()
+        raw = self._post_payload(payload, timeout_seconds=timeout_seconds)
         text = _extract_openai_text(raw)
         return AgentClientResponse(
             model_provider="openai_compatible",
@@ -182,13 +177,38 @@ class OpenAICompatibleAgentClient:
             output_text=text,
         )
 
+    def _post_payload(self, payload: dict[str, Any], *, timeout_seconds: float | None) -> dict[str, Any]:
+        headers = {
+            "content-type": "application/json",
+            "authorization": f"Bearer {self._api_key}",
+        }
+        try:
+            response = self._http_client.post(
+                self._base_url,
+                headers=headers,
+                json=payload,
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception:
+            if not _should_use_curl_fallback(self._base_url):
+                raise
+            return _post_json_with_curl(
+                self._base_url,
+                headers=headers,
+                payload=payload,
+                timeout_seconds=timeout_seconds,
+            )
+
 
 def build_agent_client_from_env(http_client=None) -> AgentClient:
+    _maybe_load_project_dotenv()
     provider = os.getenv("ASTERION_AGENT_PROVIDER", "").strip().lower()
     if not provider:
         if os.getenv("ASTERION_ANTHROPIC_API_KEY"):
             provider = "anthropic"
-        elif os.getenv("ASTERION_OPENAI_COMPATIBLE_API_KEY"):
+        elif os.getenv("ASTERION_OPENAI_COMPATIBLE_API_KEY") or os.getenv("ALIBABA_API_KEY") or os.getenv("QWEN_API_KEY"):
             provider = "openai_compatible"
         else:
             raise ValueError("ASTERION_AGENT_PROVIDER is required when no provider credentials are configured")
@@ -204,19 +224,60 @@ def build_agent_client_from_env(http_client=None) -> AgentClient:
             http_client=http_client,
         )
     if provider == "openai_compatible":
-        api_key = os.getenv("ASTERION_OPENAI_COMPATIBLE_API_KEY", "").strip()
-        model_name = os.getenv("ASTERION_OPENAI_COMPATIBLE_MODEL", "").strip() or os.getenv("ASTERION_AGENT_MODEL", "").strip()
+        api_key = (
+            os.getenv("ASTERION_OPENAI_COMPATIBLE_API_KEY", "").strip()
+            or os.getenv("ALIBABA_API_KEY", "").strip()
+            or os.getenv("QWEN_API_KEY", "").strip()
+        )
+        model_name = (
+            os.getenv("ASTERION_OPENAI_COMPATIBLE_MODEL", "").strip()
+            or os.getenv("ASTERION_AGENT_MODEL", "").strip()
+            or os.getenv("QWEN_MODEL", "").strip()
+        )
         if not api_key or not model_name:
-            raise ValueError("ASTERION_OPENAI_COMPATIBLE_API_KEY and ASTERION_OPENAI_COMPATIBLE_MODEL are required")
+            raise ValueError(
+                "ASTERION_OPENAI_COMPATIBLE_API_KEY/ALIBABA_API_KEY and "
+                "QWEN_API_KEY and ASTERION_OPENAI_COMPATIBLE_MODEL/ASTERION_AGENT_MODEL/QWEN_MODEL are required"
+            )
+        base_url = (
+            os.getenv("ASTERION_OPENAI_COMPATIBLE_BASE_URL")
+            or os.getenv("ALIBABA_OPENAI_BASE_URL")
+            or (QWEN_OPENAI_COMPATIBLE_BASE_URL if (os.getenv("ALIBABA_API_KEY") or os.getenv("QWEN_API_KEY")) else "")
+            or None
+        )
         return OpenAICompatibleAgentClient(
             api_key=api_key,
             model_name=model_name,
-            base_url=os.getenv("ASTERION_OPENAI_COMPATIBLE_BASE_URL") or None,
+            base_url=base_url,
             http_client=http_client,
         )
     if provider == "fake":
         return FakeAgentClient()
     raise ValueError(f"unsupported ASTERION_AGENT_PROVIDER={provider!r}")
+
+
+def _maybe_load_project_dotenv() -> None:
+    root = Path(__file__).resolve().parents[2]
+    _load_env_file(root / ".env")
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key:
+            continue
+        os.environ.setdefault(key, value)
 
 
 def _build_httpx_client():
@@ -225,6 +286,39 @@ def _build_httpx_client():
     except ModuleNotFoundError as exc:  # pragma: no cover
         raise RuntimeError("Missing dependency: httpx. Install with: pip install httpx") from exc
     return httpx.Client(timeout=30.0)
+
+
+def _should_use_curl_fallback(base_url: str | None) -> bool:
+    if not base_url:
+        return False
+    return "dashscope.aliyuncs.com" in base_url
+
+
+def _post_json_with_curl(
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout_seconds: float | None,
+) -> dict[str, Any]:
+    timeout = max(1, int(timeout_seconds or 60))
+    cmd = ["curl", "-sS", "-L", "--max-time", str(timeout)]
+    for key, value in headers.items():
+        cmd.extend(["-H", f"{key}: {value}"])
+    cmd.extend([url, "-d", json.dumps(payload, ensure_ascii=False)])
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip() or "curl request failed"
+        raise RuntimeError(stderr)
+    try:
+        raw = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("curl fallback returned non-JSON response") from exc
+    if isinstance(raw, dict) and raw.get("error"):
+        raise RuntimeError(json.dumps(raw["error"], ensure_ascii=False, sort_keys=True))
+    if not isinstance(raw, dict):
+        raise ValueError("curl fallback returned invalid JSON payload")
+    return raw
 
 
 def _compose_user_content(

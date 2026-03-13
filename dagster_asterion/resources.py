@@ -54,6 +54,7 @@ class AsterionColdPathSettings:
     write_queue_path: str
     gamma_base_url: str
     gamma_markets_endpoint: str
+    gamma_tag_slug: str | None
     gamma_page_limit: int
     gamma_max_pages: int
     gamma_sleep_s: float
@@ -102,7 +103,8 @@ class AsterionColdPathSettings:
             ddl_path=os.getenv("ASTERION_DB_DDL_PATH") or None,
             write_queue_path=os.getenv("ASTERION_WRITE_QUEUE", default_write_queue_path()),
             gamma_base_url=os.getenv("ASTERION_GAMMA_BASE_URL", "https://gamma-api.polymarket.com"),
-            gamma_markets_endpoint=os.getenv("ASTERION_GAMMA_MARKETS_ENDPOINT", "/markets"),
+            gamma_markets_endpoint=os.getenv("ASTERION_GAMMA_MARKETS_ENDPOINT", "/events"),
+            gamma_tag_slug=os.getenv("ASTERION_GAMMA_TAG_SLUG", "weather") or None,
             gamma_page_limit=int(os.getenv("ASTERION_GAMMA_PAGE_LIMIT", "100")),
             gamma_max_pages=int(os.getenv("ASTERION_GAMMA_MAX_PAGES", "5")),
             gamma_sleep_s=float(os.getenv("ASTERION_GAMMA_SLEEP_S", "0.0")),
@@ -179,6 +181,7 @@ class GammaDiscoveryRuntimeResource:
         return {
             "base_url": self.settings.gamma_base_url,
             "markets_endpoint": self.settings.gamma_markets_endpoint,
+            "tag_slug": self.settings.gamma_tag_slug,
             "page_limit": self.settings.gamma_page_limit,
             "max_pages": self.settings.gamma_max_pages,
             "sleep_s": self.settings.gamma_sleep_s,
@@ -374,6 +377,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=settings.write_queue_path,
                 gamma_base_url=settings.gamma_base_url,
                 gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_tag_slug=settings.gamma_tag_slug,
                 gamma_page_limit=settings.gamma_page_limit,
                 gamma_max_pages=settings.gamma_max_pages,
                 gamma_sleep_s=settings.gamma_sleep_s,
@@ -412,6 +416,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=self.write_queue_path,
                 gamma_base_url=settings.gamma_base_url,
                 gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_tag_slug=settings.gamma_tag_slug,
                 gamma_page_limit=settings.gamma_page_limit,
                 gamma_max_pages=settings.gamma_max_pages,
                 gamma_sleep_s=settings.gamma_sleep_s,
@@ -441,7 +446,8 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
 
     class DagsterGammaDiscoveryRuntimeResource(ConfigurableResource):
         gamma_base_url: str = "https://gamma-api.polymarket.com"
-        gamma_markets_endpoint: str = "/markets"
+        gamma_markets_endpoint: str = "/events"
+        gamma_tag_slug: str | None = "weather"
         gamma_page_limit: int = 100
         gamma_max_pages: int = 5
         gamma_sleep_s: float = 0.0
@@ -457,6 +463,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=settings.write_queue_path,
                 gamma_base_url=self.gamma_base_url,
                 gamma_markets_endpoint=self.gamma_markets_endpoint,
+                gamma_tag_slug=self.gamma_tag_slug,
                 gamma_page_limit=int(self.gamma_page_limit),
                 gamma_max_pages=int(self.gamma_max_pages),
                 gamma_sleep_s=float(self.gamma_sleep_s),
@@ -500,6 +507,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=settings.write_queue_path,
                 gamma_base_url=settings.gamma_base_url,
                 gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_tag_slug=settings.gamma_tag_slug,
                 gamma_page_limit=settings.gamma_page_limit,
                 gamma_max_pages=settings.gamma_max_pages,
                 gamma_sleep_s=settings.gamma_sleep_s,
@@ -540,6 +548,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=settings.write_queue_path,
                 gamma_base_url=settings.gamma_base_url,
                 gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_tag_slug=settings.gamma_tag_slug,
                 gamma_page_limit=settings.gamma_page_limit,
                 gamma_max_pages=settings.gamma_max_pages,
                 gamma_sleep_s=settings.gamma_sleep_s,
@@ -578,6 +587,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=settings.write_queue_path,
                 gamma_base_url=settings.gamma_base_url,
                 gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_tag_slug=settings.gamma_tag_slug,
                 gamma_page_limit=settings.gamma_page_limit,
                 gamma_max_pages=settings.gamma_max_pages,
                 gamma_sleep_s=settings.gamma_sleep_s,
@@ -616,6 +626,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=settings.write_queue_path,
                 gamma_base_url=settings.gamma_base_url,
                 gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_tag_slug=settings.gamma_tag_slug,
                 gamma_page_limit=settings.gamma_page_limit,
                 gamma_max_pages=settings.gamma_max_pages,
                 gamma_sleep_s=settings.gamma_sleep_s,
@@ -655,6 +666,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=settings.write_queue_path,
                 gamma_base_url=settings.gamma_base_url,
                 gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_tag_slug=settings.gamma_tag_slug,
                 gamma_page_limit=settings.gamma_page_limit,
                 gamma_max_pages=settings.gamma_max_pages,
                 gamma_sleep_s=settings.gamma_sleep_s,
@@ -694,6 +706,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=settings.write_queue_path,
                 gamma_base_url=settings.gamma_base_url,
                 gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_tag_slug=settings.gamma_tag_slug,
                 gamma_page_limit=settings.gamma_page_limit,
                 gamma_max_pages=settings.gamma_max_pages,
                 gamma_sleep_s=settings.gamma_sleep_s,
@@ -735,6 +748,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=settings.write_queue_path,
                 gamma_base_url=settings.gamma_base_url,
                 gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_tag_slug=settings.gamma_tag_slug,
                 gamma_page_limit=settings.gamma_page_limit,
                 gamma_max_pages=settings.gamma_max_pages,
                 gamma_sleep_s=settings.gamma_sleep_s,
@@ -774,6 +788,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=settings.write_queue_path,
                 gamma_base_url=settings.gamma_base_url,
                 gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_tag_slug=settings.gamma_tag_slug,
                 gamma_page_limit=settings.gamma_page_limit,
                 gamma_max_pages=settings.gamma_max_pages,
                 gamma_sleep_s=settings.gamma_sleep_s,
@@ -814,6 +829,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 write_queue_path=settings.write_queue_path,
                 gamma_base_url=settings.gamma_base_url,
                 gamma_markets_endpoint=settings.gamma_markets_endpoint,
+                gamma_tag_slug=settings.gamma_tag_slug,
                 gamma_page_limit=settings.gamma_page_limit,
                 gamma_max_pages=settings.gamma_max_pages,
                 gamma_sleep_s=settings.gamma_sleep_s,
@@ -873,6 +889,7 @@ def build_dagster_resource_defs(settings: AsterionColdPathSettings | None = None
         "gamma_discovery_runtime": DagsterGammaDiscoveryRuntimeResource(
             gamma_base_url=active.gamma_base_url,
             gamma_markets_endpoint=active.gamma_markets_endpoint,
+            gamma_tag_slug=active.gamma_tag_slug,
             gamma_page_limit=active.gamma_page_limit,
             gamma_max_pages=active.gamma_max_pages,
             gamma_sleep_s=active.gamma_sleep_s,

@@ -1,0 +1,60 @@
+{
+  "stations": [
+    {
+      "location_keys": ["new york's central park"],
+      "station_id": "KNYC",
+      "station_name": "Central Park",
+      "latitude": 40.7829,
+      "longitude": -73.9654,
+      "timezone": "America/New_York"
+    },
+    {
+      "location_keys": ["new york city", "nyc", "new york"],
+      "station_id": "KLGA",
+      "station_name": "LaGuardia Airport",
+      "latitude": 40.7769,
+      "longitude": -73.874,
+      "timezone": "America/New_York"
+    },
+    {
+      "location_keys": ["seattle"],
+      "station_id": "KSEA",
+      "station_name": "Seattle-Tacoma International Airport",
+      "latitude": 47.4502,
+      "longitude": -122.3088,
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "location_keys": ["atlanta"],
+      "station_id": "KATL",
+      "station_name": "Hartsfield-Jackson Atlanta International Airport",
+      "latitude": 33.6407,
+      "longitude": -84.4277,
+      "timezone": "America/New_York"
+    },
+    {
+      "location_keys": ["chicago"],
+      "station_id": "KORD",
+      "station_name": "O'Hare International Airport",
+      "latitude": 41.9742,
+      "longitude": -87.9073,
+      "timezone": "America/Chicago"
+    },
+    {
+      "location_keys": ["miami"],
+      "station_id": "KMIA",
+      "station_name": "Miami International Airport",
+      "latitude": 25.7959,
+      "longitude": -80.287,
+      "timezone": "America/New_York"
+    },
+    {
+      "location_keys": ["wellington"],
+      "station_id": "NZWN",
+      "station_name": "Wellington Airport",
+      "latitude": -41.3272,
+      "longitude": 174.805,
+      "timezone": "Pacific/Auckland"
+    }
+  ]
+}

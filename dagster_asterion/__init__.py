@@ -76,7 +76,10 @@ if importlib.util.find_spec("dagster") is not None:  # pragma: no cover - option
         resources = build_dagster_resource_defs(settings)
         return Definitions(jobs=list(jobs.values()), schedules=schedules, resources=resources)
 
-    defs = build_definitions()
+    try:
+        defs = build_definitions()
+    except Exception:  # pragma: no cover - keep pure-Python handler imports usable
+        defs = None
 else:
     def build_definitions(settings: AsterionColdPathSettings | None = None):
         return None
