@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from asterion_core.contracts import ForecastReplayDiffRecord, ForecastReplayRecord, ForecastRunRecord, stable_object_id
+from asterion_core.contracts import (
+    ForecastCalibrationSampleRecord,
+    ForecastReplayDiffRecord,
+    ForecastReplayRecord,
+    ForecastRunRecord,
+    SourceHealthSnapshotRecord,
+    stable_object_id,
+)
 from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.utils import safe_json_dumps
 from asterion_core.storage.write_queue import WriteQueueConfig
@@ -60,6 +67,35 @@ WEATHER_FORECAST_REPLAY_DIFF_COLUMNS = [
     "replayed_entity_id",
     "status",
     "diff_summary_json",
+    "created_at",
+]
+
+WEATHER_FORECAST_CALIBRATION_SAMPLE_COLUMNS = [
+    "sample_id",
+    "market_id",
+    "station_id",
+    "source",
+    "forecast_horizon_bucket",
+    "season_bucket",
+    "metric",
+    "forecast_target_time",
+    "forecast_mean",
+    "observed_value",
+    "residual",
+    "created_at",
+]
+
+WEATHER_SOURCE_HEALTH_SNAPSHOT_COLUMNS = [
+    "snapshot_id",
+    "market_id",
+    "station_id",
+    "source",
+    "latest_market_updated_at",
+    "latest_forecast_created_at",
+    "latest_snapshot_created_at",
+    "price_staleness_ms",
+    "source_freshness_status",
+    "degraded_reason_codes_json",
     "created_at",
 ]
 
@@ -159,6 +195,44 @@ def enqueue_forecast_replay_diff_upserts(
     )
 
 
+def enqueue_forecast_calibration_sample_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    samples: list[ForecastCalibrationSampleRecord],
+    run_id: str | None = None,
+) -> str | None:
+    if not samples:
+        return None
+    rows = [forecast_calibration_sample_to_row(item) for item in samples]
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="weather.forecast_calibration_samples",
+        pk_cols=["sample_id"],
+        columns=list(WEATHER_FORECAST_CALIBRATION_SAMPLE_COLUMNS),
+        rows=rows,
+        run_id=run_id,
+    )
+
+
+def enqueue_source_health_snapshot_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    snapshots: list[SourceHealthSnapshotRecord],
+    run_id: str | None = None,
+) -> str | None:
+    if not snapshots:
+        return None
+    rows = [source_health_snapshot_to_row(item) for item in snapshots]
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="weather.source_health_snapshots",
+        pk_cols=["snapshot_id"],
+        columns=list(WEATHER_SOURCE_HEALTH_SNAPSHOT_COLUMNS),
+        rows=rows,
+        run_id=run_id,
+    )
+
+
 def forecast_run_to_row(record: ForecastRunRecord, *, observed_at: datetime) -> list[Any]:
     return [
         record.run_id,
@@ -217,8 +291,47 @@ def forecast_replay_diff_to_row(record: ForecastReplayDiffRecord) -> list[Any]:
     ]
 
 
+def forecast_calibration_sample_to_row(record: ForecastCalibrationSampleRecord) -> list[Any]:
+    return [
+        record.sample_id,
+        record.market_id,
+        record.station_id,
+        record.source,
+        record.forecast_horizon_bucket,
+        record.season_bucket,
+        record.metric,
+        _sql_timestamp(record.forecast_target_time),
+        record.forecast_mean,
+        record.observed_value,
+        record.residual,
+        _sql_timestamp(record.created_at),
+    ]
+
+
+def source_health_snapshot_to_row(record: SourceHealthSnapshotRecord) -> list[Any]:
+    return [
+        record.snapshot_id,
+        record.market_id,
+        record.station_id,
+        record.source,
+        _sql_timestamp_optional(record.latest_market_updated_at),
+        _sql_timestamp_optional(record.latest_forecast_created_at),
+        _sql_timestamp_optional(record.latest_snapshot_created_at),
+        record.price_staleness_ms,
+        record.source_freshness_status,
+        safe_json_dumps(record.degraded_reason_codes),
+        _sql_timestamp(record.created_at),
+    ]
+
+
 def _sql_timestamp(value: datetime) -> str:
     normalized = value
     if normalized.tzinfo is not None:
         normalized = normalized.astimezone(UTC).replace(tzinfo=None)
     return normalized.isoformat(sep=" ", timespec="seconds")
+
+
+def _sql_timestamp_optional(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return _sql_timestamp(value)

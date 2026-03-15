@@ -33,6 +33,7 @@ class MigrationFilesTest(unittest.TestCase):
                 "0013_runtime_chain_tx_attempts.sql",
                 "0014_runtime_external_fill_observations.sql",
                 "0015_trading_external_reconciliation.sql",
+                "0016_weather_mapping_calibration_quality.sql",
             ],
         )
 
@@ -78,6 +79,9 @@ class MigrationFilesTest(unittest.TestCase):
         self.assertIn("tx_kind TEXT NOT NULL", contents["0013_runtime_chain_tx_attempts.sql"])
         self.assertIn("runtime.external_fill_observations", contents["0014_runtime_external_fill_observations.sql"])
         self.assertIn("ALTER TABLE trading.reconciliation_results ADD COLUMN IF NOT EXISTS reconciliation_scope TEXT DEFAULT 'paper_local';", contents["0015_trading_external_reconciliation.sql"])
+        self.assertIn("ALTER TABLE weather.weather_station_map ADD COLUMN IF NOT EXISTS mapping_method", contents["0016_weather_mapping_calibration_quality.sql"])
+        self.assertIn("weather.forecast_calibration_samples", contents["0016_weather_mapping_calibration_quality.sql"])
+        self.assertIn("weather.source_health_snapshots", contents["0016_weather_mapping_calibration_quality.sql"])
 
 
 @unittest.skipUnless(HAS_DUCKDB, "duckdb is required for migration application tests")
@@ -96,7 +100,7 @@ class ApplyMigrationsTest(unittest.TestCase):
                 clear=False,
             ):
                 applied = apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=str(root)))
-            self.assertEqual(len(applied), 15)
+            self.assertEqual(len(applied), 16)
 
 
 if __name__ == "__main__":

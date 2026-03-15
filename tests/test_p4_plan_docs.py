@@ -64,19 +64,19 @@ class P4PlanDocsTest(unittest.TestCase):
         self.assertIn("P4_Closeout_Checklist.md", plan)
         self.assertIn("P4_Controlled_Rollout_Decision_Runbook.md", plan)
 
-    def test_p4_docs_reflect_p4_closed_status(self) -> None:
+    def test_p4_docs_reflect_post_p4_remediation_status(self) -> None:
         expected = {
-            ROOT / "README.md": "P4 closed",
-            ROOT / "docs" / "00-overview" / "DEVELOPMENT_ROADMAP.md": "`P4` 已关闭",
-            ROOT / "docs" / "00-overview" / "Asterion_Project_Plan.md": "P4 已关闭",
+            ROOT / "README.md": "post-P4 remediation active",
+            ROOT / "docs" / "00-overview" / "DEVELOPMENT_ROADMAP.md": "post-P4 remediation",
+            ROOT / "docs" / "00-overview" / "Asterion_Project_Plan.md": "closeout pending objective verification",
         }
         missing: list[str] = []
         for path, needle in expected.items():
             text = path.read_text(encoding="utf-8")
             if needle not in text:
                 missing.append(f"{path}:{needle}")
-            if "implementation in progress" in text:
-                missing.append(f"{path}:implementation in progress")
+            if "P4 closed" in text:
+                missing.append(f"{path}:P4 closed")
         self.assertEqual(missing, [])
 
     def test_p4_docs_reference_controlled_live_smoke_runbook(self) -> None:

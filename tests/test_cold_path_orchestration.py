@@ -1151,6 +1151,13 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                 patch("dagster_asterion.handlers.evaluate_p4_live_prereq_readiness", return_value=report)
             )
             write_report = stack.enter_context(patch("dagster_asterion.handlers.write_readiness_report"))
+            write_evidence = stack.enter_context(patch("dagster_asterion.handlers.write_readiness_evidence_bundle"))
+            build_evidence = stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.build_readiness_evidence_bundle",
+                    return_value=type("ReadinessEvidenceBundleStub", (), {"blockers": [], "warnings": []})(),
+                )
+            )
             refresh_replica = stack.enter_context(
                 patch(
                     "dagster_asterion.handlers.refresh_ui_db_replica_once",
@@ -1172,17 +1179,21 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                 ui_lite_meta_path="data/ui/asterion_ui_lite.meta.json",
                 readiness_report_json_path="data/ui/asterion_readiness_p4.json",
                 readiness_report_markdown_path="data/ui/asterion_readiness_p4.md",
+                readiness_evidence_json_path="data/ui/asterion_readiness_evidence_p4.json",
                 controlled_live_smoke_policy_path="config/controlled_live_smoke.json",
                 controlled_live_capability_manifest_path="data/meta/controlled_live_capability_manifest.json",
                 run_id="run_live_prereq",
             )
         evaluate.assert_called_once()
         write_report.assert_called_once()
+        build_evidence.assert_called_once()
+        write_evidence.assert_called_once()
         refresh_replica.assert_called_once()
         build_lite.assert_called_once()
         self.assertEqual(result.metadata["target"], "p4_live_prerequisites")
         self.assertEqual(result.metadata["go_decision"], "GO")
         self.assertEqual(result.metadata["failed_gate_names"], [])
+        self.assertEqual(result.metadata["readiness_evidence_json_path"], "data/ui/asterion_readiness_evidence_p4.json")
         self.assertTrue(result.metadata["ui_lite_ok"])
 
     def test_weather_controlled_live_smoke_blocks_when_not_armed(self) -> None:
@@ -1857,6 +1868,34 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         enqueue_link.assert_called_once()
         enqueue_redeem.assert_called_once()
         self.assertEqual(result.task_ids, ["task_verify", "task_link", "task_redeem"])
+
+    def test_weather_resolution_reconciliation_enqueues_forecast_calibration_samples_when_observation_exists(self) -> None:
+        queue_cfg = WriteQueueConfig(path=":memory:")
+        with (
+            patch("dagster_asterion.handlers._load_uma_proposals_for_reconciliation", return_value=[_proposal()]),
+            patch("dagster_asterion.handlers._build_forecast_calibration_samples_for_verifications", return_value=[object()]) as build_samples,
+            patch("dagster_asterion.handlers.enqueue_settlement_verification_upserts", return_value="task_verify"),
+            patch("dagster_asterion.handlers.enqueue_forecast_calibration_sample_upserts", return_value="task_calibration") as enqueue_samples,
+            patch("dagster_asterion.handlers.enqueue_evidence_link_upserts", return_value="task_link"),
+            patch("dagster_asterion.handlers.enqueue_redeem_readiness_upserts", return_value="task_redeem"),
+        ):
+            result = run_weather_resolution_reconciliation(
+                object(),
+                queue_cfg,
+                verification_inputs=[
+                    SettlementVerificationInput(
+                        proposal_id="prop_1",
+                        expected_outcome="YES",
+                        confidence=0.95,
+                        sources_checked=["nws"],
+                        evidence_payload={"observed_value": 55},
+                    )
+                ],
+            )
+        build_samples.assert_called_once()
+        enqueue_samples.assert_called_once()
+        self.assertEqual(result.metadata["calibration_sample_count"], 1)
+        self.assertEqual(result.task_ids, ["task_verify", "task_calibration", "task_link", "task_redeem"])
 
     def test_weather_rule2spec_review_routes_to_agent_pipeline(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")

@@ -199,8 +199,8 @@ def _result_from_run(run: ForecastRunRecord) -> ForecastReplayResult:
     spec = _weather_spec()
     fair_values = build_binary_fair_values(market=market, spec=spec, forecast_run=run)
     snapshots = [
-        build_watch_only_snapshot(fair_value=fair_values[0], reference_price=0.55, threshold_bps=500),
-        build_watch_only_snapshot(fair_value=fair_values[1], reference_price=0.45, threshold_bps=500),
+        build_watch_only_snapshot(fair_value=fair_values[0], reference_price=0.55, threshold_bps=500, agent_review_status="passed"),
+        build_watch_only_snapshot(fair_value=fair_values[1], reference_price=0.45, threshold_bps=500, agent_review_status="passed"),
     ]
     return ForecastReplayResult(
         replay_id="freplay_unit",
@@ -233,7 +233,7 @@ class ForecastReplayUnitTest(unittest.TestCase):
                     decision="TAKE",
                     side="BUY",
                     rationale="unit",
-                    pricing_context={},
+                    pricing_context={"agent_review_status": "passed", "live_prereq_status": "shadow_aligned"},
                 ),
                 WatchOnlySnapshotRecord(
                     snapshot_id="snap_no",
@@ -250,7 +250,7 @@ class ForecastReplayUnitTest(unittest.TestCase):
                     decision="TAKE",
                     side="SELL",
                     rationale="unit",
-                    pricing_context={},
+                    pricing_context={"agent_review_status": "passed", "live_prereq_status": "shadow_aligned"},
                 ),
             ],
         )
@@ -469,8 +469,8 @@ def _bootstrap_weather_state(tmpdir: str) -> tuple[str, str]:
         forecast_run=run_record,
     )
     snapshots = [
-        build_watch_only_snapshot(fair_value=fair_values[0], reference_price=0.55, threshold_bps=500),
-        build_watch_only_snapshot(fair_value=fair_values[1], reference_price=0.45, threshold_bps=500),
+        build_watch_only_snapshot(fair_value=fair_values[0], reference_price=0.55, threshold_bps=500, agent_review_status="passed"),
+        build_watch_only_snapshot(fair_value=fair_values[1], reference_price=0.45, threshold_bps=500, agent_review_status="passed"),
     ]
 
     enqueue_forecast_run_upserts(queue_cfg, forecast_runs=[run_record], run_id="run_forecast")

@@ -192,11 +192,11 @@ Weather smoke 当前默认行为：
 
 UI 当前重点页面：
 
-- `Home`：决策首页，优先展示 readiness、最大 blocker、top opportunities 与最近 agent work
-- `Markets`：Opportunity Terminal，按 actionability + opportunity score 排序展示所有 open recent markets
-- `Execution`：paper execution + live-prereq 主视图
-- `Agents`：Agent Workbench，重点展示 work done、human review queue 与 runtime boundary
-- `System`：readiness、UI surfaces、最小 health 摘要
+- `Home`：Decision Center，优先展示 readiness decision、top opportunities、最大 blocker、degraded inputs 与 predicted-vs-realized 摘要
+- `Markets`：Opportunity Terminal，按 actionability + ranking score 排序展示所有 open recent markets，并补充 pricing decomposition、input integrity 与 execution reality
+- `Execution`：Execution Reality，默认展示 executed-only predicted-vs-realized 明细，并保留 live-prereq attention 视图
+- `Agents`：Exception Review，重点展示 human review queue、latest agent exceptions 与 runtime boundary
+- `System`：Readiness Evidence，优先展示 evidence bundle、capability boundary、dependency freshness 与 blockers/warnings
 
 ### 3. Weather MVP 范围
 

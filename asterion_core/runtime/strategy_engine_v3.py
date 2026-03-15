@@ -219,6 +219,7 @@ def run_strategy_engine(
         candidate_pairs,
         key=lambda item: (
             item[0].priority,
+            -abs(int(item[1].edge_bps)),
             _signal_ts_ms(item[1], signal_ts_lookup),
             item[1].market_id,
             item[1].token_id,
@@ -259,6 +260,7 @@ def run_strategy_engine(
                 size=strategy.size,
                 forecast_run_id=snapshot.run_id,
                 watch_snapshot_id=snapshot.snapshot_id,
+                pricing_context_json=dict(snapshot.pricing_context),
             )
         )
 

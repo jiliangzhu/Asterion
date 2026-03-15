@@ -25,6 +25,9 @@ WEATHER_STATION_MAP_COLUMNS = [
     "source",
     "authoritative_source",
     "is_override",
+    "mapping_method",
+    "mapping_confidence",
+    "override_reason",
     "metadata_json",
     "created_at",
     "updated_at",
@@ -45,6 +48,9 @@ class StationMappingRecord:
     source: str
     authoritative_source: str | None
     is_override: bool
+    mapping_method: str
+    mapping_confidence: float
+    override_reason: str | None
     metadata: dict[str, Any]
 
     def to_station_metadata(self) -> StationMetadata:
@@ -67,6 +73,22 @@ class StationMapper:
         location_name: str,
         authoritative_source: str,
     ) -> StationMetadata:
+        record = self.resolve_record_from_spec_inputs(
+            con,
+            market_id=market_id,
+            location_name=location_name,
+            authoritative_source=authoritative_source,
+        )
+        return record.to_station_metadata()
+
+    def resolve_record_from_spec_inputs(
+        self,
+        con,
+        *,
+        market_id: str,
+        location_name: str,
+        authoritative_source: str,
+    ) -> StationMappingRecord:
         record = self._load_preferred_mapping(
             con,
             market_id=market_id,
@@ -75,7 +97,7 @@ class StationMapper:
         )
         if record is None:
             raise LookupError(f"station mapping not found for market_id={market_id} location_name={location_name!r}")
-        return record.to_station_metadata()
+        return record
 
     def get_station_metadata(self, con, *, station_id: str) -> StationMetadata:
         row = con.execute(
@@ -93,6 +115,9 @@ class StationMapper:
                 source,
                 authoritative_source,
                 is_override,
+                mapping_method,
+                mapping_confidence,
+                override_reason,
                 metadata_json
             FROM weather.weather_station_map
             WHERE station_id = ?
@@ -130,6 +155,9 @@ class StationMapper:
                 source,
                 authoritative_source,
                 is_override,
+                mapping_method,
+                mapping_confidence,
+                override_reason,
                 metadata_json
             FROM weather.weather_station_map
             WHERE
@@ -166,6 +194,9 @@ def build_station_mapping_record(
     station_name: str | None = None,
     authoritative_source: str | None = None,
     is_override: bool = False,
+    mapping_method: str | None = None,
+    mapping_confidence: float = 1.0,
+    override_reason: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> StationMappingRecord:
     payload = {
@@ -190,6 +221,9 @@ def build_station_mapping_record(
         source=source,
         authoritative_source=authoritative_source,
         is_override=bool(is_override),
+        mapping_method=mapping_method or ("market_override" if market_id or is_override else "location_default"),
+        mapping_confidence=max(0.0, min(1.0, float(mapping_confidence))),
+        override_reason=override_reason,
         metadata=dict(metadata or {}),
     )
 
@@ -230,6 +264,9 @@ def station_mapping_to_row(mapping: StationMappingRecord, *, observed_at: dateti
         mapping.source,
         mapping.authoritative_source,
         mapping.is_override,
+        mapping.mapping_method,
+        mapping.mapping_confidence,
+        mapping.override_reason,
         safe_json_dumps(mapping.metadata),
         ts,
         ts,
@@ -237,7 +274,7 @@ def station_mapping_to_row(mapping: StationMappingRecord, *, observed_at: dateti
 
 
 def _row_to_station_mapping(row: Any) -> StationMappingRecord:
-    metadata_json = row[12]
+    metadata_json = row[15]
     if isinstance(metadata_json, str):
         try:
             metadata = json.loads(metadata_json)
@@ -258,5 +295,8 @@ def _row_to_station_mapping(row: Any) -> StationMappingRecord:
         source=row[9],
         authoritative_source=row[10],
         is_override=bool(row[11]),
+        mapping_method=str(row[12] or ("market_override" if row[1] or row[11] else "location_default")),
+        mapping_confidence=float(row[13] if row[13] is not None else 1.0),
+        override_reason=str(row[14]) if row[14] is not None else None,
         metadata=metadata,
     )

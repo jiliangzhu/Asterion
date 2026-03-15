@@ -202,6 +202,11 @@ UI 已经具备较好的 operator console 骨架，但还没有成为真正的�
 - station mapping confidence 体系
 - title/rule regression corpus
 - source freshness / degraded reason 机制
+- canonical artifacts / contracts：
+  - `weather.forecast_calibration_samples`
+  - `weather.source_health_snapshots`
+  - `weather.weather_station_map.mapping_method / mapping_confidence / override_reason`
+  - `assessment_context_json` 中的 quality / freshness / confidence 字段
 
 **明确不做**
 

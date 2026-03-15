@@ -17,6 +17,7 @@ def build_trade_ticket(
         "decision_id": decision.decision_id,
         "decision_rank": decision.decision_rank,
         "forecast_run_id": decision.forecast_run_id,
+        "pricing_context": dict(decision.pricing_context_json),
         "route_action": decision.route_action.value,
         "strategy_id": decision.strategy_id,
         "strategy_version": decision.strategy_version,

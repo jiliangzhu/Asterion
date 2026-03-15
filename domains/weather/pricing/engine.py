@@ -6,12 +6,14 @@ from typing import Any
 
 from asterion_core.contracts import (
     ForecastRunRecord,
+    OpportunityAssessment,
     WatchOnlySnapshotRecord,
     WeatherFairValueRecord,
     WeatherMarket,
     WeatherMarketSpecRecord,
     stable_object_id,
 )
+from domains.weather.opportunity import build_weather_opportunity_assessment
 
 
 def build_binary_fair_values(
@@ -62,55 +64,113 @@ def build_binary_fair_values(
 
 def build_watch_only_snapshot(
     *,
-    fair_value: WeatherFairValueRecord,
+    assessment: OpportunityAssessment | None = None,
+    fair_value: WeatherFairValueRecord | None = None,
     reference_price: float,
     threshold_bps: int,
+    accepting_orders: bool = True,
+    enable_order_book: bool | None = None,
+    fees_bps: int | None = None,
+    agent_review_status: str = "no_agent_signal",
+    live_prereq_status: str = "not_started",
     pricing_context: dict[str, Any] | None = None,
 ) -> WatchOnlySnapshotRecord:
     price = float(reference_price)
     if not (0.0 <= price <= 1.0):
         raise ValueError("reference_price must be between 0 and 1")
     threshold = max(0, int(threshold_bps))
-    edge_bps = int(round((fair_value.fair_value - price) * 10_000))
+    if assessment is None:
+        if fair_value is None:
+            raise ValueError("assessment or fair_value is required")
+        effective_pricing_context = dict(pricing_context or {})
+        assessment = build_weather_opportunity_assessment(
+            market_id=fair_value.market_id,
+            token_id=fair_value.token_id,
+            outcome=fair_value.outcome,
+            reference_price=price,
+            model_fair_value=fair_value.fair_value,
+            accepting_orders=accepting_orders,
+            enable_order_book=enable_order_book,
+            threshold_bps=threshold,
+            fees_bps=fees_bps,
+            agent_review_status=agent_review_status,
+            live_prereq_status=live_prereq_status,
+            confidence_score=float(fair_value.confidence) * 100.0,
+            mapping_confidence=float(effective_pricing_context.get("mapping_confidence") or 1.0),
+            price_staleness_ms=int(effective_pricing_context.get("price_staleness_ms") or 0),
+            source_freshness_status=str(effective_pricing_context.get("source_freshness_status") or "fresh"),
+            spread_bps=int(effective_pricing_context.get("spread_bps") or 0) or None,
+            source_context=effective_pricing_context,
+        )
+    edge_bps = int(assessment.edge_bps_executable)
 
-    if edge_bps > threshold:
+    if assessment.actionability_status == "actionable" and edge_bps > threshold:
         decision = "TAKE"
         side = "BUY"
-        rationale = f"market_price={price:.4f} below fair_value={fair_value.fair_value:.4f}"
-    elif edge_bps < -threshold:
+        rationale = (
+            f"market_price={price:.4f} below execution_adjusted_fair_value="
+            f"{assessment.execution_adjusted_fair_value:.4f}"
+        )
+    elif assessment.actionability_status == "actionable" and edge_bps < -threshold:
         decision = "TAKE"
         side = "SELL"
-        rationale = f"market_price={price:.4f} above fair_value={fair_value.fair_value:.4f}"
+        rationale = (
+            f"market_price={price:.4f} above execution_adjusted_fair_value="
+            f"{assessment.execution_adjusted_fair_value:.4f}"
+        )
     else:
         decision = "NO_TRADE"
         side = "HOLD"
-        rationale = f"edge_bps={edge_bps} within threshold_bps={threshold}"
+        rationale = (
+            f"actionability_status={assessment.actionability_status}, "
+            f"edge_bps={edge_bps}, threshold_bps={threshold}"
+        )
 
-    context = {
-        "confidence": fair_value.confidence,
-        "edge_bps": edge_bps,
-        "reference_price": price,
-        "threshold_bps": threshold,
-    }
+    context = dict(assessment.assessment_context_json)
+    context.update(
+        {
+            "confidence": context.get("confidence_score"),
+            "decision": decision,
+            "edge_bps": edge_bps,
+            "fair_value": assessment.execution_adjusted_fair_value,
+            "model_fair_value": assessment.model_fair_value,
+            "outcome": assessment.outcome,
+            "reference_price": price,
+            "threshold_bps": threshold,
+        }
+    )
     if pricing_context:
         context.update(pricing_context)
+    fair_value_id = fair_value.fair_value_id if fair_value is not None else stable_object_id(
+        "fval",
+        {
+            "assessment_id": assessment.assessment_id,
+            "condition_id": "",
+            "outcome": assessment.outcome,
+            "token_id": assessment.token_id,
+        },
+    )
+    run_id = fair_value.run_id if fair_value is not None else str(context.get("forecast_run_id") or context.get("run_id") or "")
+    market_id = fair_value.market_id if fair_value is not None else assessment.market_id
+    condition_id = fair_value.condition_id if fair_value is not None else str(context.get("condition_id") or "")
     return WatchOnlySnapshotRecord(
         snapshot_id=stable_object_id(
             "wsnap",
             {
-                "fair_value_id": fair_value.fair_value_id,
+                "fair_value_id": fair_value_id,
                 "reference_price": price,
                 "threshold_bps": threshold,
+                "assessment_id": assessment.assessment_id,
             },
         ),
-        fair_value_id=fair_value.fair_value_id,
-        run_id=fair_value.run_id,
-        market_id=fair_value.market_id,
-        condition_id=fair_value.condition_id,
-        token_id=fair_value.token_id,
-        outcome=fair_value.outcome,
+        fair_value_id=fair_value_id,
+        run_id=run_id,
+        market_id=market_id,
+        condition_id=condition_id,
+        token_id=assessment.token_id,
+        outcome=assessment.outcome,
         reference_price=price,
-        fair_value=fair_value.fair_value,
+        fair_value=assessment.execution_adjusted_fair_value,
         edge_bps=edge_bps,
         threshold_bps=threshold,
         decision=decision,

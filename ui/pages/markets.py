@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import streamlit as st
 
@@ -78,8 +80,13 @@ def _build_market_table_rows(
                 "question": row.get("question"),
                 "best_side": row.get("best_side"),
                 "edge_bps": row.get("edge_bps"),
+                "edge_bps_model": row.get("edge_bps_model"),
                 "opportunity_score": row.get("opportunity_score"),
+                "ranking_score": row.get("ranking_score"),
                 "liquidity_proxy": row.get("liquidity_proxy"),
+                "mapping_confidence": row.get("mapping_confidence"),
+                "source_freshness_status": row.get("source_freshness_status"),
+                "market_quality_status": row.get("market_quality_status"),
                 "agent_review_status": row.get("agent_review_status") or row.get("rule2spec_status"),
                 "actionability_status": row.get("actionability_status") or ("review_required" if row.get("rule2spec_status") else "no_trade"),
                 "accepting_orders": row.get("accepting_orders"),
@@ -122,9 +129,9 @@ def show() -> None:
     with top1:
         st.metric("Actionable Markets", int(len(actionable.index)), delta=f"open={len(display_rows.index)}")
     with top2:
-        st.metric("Top Opportunity Score", _format_value(top_row.get("opportunity_score")), delta=_format_value(top_row.get("location_name")))
+        st.metric("Top Opportunity Score", _format_value(top_row.get("ranking_score") or top_row.get("opportunity_score")), delta=_format_value(top_row.get("location_name")))
     with top3:
-        st.metric("Highest Edge", _format_value(pd.to_numeric(opportunities["edge_bps"], errors="coerce").max()) if ("edge_bps" in opportunities.columns and not opportunities.empty) else "0", delta="bps")
+        st.metric("Highest Edge", _format_value(pd.to_numeric(opportunities["edge_bps"], errors="coerce").abs().max()) if ("edge_bps" in opportunities.columns and not opportunities.empty) else "0", delta="bps")
     with top4:
         liquidity_ready = int(((pd.to_numeric(opportunities["liquidity_proxy"], errors="coerce").fillna(0) >= 60.0) & (opportunities["accepting_orders"] == True)).sum()) if ({"liquidity_proxy", "accepting_orders"} <= set(opportunities.columns)) else 0  # noqa: E712
         st.metric("Liquidity-Ready Markets", liquidity_ready, delta=discovery.get("market_source") or payload.get("market_opportunity_source"))
@@ -163,8 +170,12 @@ def show() -> None:
                     "question",
                     "best_side",
                     "edge_bps",
+                    "edge_bps_model",
                     "opportunity_score",
                     "liquidity_proxy",
+                    "mapping_confidence",
+                    "source_freshness_status",
+                    "market_quality_status",
                     "agent_review_status",
                     "actionability_status",
                     "forecast_status",
@@ -186,8 +197,12 @@ def show() -> None:
                         {"字段": "Location", "值": top_display_row.get("location_name")},
                         {"字段": "Question", "值": top_display_row.get("question")},
                         {"字段": "Best Side", "值": top_display_row.get("best_side")},
-                        {"字段": "Edge (bps)", "值": top_display_row.get("edge_bps")},
-                        {"字段": "Opportunity Score", "值": top_display_row.get("opportunity_score")},
+                        {"字段": "Executable Edge (bps)", "值": top_display_row.get("edge_bps")},
+                        {"字段": "Model Edge (bps)", "值": top_display_row.get("edge_bps_model")},
+                        {"字段": "Mapping Confidence", "值": top_display_row.get("mapping_confidence")},
+                        {"字段": "Source Freshness", "值": top_display_row.get("source_freshness_status")},
+                        {"字段": "Quality Status", "值": top_display_row.get("market_quality_status")},
+                        {"字段": "Ranking Score", "值": top_display_row.get("ranking_score") or top_display_row.get("opportunity_score")},
                         {"字段": "Actionability", "值": top_display_row.get("actionability_status")},
                     ]
                 ),
@@ -241,8 +256,13 @@ def show() -> None:
                 "question",
                 "best_side",
                 "edge_bps",
+                "edge_bps_model",
                 "opportunity_score",
+                "ranking_score",
                 "liquidity_proxy",
+                "mapping_confidence",
+                "source_freshness_status",
+                "market_quality_status",
                 "agent_review_status",
                 "actionability_status",
             ]
@@ -279,9 +299,12 @@ def show() -> None:
             _detail_frame(
                 [
                     {"字段": "Actionability", "值": selected_market.get("actionability_status")},
-                    {"字段": "Opportunity Score", "值": selected_market.get("opportunity_score")},
+                    {"字段": "Ranking Score", "值": selected_market.get("ranking_score") or selected_market.get("opportunity_score")},
+                    {"字段": "Expected Value Score", "值": selected_market.get("expected_value_score")},
+                    {"字段": "Expected PnL Score", "值": selected_market.get("expected_pnl_score")},
                     {"字段": "Best Side", "值": selected_market.get("best_side")},
                     {"字段": "Best Decision", "值": selected_market.get("best_decision")},
+                    {"字段": "Quality Status", "值": selected_market.get("market_quality_status")},
                     {"字段": "Agent Review", "值": selected_market.get("agent_review_status")},
                 ]
             ),
@@ -297,6 +320,7 @@ def show() -> None:
                     {"字段": "Question", "值": selected_market.get("question")},
                     {"字段": "Location", "值": selected_market.get("location_name") or spec_detail.get("location_name")},
                     {"字段": "Station", "值": selected_market.get("station_id") or spec_detail.get("station_id")},
+                    {"字段": "Mapping Confidence", "值": selected_market.get("mapping_confidence")},
                     {"字段": "Close Time", "值": selected_market.get("market_close_time") or selected_market.get("close_time")},
                     {"字段": "Accepting Orders", "值": selected_market.get("accepting_orders")},
                 ]
@@ -310,10 +334,16 @@ def show() -> None:
             _detail_frame(
                 [
                     {"字段": "Market Price", "值": selected_market.get("market_price")},
-                    {"字段": "Fair Value", "值": selected_market.get("fair_value")},
-                    {"字段": "Edge (bps)", "值": selected_market.get("edge_bps")},
+                    {"字段": "Model Fair Value", "值": selected_market.get("model_fair_value")},
+                    {"字段": "Execution-Adjusted Fair Value", "值": selected_market.get("execution_adjusted_fair_value") or selected_market.get("fair_value")},
+                    {"字段": "Model Edge (bps)", "值": selected_market.get("edge_bps_model")},
+                    {"字段": "Executable Edge (bps)", "值": selected_market.get("edge_bps_executable") or selected_market.get("edge_bps")},
+                    {"字段": "Fees (bps)", "值": selected_market.get("fees_bps")},
+                    {"字段": "Slippage (bps)", "值": selected_market.get("slippage_bps")},
+                    {"字段": "Liquidity Penalty (bps)", "值": selected_market.get("liquidity_penalty_bps")},
+                    {"字段": "Fill Probability", "值": selected_market.get("fill_probability")},
                     {"字段": "Liquidity Proxy", "值": selected_market.get("liquidity_proxy")},
-                    {"字段": "Confidence Proxy", "值": selected_market.get("confidence_proxy")},
+                    {"字段": "Confidence Score", "值": selected_market.get("confidence_score") or selected_market.get("confidence_proxy")},
                 ]
             ),
             width="stretch",
@@ -323,16 +353,56 @@ def show() -> None:
         if fair_values:
             st.dataframe(pd.DataFrame(fair_values), width="stretch", hide_index=True)
 
+        st.markdown("#### Input Integrity")
+        st.dataframe(
+            _detail_frame(
+                [
+                    {"字段": "Source Freshness", "值": selected_market.get("source_freshness_status")},
+                    {"字段": "Price Staleness (ms)", "值": selected_market.get("price_staleness_ms")},
+                    {"字段": "Mapping Confidence", "值": selected_market.get("mapping_confidence")},
+                    {"字段": "Market Quality Status", "值": selected_market.get("market_quality_status")},
+                    {"字段": "Forecast Status", "值": selected_market.get("forecast_status") or forecast_detail.get("status")},
+                    {"字段": "Forecast Source", "值": forecast_detail.get("source_used") or selected_market.get("latest_run_source")},
+                    {"字段": "Forecast Items", "值": forecast_detail.get("forecast_item_count")},
+                    {"字段": "Authoritative Source", "值": spec_detail.get("authoritative_source")},
+                    {"字段": "Threshold (bps)", "值": selected_market.get("threshold_bps")},
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+        st.markdown("#### Execution Reality")
+        executed_evidence = selected_market.get("executed_evidence") or {}
+        if not executed_evidence.get("has_executed_evidence"):
+            st.info("no executed evidence yet")
+        else:
+            st.dataframe(
+                _detail_frame(
+                    [
+                        {"字段": "Latest Ticket", "值": executed_evidence.get("latest_ticket_id")},
+                        {"字段": "Latest Order", "值": executed_evidence.get("latest_order_id")},
+                        {"字段": "Predicted Edge (bps)", "值": executed_evidence.get("predicted_edge_bps")},
+                        {"字段": "Expected Fill Price", "值": executed_evidence.get("expected_fill_price")},
+                        {"字段": "Realized Fill Price", "值": executed_evidence.get("realized_fill_price")},
+                        {"字段": "Resolution Value", "值": executed_evidence.get("resolution_value")},
+                        {"字段": "Realized PnL", "值": executed_evidence.get("realized_pnl")},
+                        {"字段": "Post-Trade Error", "值": executed_evidence.get("post_trade_error")},
+                        {"字段": "Source Disagreement", "值": executed_evidence.get("source_disagreement")},
+                        {"字段": "Evaluation Status", "值": executed_evidence.get("evaluation_status")},
+                    ]
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+
         st.markdown("#### Execution Readiness")
         st.dataframe(
             _detail_frame(
                 [
                     {"字段": "Live-Prereq", "值": selected_market.get("live_prereq_status")},
-                    {"字段": "Forecast Status", "值": selected_market.get("forecast_status") or forecast_detail.get("status")},
-                    {"字段": "Threshold (bps)", "值": selected_market.get("threshold_bps")},
-                    {"字段": "Forecast Source", "值": forecast_detail.get("source_used") or selected_market.get("latest_run_source")},
-                    {"字段": "Forecast Items", "值": forecast_detail.get("forecast_item_count")},
-                    {"字段": "Authoritative Source", "值": spec_detail.get("authoritative_source")},
+                    {"字段": "Accepting Orders", "值": selected_market.get("accepting_orders")},
+                    {"字段": "Best Side", "值": selected_market.get("best_side")},
                 ]
             ),
             width="stretch",

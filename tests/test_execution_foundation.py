@@ -221,6 +221,7 @@ class TicketAndOrderHandoffTest(unittest.TestCase):
         self.assertEqual(ticket_a.provenance_json["forecast_run_id"], "frun_weather_1")
         self.assertEqual(ticket_a.provenance_json["watch_snapshot_id"], "snap_yes")
         self.assertEqual(ticket_a.provenance_json["strategy_id"], "weather_primary")
+        self.assertEqual(ticket_a.provenance_json["pricing_context"]["signal_ts_ms"], 0)
 
         bound_ticket = bind_trade_ticket_handoff(
             ticket_a,

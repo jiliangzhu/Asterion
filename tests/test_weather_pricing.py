@@ -244,11 +244,18 @@ class WeatherPricingUnitTest(unittest.TestCase):
             fair_value=fair_value,
             reference_price=0.55,
             threshold_bps=500,
+            accepting_orders=True,
+            enable_order_book=True,
+            agent_review_status="passed",
             pricing_context={"source": "unit_test"},
         )
         self.assertEqual(snapshot.decision, "TAKE")
         self.assertEqual(snapshot.side, "BUY")
         self.assertGreater(snapshot.edge_bps, 0)
+        self.assertIn("model_fair_value", snapshot.pricing_context)
+        self.assertIn("edge_bps_model", snapshot.pricing_context)
+        self.assertIn("edge_bps_executable", snapshot.pricing_context)
+        self.assertLess(snapshot.fair_value, fair_value.fair_value)
 
 
 @unittest.skipUnless(HAS_DUCKDB, "duckdb is required for weather pricing tests")
@@ -413,12 +420,18 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
                     fair_value=yes_value,
                     reference_price=0.72,
                     threshold_bps=300,
+                    accepting_orders=bool(loaded_market.accepting_orders),
+                    enable_order_book=loaded_market.enable_order_book,
+                    agent_review_status="passed",
                     pricing_context={"forecast_run_id": loaded_run.run_id, "source_trace": loaded_run.source_trace},
                 ),
                 build_watch_only_snapshot(
                     fair_value=no_value,
                     reference_price=0.20,
                     threshold_bps=300,
+                    accepting_orders=bool(loaded_market.accepting_orders),
+                    enable_order_book=loaded_market.enable_order_book,
+                    agent_review_status="passed",
                     pricing_context={"forecast_run_id": loaded_run.run_id, "source_trace": loaded_run.source_trace},
                 ),
             ]
@@ -671,6 +684,9 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
                     fair_value=next(item for item in fair_values if item.outcome == "YES"),
                     reference_price=0.55,
                     threshold_bps=300,
+                    accepting_orders=bool(loaded_market.accepting_orders),
+                    enable_order_book=loaded_market.enable_order_book,
+                    agent_review_status="passed",
                     pricing_context={"forecast_run_id": loaded_run.run_id},
                 )
             ]

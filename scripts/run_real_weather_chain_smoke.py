@@ -23,7 +23,16 @@ from asterion_core.storage.write_queue import WriteQueueConfig
 from asterion_core.storage.writerd import process_one
 from dagster_asterion.handlers import run_weather_forecast_refresh, run_weather_spec_sync
 from dagster_asterion.resources import HttpJsonClient
-from domains.weather.forecast import AdapterRouter, ForecastService, InMemoryForecastCache, NWSAdapter, OpenMeteoAdapter
+from domains.weather.forecast import (
+    AdapterRouter,
+    DuckDBForecastStdDevProvider,
+    ForecastService,
+    InMemoryForecastCache,
+    NWSAdapter,
+    OpenMeteoAdapter,
+    enqueue_source_health_snapshot_upserts,
+)
+from domains.weather.opportunity import build_source_health_snapshot
 from domains.weather.pricing import (
     build_binary_fair_values,
     build_watch_only_snapshot,
@@ -221,6 +230,7 @@ def main() -> int:
         "weather.weather_station_map",
         "weather.weather_market_specs",
         "weather.weather_forecast_runs",
+        "weather.source_health_snapshots",
         "weather.weather_fair_values",
         "weather.weather_watch_only_snapshots",
         "agent.invocations",
@@ -247,6 +257,9 @@ def main() -> int:
             source="operator_override",
             authoritative_source="weather.com",
             is_override=True,
+            mapping_method="market_override",
+            mapping_confidence=1.0,
+            override_reason="real_weather_chain_smoke",
             metadata={"reason": "real_weather_chain_smoke"},
         )
         for market in target_markets
@@ -307,6 +320,12 @@ def main() -> int:
                     "question": target_market.title,
                     "location_name": spec.location_name,
                     "station_id": spec.station_id,
+                    "mapping_confidence": getattr(StationMapper().resolve_record_from_spec_inputs(
+                        con,
+                        market_id=target_market.market_id,
+                        location_name=spec.location_name,
+                        authoritative_source=spec.authoritative_source,
+                    ), "mapping_confidence", 1.0),
                     "bucket_min_value": spec.bucket_min_value,
                     "bucket_max_value": spec.bucket_max_value,
                     "metric": spec.metric,
@@ -323,11 +342,12 @@ def main() -> int:
                 }
             )
     forecast_http_client = RetryHttpClient(HttpJsonClient(timeout_seconds=10.0), max_retries=3, initial_delay=0.5)
+    std_dev_provider = DuckDBForecastStdDevProvider(db_path)
     forecast_service = ForecastService(
         adapter_router=AdapterRouter(
             [
-                NWSAdapter(client=forecast_http_client),
-                OpenMeteoAdapter(client=forecast_http_client),
+                NWSAdapter(client=forecast_http_client, std_dev_provider=std_dev_provider),
+                OpenMeteoAdapter(client=forecast_http_client, std_dev_provider=std_dev_provider),
             ]
         ),
         cache=InMemoryForecastCache(),
@@ -338,6 +358,7 @@ def main() -> int:
     forecast_error_by_market: dict[str, str] = {}
     fair_values = []
     snapshots = []
+    source_health_snapshots = []
 
     for target_market in target_markets:
         try:
@@ -356,6 +377,16 @@ def main() -> int:
             with reader_connection(db_path) as con:
                 market = load_weather_market(con, market_id=target_market.market_id)
                 spec = load_weather_market_spec(con, market_id=target_market.market_id)
+                station_mapping = StationMapper().resolve_record_from_spec_inputs(
+                    con,
+                    market_id=target_market.market_id,
+                    location_name=spec.location_name,
+                    authoritative_source=spec.authoritative_source,
+                )
+                market_updated_at_row = con.execute(
+                    "SELECT updated_at FROM weather.weather_markets WHERE market_id = ?",
+                    [target_market.market_id],
+                ).fetchone()
                 forecast_run_id = con.execute(
                     """
                     SELECT run_id
@@ -367,6 +398,18 @@ def main() -> int:
                     [target_market.market_id],
                 ).fetchone()[0]
                 forecast_run = load_forecast_run(con, run_id=forecast_run_id)
+                forecast_created_at_row = con.execute(
+                    "SELECT created_at FROM weather.weather_forecast_runs WHERE run_id = ?",
+                    [forecast_run_id],
+                ).fetchone()
+            source_health_snapshot = build_source_health_snapshot(
+                market_id=target_market.market_id,
+                station_id=spec.station_id,
+                source=forecast_run.source,
+                market_updated_at=market_updated_at_row[0] if market_updated_at_row else None,
+                forecast_created_at=forecast_created_at_row[0] if forecast_created_at_row else forecast_target_time,
+                snapshot_created_at=datetime.now(UTC).replace(tzinfo=None),
+            )
             current_fair_values = build_binary_fair_values(market=market, spec=spec, forecast_run=forecast_run)
             market_prices = extract_market_prices(market.raw_market)
             current_snapshots = [
@@ -374,9 +417,16 @@ def main() -> int:
                     fair_value=item,
                     reference_price=market_prices[item.outcome],
                     threshold_bps=TARGET_THRESHOLD_BPS,
+                    accepting_orders=bool(market.accepting_orders),
+                    enable_order_book=market.enable_order_book,
                     pricing_context={
                         "forecast_run_id": forecast_run.run_id,
+                        "mapping_confidence": station_mapping.mapping_confidence,
+                        "mapping_method": station_mapping.mapping_method,
+                        "market_quality_reason_codes": list(source_health_snapshot.degraded_reason_codes),
+                        "price_staleness_ms": source_health_snapshot.price_staleness_ms,
                         "source_requested": TARGET_SOURCE_REQUESTED,
+                        "source_freshness_status": source_health_snapshot.source_freshness_status,
                         "source_used": forecast_run.source,
                         "source_trace": forecast_run.source_trace,
                     },
@@ -386,6 +436,7 @@ def main() -> int:
             forecast_success_market_ids.append(target_market.market_id)
             fair_values.extend(current_fair_values)
             snapshots.extend(current_snapshots)
+            source_health_snapshots.append(source_health_snapshot)
             per_market_forecasts.append(
                 {
                     "market_id": target_market.market_id,
@@ -425,7 +476,25 @@ def main() -> int:
                             "outcome": item.outcome,
                             "reference_price": item.reference_price,
                             "fair_value": item.fair_value,
+                            "model_fair_value": (item.pricing_context or {}).get("model_fair_value"),
+                            "execution_adjusted_fair_value": (item.pricing_context or {}).get("execution_adjusted_fair_value", item.fair_value),
+                            "edge_bps_model": (item.pricing_context or {}).get("edge_bps_model"),
                             "edge_bps": item.edge_bps,
+                            "edge_bps_executable": (item.pricing_context or {}).get("edge_bps_executable", item.edge_bps),
+                            "fees_bps": (item.pricing_context or {}).get("fees_bps"),
+                            "slippage_bps": (item.pricing_context or {}).get("slippage_bps"),
+                            "fill_probability": (item.pricing_context or {}).get("fill_probability"),
+                            "depth_proxy": (item.pricing_context or {}).get("depth_proxy"),
+                            "liquidity_penalty_bps": (item.pricing_context or {}).get("liquidity_penalty_bps"),
+                            "mapping_confidence": (item.pricing_context or {}).get("mapping_confidence"),
+                            "source_freshness_status": (item.pricing_context or {}).get("source_freshness_status"),
+                            "price_staleness_ms": (item.pricing_context or {}).get("price_staleness_ms"),
+                            "market_quality_status": (item.pricing_context or {}).get("market_quality_status"),
+                            "market_quality_reason_codes": (item.pricing_context or {}).get("market_quality_reason_codes"),
+                            "expected_value_score": (item.pricing_context or {}).get("expected_value_score"),
+                            "expected_pnl_score": (item.pricing_context or {}).get("expected_pnl_score"),
+                            "ranking_score": (item.pricing_context or {}).get("ranking_score"),
+                            "actionability_status": (item.pricing_context or {}).get("actionability_status"),
                             "threshold_bps": item.threshold_bps,
                             "decision": item.decision,
                             "side": item.side,
@@ -442,7 +511,9 @@ def main() -> int:
         enqueue_fair_value_upserts(queue_cfg, fair_values=fair_values, run_id="run_fair_values")
     if snapshots:
         enqueue_watch_only_snapshot_upserts(queue_cfg, snapshots=snapshots, run_id="run_watch_only")
-    if fair_values or snapshots:
+    if source_health_snapshots:
+        enqueue_source_health_snapshot_upserts(queue_cfg, snapshots=source_health_snapshots, run_id="run_source_health")
+    if fair_values or snapshots or source_health_snapshots:
         drain_queue(queue_path=queue_path, db_path=db_path, allow_tables=allow_tables)
 
     counts = collect_counts(db_path)
@@ -486,6 +557,7 @@ def main() -> int:
                     "accepting_orders": market.accepting_orders,
                     "location_name": next((item["location_name"] for item in per_market_specs if item["market_id"] == market.market_id), None),
                     "station_id": next((item["station_id"] for item in per_market_specs if item["market_id"] == market.market_id), None),
+                    "mapping_confidence": next((item.get("mapping_confidence") for item in per_market_specs if item["market_id"] == market.market_id), None),
                     "rule2spec_status": next((item["rule2spec_status"] for item in per_market_specs if item["market_id"] == market.market_id), None),
                     "rule2spec_verdict": next((item["rule2spec_verdict"] for item in per_market_specs if item["market_id"] == market.market_id), None),
                     "rule2spec_summary": next((item["rule2spec_summary"] for item in per_market_specs if item["market_id"] == market.market_id), None),

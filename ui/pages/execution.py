@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 from ui.data_access import load_execution_console_data
@@ -23,42 +24,61 @@ def show() -> None:
     exceptions = payload["exceptions"]
     live_prereq = payload["live_prereq"]
     daily_ops = payload["daily_ops"]
+    predicted_vs_realized = payload["predicted_vs_realized"]
 
-    st.markdown("### Execution & Live-Prereq")
-    st.caption("Execution 页面优先突出 attention queue，再下沉 run / ticket 明细，避免 operator 在长表里找问题。")
+    st.markdown("### Execution Reality")
+    st.caption("Execution 页面现在优先展示 executed-only predicted-vs-realized 闭环，再下沉 live-prereq 和 ticket attention。")
 
     top1, top2, top3, top4 = st.columns(4)
+    resolved_count = int((predicted_vs_realized["evaluation_status"] == "resolved").sum()) if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0
+    pending_resolution_count = int((predicted_vs_realized["evaluation_status"] == "pending_resolution").sum()) if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0
     with top1:
-        st.metric("Ticket Rows", len(tickets.index), delta="ui.execution_ticket_summary")
+        st.metric("Resolved Trades", resolved_count, delta="executed-only")
     with top2:
-        aligned_count = int((live_prereq["live_prereq_execution_status"] == "shadow_aligned").sum()) if "live_prereq_execution_status" in live_prereq.columns else 0
-        st.metric("Shadow Aligned", aligned_count, delta="live-prereq execution")
+        st.metric("Pending Resolution", pending_resolution_count, delta="needs settlement")
     with top3:
-        st.metric("Exception Rows", len(exceptions.index), delta="execution_exception_summary")
+        avg_predicted_edge = float(pd.to_numeric(predicted_vs_realized["predicted_edge_bps"], errors="coerce").dropna().mean()) if ("predicted_edge_bps" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0.0
+        st.metric("Avg Predicted Edge", f"{avg_predicted_edge:.1f}", delta="bps")
     with top4:
-        preview_count = int((live_prereq["latest_submit_mode"] == "dry_run").sum()) if "latest_submit_mode" in live_prereq.columns else 0
-        st.metric("Preview Only", preview_count, delta="submit dry-run")
+        resolved_frame = predicted_vs_realized[predicted_vs_realized["evaluation_status"] == "resolved"] if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else predicted_vs_realized.iloc[0:0]
+        avg_realized_pnl = float(pd.to_numeric(resolved_frame["realized_pnl"], errors="coerce").dropna().mean()) if ("realized_pnl" in resolved_frame.columns and not resolved_frame.empty) else 0.0
+        st.metric("Avg Realized PnL", f"{avg_realized_pnl:.4f}", delta="resolved only")
 
-    filters = st.columns(3)
+    filters = st.columns(4)
     wallet_values = ["全部"]
     market_values = ["全部"]
-    live_values = ["全部"]
-    if "wallet_id" in tickets.columns:
-        wallet_values += sorted({str(value) for value in tickets["wallet_id"].dropna().tolist()})
-    if "market_id" in tickets.columns:
-        market_values += sorted({str(value) for value in tickets["market_id"].dropna().tolist()})
-    if "live_prereq_execution_status" in live_prereq.columns:
-        live_values += sorted({str(value) for value in live_prereq["live_prereq_execution_status"].dropna().tolist()})
+    strategy_values = ["全部"]
+    evaluation_values = ["全部"]
+    source_frame = predicted_vs_realized if not predicted_vs_realized.empty else tickets
+    if "wallet_id" in source_frame.columns:
+        wallet_values += sorted({str(value) for value in source_frame["wallet_id"].dropna().tolist()})
+    if "market_id" in source_frame.columns:
+        market_values += sorted({str(value) for value in source_frame["market_id"].dropna().tolist()})
+    if "strategy_id" in source_frame.columns:
+        strategy_values += sorted({str(value) for value in source_frame["strategy_id"].dropna().tolist()})
+    if "evaluation_status" in predicted_vs_realized.columns:
+        evaluation_values += sorted({str(value) for value in predicted_vs_realized["evaluation_status"].dropna().tolist()})
 
     with filters[0]:
         selected_wallet = st.selectbox("Wallet", wallet_values)
     with filters[1]:
         selected_market = st.selectbox("Market", market_values)
     with filters[2]:
-        selected_live_status = st.selectbox("Live-Prereq Status", live_values)
+        selected_strategy = st.selectbox("Strategy", strategy_values)
+    with filters[3]:
+        selected_evaluation = st.selectbox("Evaluation", evaluation_values)
 
-    filtered_tickets = _filter_frame(tickets, wallet=selected_wallet, market=selected_market, live_status=selected_live_status)
-    filtered_live = _filter_frame(live_prereq, wallet=selected_wallet, market=selected_market, live_status=selected_live_status)
+    filtered_tickets = _filter_frame(tickets, wallet=selected_wallet, market=selected_market, live_status="全部")
+    filtered_live = _filter_frame(live_prereq, wallet=selected_wallet, market=selected_market, live_status="全部")
+    filtered_pvr = predicted_vs_realized.copy()
+    if selected_wallet != "全部" and "wallet_id" in filtered_pvr.columns:
+        filtered_pvr = filtered_pvr[filtered_pvr["wallet_id"] == selected_wallet]
+    if selected_market != "全部" and "market_id" in filtered_pvr.columns:
+        filtered_pvr = filtered_pvr[filtered_pvr["market_id"] == selected_market]
+    if selected_strategy != "全部" and "strategy_id" in filtered_pvr.columns:
+        filtered_pvr = filtered_pvr[filtered_pvr["strategy_id"] == selected_strategy]
+    if selected_evaluation != "全部" and "evaluation_status" in filtered_pvr.columns:
+        filtered_pvr = filtered_pvr[filtered_pvr["evaluation_status"] == selected_evaluation]
     if not filtered_tickets.empty:
         operator_attention = (
             filtered_tickets["operator_attention_required"] == True  # noqa: E712
@@ -73,6 +93,31 @@ def show() -> None:
         attention_tickets = filtered_tickets[operator_attention | live_attention] if ("operator_attention_required" in filtered_tickets.columns or "live_prereq_attention_required" in filtered_tickets.columns) else filtered_tickets.iloc[0:0]
     else:
         attention_tickets = filtered_tickets
+
+    st.markdown("#### Predicted vs Realized")
+    if filtered_pvr.empty:
+        st.info("当前没有 executed-only predicted-vs-realized rows。")
+    else:
+        columns = [
+            column
+            for column in [
+                "ticket_id",
+                "wallet_id",
+                "strategy_id",
+                "market_id",
+                "predicted_edge_bps",
+                "expected_fill_price",
+                "realized_fill_price",
+                "realized_pnl",
+                "resolution_value",
+                "post_trade_error",
+                "source_disagreement",
+                "evaluation_status",
+                "latest_fill_at",
+            ]
+            if column in filtered_pvr.columns
+        ]
+        st.dataframe(filtered_pvr[columns], width="stretch", hide_index=True)
 
     st.markdown("#### Attention Queue")
     if attention_tickets.empty and exceptions.empty:
@@ -121,6 +166,25 @@ def show() -> None:
             st.dataframe(filtered_tickets[preferred_columns], width="stretch", hide_index=True)
 
     with details_right:
+        st.markdown("#### Executed Evidence Detail")
+        if filtered_pvr.empty:
+            st.info("当前筛选下没有 executed evidence。")
+        else:
+            latest = filtered_pvr.iloc[0]
+            detail_rows = pd.DataFrame(
+                [
+                    {"字段": "Ticket", "值": latest.get("ticket_id")},
+                    {"字段": "Predicted Edge (bps)", "值": latest.get("predicted_edge_bps")},
+                    {"字段": "Expected Fill Price", "值": latest.get("expected_fill_price")},
+                    {"字段": "Realized Fill Price", "值": latest.get("realized_fill_price")},
+                    {"字段": "Resolution Value", "值": latest.get("resolution_value")},
+                    {"字段": "Realized PnL", "值": latest.get("realized_pnl")},
+                    {"字段": "Post-Trade Error", "值": latest.get("post_trade_error")},
+                    {"字段": "Source Disagreement", "值": latest.get("source_disagreement")},
+                ]
+            )
+            st.dataframe(detail_rows, width="stretch", hide_index=True)
+
         st.markdown("#### Live-Prereq Execution")
         if filtered_live.empty:
             st.info("当前没有进入 signer / submitter / external reconciliation 的 execution rows。")

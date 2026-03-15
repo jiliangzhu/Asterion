@@ -26,9 +26,12 @@ def show() -> None:
     largest_blocker = overview["largest_blocker"]
     recent_agent = overview["recent_agent_summary"]
     agent_data = overview["agent_data"]["frame"]
+    evidence = overview["readiness_evidence"]
+    predicted_vs_realized = overview["predicted_vs_realized_snapshot"]
+    degraded_inputs = overview["degraded_inputs"]
 
     st.markdown("### Decision Console")
-    st.caption("首页现在优先回答 readiness、最大 blocker、当前最佳机会，以及最近 agent 实际产出。")
+    st.caption("首页优先回答 readiness、最大 blocker、当前最佳机会，以及已执行交易的 predicted-vs-realized 现实。")
 
     degraded_surfaces = [
         f"{name}: {payload['label']}"
@@ -84,7 +87,12 @@ def show() -> None:
                     "question",
                     "best_side",
                     "edge_bps",
+                    "edge_bps_model",
                     "opportunity_score",
+                    "ranking_score",
+                    "mapping_confidence",
+                    "source_freshness_status",
+                    "market_quality_status",
                     "agent_review_status",
                     "actionability_status",
                 ]
@@ -93,14 +101,26 @@ def show() -> None:
             st.dataframe(top_opportunities[columns].head(5), width="stretch", hide_index=True)
 
     with row2_right:
-        st.markdown("#### Recent Agent Work")
-        st.metric("Agent Rows", metrics["agent_activity_count"], delta=f"review_required={metrics['agent_review_required_count']}")
-        if recent_agent.get("agent_type"):
-            st.write(f"最新 agent: `{recent_agent['agent_type']}`")
-            st.write(f"verdict: `{recent_agent.get('verdict') or 'n/a'}`")
-            st.caption(recent_agent.get("summary") or "最近一次 agent 产出暂无摘要。")
+        st.markdown("#### Predicted vs Realized Snapshot")
+        st.metric("Resolved Trades", metrics["resolved_trade_count"], delta=f"pending={metrics['pending_resolution_count']}")
+        st.write(f"avg predicted edge: `{_format_metric_value(metrics['avg_predicted_edge_bps'])} bps`")
+        st.write(f"avg realized pnl: `{_format_metric_value(metrics['avg_realized_pnl'])}`")
+        if predicted_vs_realized.empty:
+            st.info("当前还没有 executed-only predicted-vs-realized rows。")
         else:
-            st.info("当前没有 agent activity；运行 weather smoke 后会在这里显示最新产出。")
+            columns = [
+                column
+                for column in [
+                    "ticket_id",
+                    "market_id",
+                    "predicted_edge_bps",
+                    "realized_pnl",
+                    "evaluation_status",
+                    "source_disagreement",
+                ]
+                if column in predicted_vs_realized.columns
+            ]
+            st.dataframe(predicted_vs_realized[columns], width="stretch", hide_index=True)
 
     row3_left, row3_right = st.columns([1.1, 1.1])
     with row3_left:
@@ -112,6 +132,15 @@ def show() -> None:
             st.caption("当前没有命中的开盘近期天气市场。")
 
     with row3_right:
+        st.markdown("#### Degraded Inputs")
+        if degraded_inputs:
+            for item in degraded_inputs[:8]:
+                st.write(f"- `{item}`")
+        else:
+            st.success("当前没有 degraded input summary。")
+
+    row4_left, row4_right = st.columns([1.1, 1.1])
+    with row4_left:
         st.markdown("#### Wallet & Execution Attention")
         execution_exceptions = execution["exceptions"]
         if wallet_attention.empty and execution_exceptions.empty:
@@ -129,8 +158,25 @@ def show() -> None:
             combined = pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
             st.dataframe(combined, width="stretch", hide_index=True)
 
+    with row4_right:
+        st.markdown("#### Readiness Evidence")
+        st.metric("Evidence Bundle", "READY" if evidence.get("exists") else "MISSING", delta=evidence.get("capability_manifest_status") or "missing")
+        if evidence.get("blockers"):
+            st.error(" / ".join(str(item) for item in evidence.get("blockers")[:4]))
+        elif evidence.get("warnings"):
+            st.warning(" / ".join(str(item) for item in evidence.get("warnings")[:4]))
+        else:
+            st.success(evidence.get("decision_reason") or "当前 evidence bundle 无 blocker。")
+
+    st.markdown("#### Recent Agent Work")
+    st.metric("Agent Rows", metrics["agent_activity_count"], delta=f"review_required={metrics['agent_review_required_count']}")
+    if recent_agent.get("agent_type"):
+        st.write(f"最新 agent: `{recent_agent['agent_type']}`")
+        st.write(f"verdict: `{recent_agent.get('verdict') or 'n/a'}`")
+        st.caption(recent_agent.get("summary") or "最近一次 agent 产出暂无摘要。")
+    else:
+        st.info("当前没有 agent activity；运行 weather smoke 后会在这里显示最新产出。")
     if not agent_data.empty:
-        st.markdown("#### Recent Agent Activity")
         columns = [
             column
             for column in [

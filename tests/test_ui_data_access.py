@@ -17,6 +17,8 @@ from ui.data_access import (
     load_market_opportunity_data,
     load_home_decision_snapshot,
     load_operator_surface_status,
+    load_predicted_vs_realized_data,
+    load_readiness_evidence_bundle,
     load_readiness_summary,
     load_system_runtime_status,
     load_ui_lite_snapshot,
@@ -258,7 +260,16 @@ class UiDataAccessTest(unittest.TestCase):
                             "markets": [
                                 {
                                     "market_id": "mkt_seattle_1",
-                                    "signals": [{"outcome": "YES", "decision": "TAKE"}],
+                                    "signals": [
+                                        {
+                                            "outcome": "YES",
+                                            "decision": "TAKE",
+                                            "mapping_confidence": 0.92,
+                                            "source_freshness_status": "fresh",
+                                            "price_staleness_ms": 60000,
+                                            "market_quality_status": "review_required",
+                                        }
+                                    ],
                                 }
                             ]
                         },
@@ -280,6 +291,149 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(payload["market_rows"][0]["forecast"]["source_used"], "nws")
             self.assertEqual(payload["market_rows"][0]["actionability_status"], "review_required")
             self.assertEqual(payload["market_opportunity_source"], "smoke_report")
+
+    def test_load_readiness_evidence_bundle_prefers_ui_lite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ui_lite.duckdb"
+            con = duckdb.connect(str(db_path))
+            try:
+                con.execute("CREATE SCHEMA ui")
+                con.execute(
+                    """
+                    CREATE TABLE ui.readiness_evidence_summary(
+                        generated_at TIMESTAMP,
+                        go_decision TEXT,
+                        decision_reason TEXT,
+                        capability_manifest_status TEXT,
+                        capability_boundary_summary_json TEXT,
+                        dependency_statuses_json TEXT,
+                        artifact_freshness_json TEXT,
+                        latest_verification_summary_json TEXT,
+                        stale_dependencies_json TEXT,
+                        blockers_json TEXT,
+                        warnings_json TEXT,
+                        evidence_paths_json TEXT
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO ui.readiness_evidence_summary VALUES (
+                        '2026-03-15 10:00:00',
+                        'GO',
+                        'ready with evidence',
+                        'valid',
+                        '{"manual_only": true}',
+                        '{"ui_lite_db":{"status":"ok"}}',
+                        '{"ui_lite_db":{"age_seconds":12}}',
+                        '{"gate_count":1}',
+                        '[]',
+                        '[]',
+                        '["warn:smoke"]',
+                        '{"readiness_report_json":"data/ui/asterion_readiness_p4.json"}'
+                    )
+                    """
+                )
+            finally:
+                con.close()
+            with patch.dict(os.environ, {"ASTERION_UI_LITE_DB_PATH": str(db_path)}, clear=False):
+                payload = load_readiness_evidence_bundle()
+            self.assertEqual(payload["source"], "ui_lite")
+            self.assertEqual(payload["go_decision"], "GO")
+            self.assertEqual(payload["capability_boundary_summary"]["manual_only"], True)
+            self.assertEqual(payload["warnings"], ["warn:smoke"])
+
+    def test_load_predicted_vs_realized_data_and_market_executed_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ui_lite.duckdb"
+            con = duckdb.connect(str(db_path))
+            try:
+                con.execute("CREATE SCHEMA ui")
+                con.execute(
+                    """
+                    CREATE TABLE ui.market_opportunity_summary(
+                        market_id TEXT,
+                        question TEXT,
+                        location_name TEXT,
+                        market_close_time TIMESTAMP,
+                        accepting_orders BOOLEAN,
+                        best_side TEXT,
+                        market_price DOUBLE,
+                        fair_value DOUBLE,
+                        edge_bps DOUBLE,
+                        liquidity_proxy DOUBLE,
+                        confidence_proxy DOUBLE,
+                        agent_review_status TEXT,
+                        live_prereq_status TEXT,
+                        opportunity_bucket TEXT,
+                        opportunity_score DOUBLE,
+                        actionability_status TEXT,
+                        ranking_score DOUBLE
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO ui.market_opportunity_summary VALUES
+                    ('mkt_1','Seattle weather','Seattle','2026-03-15 12:00:00',true,'BUY',0.41,0.68,900,80,75,'passed','shadow_aligned','medium_edge',88.0,'actionable',88.0)
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE ui.predicted_vs_realized_summary(
+                        ticket_id TEXT,
+                        run_id TEXT,
+                        wallet_id TEXT,
+                        strategy_id TEXT,
+                        market_id TEXT,
+                        order_id TEXT,
+                        outcome TEXT,
+                        predicted_edge_bps DOUBLE,
+                        expected_fill_price DOUBLE,
+                        realized_fill_price DOUBLE,
+                        filled_quantity DOUBLE,
+                        realized_notional DOUBLE,
+                        realized_pnl DOUBLE,
+                        resolution_value DOUBLE,
+                        forecast_freshness TEXT,
+                        source_disagreement TEXT,
+                        post_trade_error DOUBLE,
+                        evaluation_status TEXT,
+                        latest_fill_at TIMESTAMP,
+                        latest_resolution_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO ui.predicted_vs_realized_summary VALUES (
+                        'tt_1','run_1','wallet_weather_1','weather_primary','mkt_1','ord_1','YES',
+                        900,0.40,0.42,10,4.2,5.7,1.0,'fresh','different',4.8,'resolved',
+                        '2026-03-15 09:01:00','2026-03-15 10:00:00'
+                    )
+                    """
+                )
+            finally:
+                con.close()
+            report_path = Path(tmpdir) / "real_weather_chain_report.json"
+            report_path.write_text(
+                json.dumps({"market_discovery": {"selected_markets": [{"market_id": "mkt_1", "question": "Seattle weather"}]}}),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(db_path),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                },
+                clear=False,
+            ):
+                predicted = load_predicted_vs_realized_data()
+                market_payload = load_market_chain_analysis_data()
+            self.assertEqual(predicted["frame"].iloc[0]["ticket_id"], "tt_1")
+            executed = market_payload["market_rows"][0]["executed_evidence"]
+            self.assertEqual(executed["evaluation_status"], "resolved")
+            self.assertEqual(executed["source_disagreement"], "different")
 
     def test_load_market_chain_analysis_data_keeps_discovered_rows_when_pricing_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -395,6 +549,37 @@ class UiDataAccessTest(unittest.TestCase):
                     """
                     INSERT INTO weather.weather_market_specs VALUES
                     ('mkt_sea_1','cond_1','Seattle','KSEA',47.6,-122.3,'America/Los_Angeles','2026-03-15','daily_max','temperature_max','fahrenheit',36,37,'weather.com','[]','identity',true,'spec_1',0.9,'[]','2026-03-15 00:00:00','2026-03-15 00:00:00')
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE weather.weather_station_map(
+                        map_id TEXT, market_id TEXT, location_name TEXT, location_key TEXT, station_id TEXT, station_name TEXT,
+                        latitude DOUBLE, longitude DOUBLE, timezone TEXT, source TEXT, authoritative_source TEXT, is_override BOOLEAN,
+                        mapping_method TEXT, mapping_confidence DOUBLE, override_reason TEXT, metadata_json TEXT,
+                        created_at TIMESTAMP, updated_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO weather.weather_station_map VALUES
+                    ('map_1','mkt_sea_1','Seattle','seattle','KSEA','Seattle TAC',47.6,-122.3,'America/Los_Angeles','operator_override','weather.com',TRUE,'market_override',0.92,'runtime_fixture','{}','2026-03-15 00:00:00','2026-03-15 00:00:00')
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE weather.source_health_snapshots(
+                        snapshot_id TEXT, market_id TEXT, station_id TEXT, source TEXT, market_updated_at TIMESTAMP,
+                        forecast_created_at TIMESTAMP, snapshot_created_at TIMESTAMP, price_staleness_ms BIGINT,
+                        forecast_age_ms BIGINT, source_freshness_status TEXT, degraded_reason_codes_json TEXT, created_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO weather.source_health_snapshots VALUES
+                    ('health_1','mkt_sea_1','KSEA','openmeteo','2026-03-15 00:00:00','2026-03-15 00:10:00','2026-03-15 00:11:00',600000,60000,'fresh','[]','2026-03-15 00:11:00')
                     """
                 )
                 con.execute(
@@ -642,6 +827,37 @@ class UiDataAccessTest(unittest.TestCase):
                     """
                     INSERT INTO weather.weather_market_specs VALUES
                     ('mkt_1','Seattle','KSEA','weather.com','temperature_max',36,37,'daily_max')
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE weather.weather_station_map(
+                        map_id TEXT, market_id TEXT, location_name TEXT, location_key TEXT, station_id TEXT, station_name TEXT,
+                        latitude DOUBLE, longitude DOUBLE, timezone TEXT, source TEXT, authoritative_source TEXT, is_override BOOLEAN,
+                        mapping_method TEXT, mapping_confidence DOUBLE, override_reason TEXT, metadata_json TEXT,
+                        created_at TIMESTAMP, updated_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO weather.weather_station_map VALUES
+                    ('map_1','mkt_1','Seattle','seattle','KSEA','Seattle TAC',47.6,-122.3,'America/Los_Angeles','operator_override','weather.com',TRUE,'market_override',0.88,'runtime_fixture','{}','2026-03-15 09:00:00','2026-03-15 09:00:00')
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE weather.source_health_snapshots(
+                        snapshot_id TEXT, market_id TEXT, station_id TEXT, source TEXT, market_updated_at TIMESTAMP,
+                        forecast_created_at TIMESTAMP, snapshot_created_at TIMESTAMP, price_staleness_ms BIGINT,
+                        forecast_age_ms BIGINT, source_freshness_status TEXT, degraded_reason_codes_json TEXT, created_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO weather.source_health_snapshots VALUES
+                    ('health_1','mkt_1','KSEA','openmeteo','2026-03-15 09:00:00','2026-03-15 09:00:00','2026-03-15 09:01:00',120000,60000,'fresh','[]','2026-03-15 09:01:00')
                     """
                 )
                 con.execute(

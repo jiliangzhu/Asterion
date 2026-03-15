@@ -113,8 +113,10 @@ from asterion_core.journal import (
 from asterion_core.monitoring import (
     ReadinessReport,
     ReadinessConfig,
+    build_readiness_evidence_bundle,
     load_controlled_live_capability_manifest,
     evaluate_p4_live_prereq_readiness,
+    write_readiness_evidence_bundle,
     write_readiness_report,
 )
 from asterion_core.risk import (
@@ -157,9 +159,11 @@ from asterion_core.ui import build_ui_lite_db_once, refresh_ui_db_replica_once
 from domains.weather.forecast import (
     AdapterRouter,
     ForecastService,
+    build_forecast_calibration_sample,
     build_forecast_replay_diff_records,
     build_forecast_replay_record,
     build_forecast_run_record,
+    enqueue_forecast_calibration_sample_upserts,
     enqueue_forecast_replay_diff_upserts,
     enqueue_forecast_replay_upserts,
     enqueue_forecast_run_upserts,
@@ -168,7 +172,12 @@ from domains.weather.forecast import (
     run_forecast_replay,
 )
 from domains.weather.forecast.service import ForecastCache
-from domains.weather.pricing import enqueue_fair_value_upserts, enqueue_watch_only_snapshot_upserts, load_weather_market_spec
+from domains.weather.pricing import (
+    enqueue_fair_value_upserts,
+    enqueue_watch_only_snapshot_upserts,
+    load_forecast_run,
+    load_weather_market_spec,
+)
 from domains.weather.scout import run_weather_market_discovery
 from domains.weather.resolution import (
     RedeemScheduler,
@@ -1285,6 +1294,7 @@ def run_weather_live_prereq_readiness_job(
     ui_lite_meta_path: str,
     readiness_report_json_path: str,
     readiness_report_markdown_path: str,
+    readiness_evidence_json_path: str,
     controlled_live_smoke_policy_path: str,
     controlled_live_capability_manifest_path: str,
     run_id: str | None = None,
@@ -1313,6 +1323,22 @@ def run_weather_live_prereq_readiness_job(
         json_path=readiness_report_json_path,
         markdown_path=readiness_report_markdown_path,
     )
+    evidence_bundle = build_readiness_evidence_bundle(
+        report,
+        readiness_report_json_path=readiness_report_json_path,
+        readiness_report_markdown_path=readiness_report_markdown_path,
+        capability_manifest_path=controlled_live_capability_manifest_path,
+        ui_lite_db_path=ui_lite_db_path,
+        ui_lite_meta_path=ui_lite_meta_path,
+        ui_replica_db_path=ui_replica_db_path,
+        ui_replica_meta_path=ui_replica_meta_path,
+        weather_smoke_report_path=os.getenv("ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH", "data/dev/real_weather_chain/real_weather_chain_report.json"),
+        weather_smoke_db_path=os.getenv("ASTERION_REAL_WEATHER_CHAIN_DB_PATH", "data/dev/real_weather_chain/real_weather_chain.duckdb"),
+    )
+    write_readiness_evidence_bundle(
+        evidence_bundle,
+        json_path=readiness_evidence_json_path,
+    )
     replica_result = refresh_ui_db_replica_once(
         src_db_path=db_path,
         dst_db_path=ui_replica_db_path,
@@ -1323,6 +1349,7 @@ def run_weather_live_prereq_readiness_job(
         dst_db_path=ui_lite_db_path,
         meta_path=ui_lite_meta_path,
         readiness_report_json_path=readiness_report_json_path,
+        readiness_evidence_json_path=readiness_evidence_json_path,
     )
     failed_gate_names = [item.gate_name for item in report.gate_results if not item.passed]
     return ColdPathHandlerResult(
@@ -1338,8 +1365,11 @@ def run_weather_live_prereq_readiness_job(
             "failed_gate_names": failed_gate_names,
             "report_json_path": readiness_report_json_path,
             "report_markdown_path": readiness_report_markdown_path,
+            "readiness_evidence_json_path": readiness_evidence_json_path,
             "capability_manifest_path": report.capability_manifest_path,
             "capability_manifest_status": report.capability_manifest_status,
+            "evidence_blocker_count": len(evidence_bundle.blockers),
+            "evidence_warning_count": len(evidence_bundle.warnings),
             "ui_replica_ok": replica_result.ok,
             "ui_lite_ok": lite_result.ok,
         },
@@ -1577,9 +1607,23 @@ def run_weather_resolution_reconciliation(
         )
         for proposal in proposals
     ]
+    calibration_samples = _build_forecast_calibration_samples_for_verifications(
+        con,
+        verification_inputs=verification_inputs or [],
+        proposal_map=proposal_map,
+    )
 
     task_ids: list[str] = []
     task_ids.extend(_append_task_id(enqueue_settlement_verification_upserts(queue_cfg, verifications=verifications, run_id=request_id)))
+    task_ids.extend(
+        _append_task_id(
+            enqueue_forecast_calibration_sample_upserts(
+                queue_cfg,
+                samples=calibration_samples,
+                run_id=request_id,
+            )
+        )
+    )
     task_ids.extend(_append_task_id(enqueue_evidence_link_upserts(queue_cfg, links=links, run_id=request_id)))
     task_ids.extend(_append_task_id(enqueue_redeem_readiness_upserts(queue_cfg, suggestions=suggestions, run_id=request_id)))
     return ColdPathHandlerResult(
@@ -1590,6 +1634,7 @@ def run_weather_resolution_reconciliation(
         metadata={
             "proposal_count": len(proposals),
             "verification_count": len(verifications),
+            "calibration_sample_count": len(calibration_samples),
         },
     )
 
@@ -2363,6 +2408,52 @@ def _load_uma_proposals_for_reconciliation(con, *, proposal_ids: list[str] | Non
         )
         for row in rows
     ]
+
+
+def _build_forecast_calibration_samples_for_verifications(
+    con,
+    *,
+    verification_inputs: list[SettlementVerificationInput],
+    proposal_map: dict[str, UMAProposal],
+) -> list:
+    if con is None:
+        return []
+    samples = []
+    for item in verification_inputs:
+        proposal = proposal_map.get(item.proposal_id)
+        if proposal is None or not proposal.market_id:
+            continue
+        observed_value = item.evidence_payload.get("observed_value")
+        try:
+            observed_value_float = float(observed_value)
+        except (TypeError, ValueError):
+            continue
+        try:
+            row = con.execute(
+                """
+                SELECT run_id
+                FROM weather.weather_forecast_runs
+                WHERE market_id = ?
+                ORDER BY forecast_target_time DESC, created_at DESC, run_id DESC
+                LIMIT 1
+                """,
+                [proposal.market_id],
+            ).fetchone()
+        except Exception:  # noqa: BLE001
+            continue
+        if row is None or row[0] is None:
+            continue
+        try:
+            forecast_run = load_forecast_run(con, run_id=str(row[0]))
+        except Exception:  # noqa: BLE001
+            continue
+        samples.append(
+            build_forecast_calibration_sample(
+                forecast_run=forecast_run,
+                observed_value=observed_value_float,
+            )
+        )
+    return samples
 
 
 def _get_replay_value(raw: ForecastReplayRequest | dict[str, Any], key: str) -> Any:

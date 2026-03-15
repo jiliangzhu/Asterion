@@ -10,7 +10,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from asterion_core.storage.logger import get_logger
+from domains.weather.opportunity import build_weather_opportunity_assessment, derive_opportunity_side
 
 
 log = get_logger(__name__)
@@ -18,6 +21,7 @@ log = get_logger(__name__)
 DEFAULT_UI_LITE_DB_PATH = "data/ui/asterion_ui_lite.duckdb"
 DEFAULT_UI_DB_REPLICA_SOURCE_PATH = "data/ui/asterion_ui.duckdb"
 DEFAULT_READINESS_REPORT_JSON_PATH = "data/ui/asterion_readiness_p3.json"
+DEFAULT_READINESS_EVIDENCE_JSON_PATH = "data/ui/asterion_readiness_evidence_p4.json"
 
 _REQUIRED_UI_TABLES = [
     "ui.market_watch_summary",
@@ -33,6 +37,8 @@ _REQUIRED_UI_TABLES = [
     "ui.daily_review_input",
     "ui.agent_review_summary",
     "ui.phase_readiness_summary",
+    "ui.readiness_evidence_summary",
+    "ui.predicted_vs_realized_summary",
 ]
 
 
@@ -81,6 +87,7 @@ def build_ui_lite_db_once(
     dst_db_path: str | None = None,
     meta_path: str | None = None,
     readiness_report_json_path: str | None = None,
+    readiness_evidence_json_path: str | None = None,
     refresh_interval_s: float | None = None,
 ) -> UiLiteBuildResult:
     started_ms = int(time.time() * 1000)
@@ -88,6 +95,10 @@ def build_ui_lite_db_once(
     dst = Path(dst_db_path or default_ui_lite_db_path())
     meta = Path(meta_path or default_ui_lite_meta_path(lite_db_path=str(dst)))
     report_path = readiness_report_json_path or default_readiness_report_json_path()
+    evidence_path = readiness_evidence_json_path or os.getenv(
+        "ASTERION_READINESS_EVIDENCE_JSON_PATH",
+        DEFAULT_READINESS_EVIDENCE_JSON_PATH,
+    )
     prev = load_ui_lite_meta(str(meta)) or {}
 
     def _emit(ok: bool, error: str | None, table_row_counts: dict[str, int] | None = None) -> UiLiteBuildResult:
@@ -98,6 +109,7 @@ def build_ui_lite_db_once(
             "source_db_path": str(src),
             "lite_db_path": str(dst),
             "readiness_report_json_path": str(report_path),
+            "readiness_evidence_json_path": str(evidence_path),
             "last_attempt_ts_ms": now_ms,
             "last_success_ts_ms": now_ms if ok else prev.get("last_success_ts_ms"),
             "consecutive_failures": 0 if ok else int(prev.get("consecutive_failures", 0) or 0) + 1,
@@ -135,6 +147,7 @@ def build_ui_lite_db_once(
             tmp_db_path=tmp_db,
             src_snapshot_path=snapshot,
             readiness_report_json_path=Path(report_path),
+            readiness_evidence_json_path=Path(evidence_path),
         )
         validate_ui_lite_db(str(tmp_db))
         os.replace(tmp_db, dst)
@@ -154,6 +167,7 @@ def run_ui_lite_db_loop(
     dst_db_path: str | None = None,
     meta_path: str | None = None,
     readiness_report_json_path: str | None = None,
+    readiness_evidence_json_path: str | None = None,
     interval_s: float = 30.0,
 ) -> None:
     while True:
@@ -162,6 +176,7 @@ def run_ui_lite_db_loop(
             dst_db_path=dst_db_path,
             meta_path=meta_path,
             readiness_report_json_path=readiness_report_json_path,
+            readiness_evidence_json_path=readiness_evidence_json_path,
             refresh_interval_s=interval_s,
         )
         if result.ok:
@@ -199,6 +214,7 @@ def _build_ui_lite_contract(
     tmp_db_path: Path,
     src_snapshot_path: Path,
     readiness_report_json_path: Path,
+    readiness_evidence_json_path: Path,
 ) -> dict[str, int]:
     con = _connect_duckdb(str(tmp_db_path), read_only=False)
     table_row_counts: dict[str, int] = {}
@@ -1312,170 +1328,19 @@ def _build_ui_lite_contract(
             """,
             table_row_counts=table_row_counts,
         )
-        _create_table_from_src(
-            con,
-            target="ui.market_opportunity_summary",
-            sql_body="""
-            WITH latest_signal AS (
-                SELECT
-                    market_id,
-                    snapshot_id,
-                    token_id,
-                    outcome,
-                    decision,
-                    side,
-                    edge_bps,
-                    threshold_bps,
-                    reference_price,
-                    fair_value,
-                    created_at
-                FROM (
-                    SELECT
-                        market_id,
-                        snapshot_id,
-                        token_id,
-                        outcome,
-                        decision,
-                        side,
-                        edge_bps,
-                        threshold_bps,
-                        reference_price,
-                        fair_value,
-                        created_at,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY market_id
-                            ORDER BY
-                                CASE WHEN decision = 'TAKE' THEN 0 ELSE 1 END,
-                                ABS(COALESCE(edge_bps, 0)) DESC,
-                                created_at DESC,
-                                snapshot_id DESC
-                        ) AS rn
-                    FROM src.weather.weather_watch_only_snapshots
-                )
-                WHERE rn = 1
-            ),
-            agent_rollup AS (
-                SELECT
-                    subject_id AS market_id,
-                    MAX(CASE WHEN invocation_status = 'failure' THEN 1 ELSE 0 END) AS has_failure,
-                    MAX(CASE WHEN COALESCE(human_review_required, FALSE) THEN 1 ELSE 0 END) AS has_review_required,
-                    MAX(CASE WHEN invocation_status = 'success' THEN 1 ELSE 0 END) AS has_success,
-                    MAX(COALESCE(CAST(confidence AS DOUBLE), 0.0)) AS max_confidence,
-                    MAX(updated_at) AS updated_at
-                FROM ui.agent_review_summary
-                WHERE subject_type = 'weather_market'
-                GROUP BY subject_id
-            ),
-            live_rollup AS (
-                SELECT
-                    market_id,
-                    MAX(CASE WHEN COALESCE(live_prereq_attention_required, FALSE) THEN 1 ELSE 0 END) AS has_attention,
-                    MAX(CASE WHEN live_prereq_execution_status = 'shadow_aligned' THEN 1 ELSE 0 END) AS has_shadow_aligned,
-                    MAX(CASE WHEN live_prereq_execution_status IS NOT NULL THEN 1 ELSE 0 END) AS has_any_live,
-                    MAX(COALESCE(latest_submit_created_at, latest_sign_attempt_created_at)) AS updated_at
-                FROM ui.live_prereq_execution_summary
-                GROUP BY market_id
-            )
-            SELECT
-                market.market_id,
-                market.title AS question,
-                watch.location_name,
-                watch.station_id,
-                COALESCE(market.close_time, market.end_date) AS market_close_time,
-                market.accepting_orders,
-                signal.side AS best_side,
-                signal.outcome AS best_outcome,
-                signal.decision AS best_decision,
-                signal.reference_price AS market_price,
-                signal.fair_value,
-                signal.edge_bps,
-                CASE
-                    WHEN COALESCE(market.accepting_orders, FALSE) = FALSE THEN 25.0
-                    WHEN COALESCE(market.enable_order_book, FALSE) = TRUE THEN 85.0
-                    WHEN COALESCE(signal.reference_price, 0.5) BETWEEN 0.10 AND 0.90 THEN 70.0
-                    ELSE 55.0
-                END AS liquidity_proxy,
-                CASE
-                    WHEN COALESCE(agent.has_failure, 0) = 1 THEN 35.0
-                    WHEN COALESCE(agent.has_review_required, 0) = 1 THEN GREATEST(60.0, COALESCE(agent.max_confidence, 0.0) * 100.0)
-                    WHEN COALESCE(agent.has_success, 0) = 1 THEN GREATEST(80.0, COALESCE(agent.max_confidence, 0.0) * 100.0)
-                    WHEN signal.fair_value IS NOT NULL THEN 55.0
-                    ELSE 40.0
-                END AS confidence_proxy,
-                CASE
-                    WHEN COALESCE(agent.has_failure, 0) = 1 THEN 'agent_failure'
-                    WHEN COALESCE(agent.has_review_required, 0) = 1 THEN 'review_required'
-                    WHEN COALESCE(agent.has_success, 0) = 1 THEN 'passed'
-                    ELSE 'no_agent_signal'
-                END AS agent_review_status,
-                CASE
-                    WHEN COALESCE(live.has_attention, 0) = 1 THEN 'attention_required'
-                    WHEN COALESCE(live.has_shadow_aligned, 0) = 1 THEN 'shadow_aligned'
-                    WHEN COALESCE(live.has_any_live, 0) = 1 THEN 'in_progress'
-                    ELSE 'not_started'
-                END AS live_prereq_status,
-                CASE
-                    WHEN COALESCE(signal.edge_bps, 0) >= 1500 THEN 'high_edge'
-                    WHEN COALESCE(signal.edge_bps, 0) >= 750 THEN 'medium_edge'
-                    WHEN COALESCE(signal.edge_bps, 0) > 0 THEN 'low_edge'
-                    ELSE 'negative_edge'
-                END AS opportunity_bucket,
-                CASE
-                    WHEN COALESCE(signal.edge_bps, 0) <= 0 OR signal.decision IS NULL OR signal.side IS NULL THEN 'no_trade'
-                    WHEN COALESCE(market.accepting_orders, FALSE) = FALSE OR market.closed OR market.archived OR COALESCE(live.has_attention, 0) = 1 THEN 'blocked'
-                    WHEN COALESCE(agent.has_failure, 0) = 1 OR COALESCE(agent.has_review_required, 0) = 1 OR COALESCE(agent.has_success, 0) = 0 THEN 'review_required'
-                    ELSE 'actionable'
-                END AS actionability_status,
-                ROUND(
-                    LEAST(
-                        100.0,
-                        GREATEST(COALESCE(signal.edge_bps, 0), 0) / 50.0
-                        + (
-                            CASE
-                                WHEN COALESCE(market.accepting_orders, FALSE) = FALSE THEN 25.0
-                                WHEN COALESCE(market.enable_order_book, FALSE) = TRUE THEN 85.0
-                                WHEN COALESCE(signal.reference_price, 0.5) BETWEEN 0.10 AND 0.90 THEN 70.0
-                                ELSE 55.0
-                            END
-                        ) * 0.25
-                        + (
-                            CASE
-                                WHEN COALESCE(agent.has_failure, 0) = 1 THEN 35.0
-                                WHEN COALESCE(agent.has_review_required, 0) = 1 THEN GREATEST(60.0, COALESCE(agent.max_confidence, 0.0) * 100.0)
-                                WHEN COALESCE(agent.has_success, 0) = 1 THEN GREATEST(80.0, COALESCE(agent.max_confidence, 0.0) * 100.0)
-                                WHEN signal.fair_value IS NOT NULL THEN 55.0
-                                ELSE 40.0
-                            END
-                        ) * 0.25
-                        + CASE WHEN COALESCE(market.accepting_orders, FALSE) THEN 12.0 ELSE 0.0 END
-                        + CASE
-                            WHEN COALESCE(live.has_shadow_aligned, 0) = 1 THEN 10.0
-                            WHEN COALESCE(live.has_any_live, 0) = 0 THEN 6.0
-                            ELSE 0.0
-                          END
-                    ),
-                    2
-                ) AS opportunity_score,
-                watch.latest_run_source,
-                watch.latest_forecast_target_time,
-                signal.threshold_bps,
-                signal.created_at AS signal_created_at,
-                agent.updated_at AS agent_updated_at,
-                live.updated_at AS live_updated_at
-            FROM src.weather.weather_markets market
-            LEFT JOIN ui.market_watch_summary watch ON watch.market_id = market.market_id
-            LEFT JOIN latest_signal signal ON signal.market_id = market.market_id
-            LEFT JOIN agent_rollup agent ON agent.market_id = market.market_id
-            LEFT JOIN live_rollup live ON live.market_id = market.market_id
-            WHERE market.active = TRUE
-              AND COALESCE(market.closed, FALSE) = FALSE
-              AND COALESCE(market.archived, FALSE) = FALSE
-            """,
-            table_row_counts=table_row_counts,
-        )
+        _create_market_opportunity_summary(con, table_row_counts=table_row_counts)
         _create_phase_readiness_summary(
             con,
             report_path=readiness_report_json_path,
+            table_row_counts=table_row_counts,
+        )
+        _create_readiness_evidence_summary(
+            con,
+            evidence_path=readiness_evidence_json_path,
+            table_row_counts=table_row_counts,
+        )
+        _create_predicted_vs_realized_summary(
+            con,
             table_row_counts=table_row_counts,
         )
         _create_table_from_src(
@@ -1618,6 +1483,546 @@ def _create_phase_readiness_summary(con, *, report_path: Path, table_row_counts:
     table_row_counts["ui.phase_readiness_summary"] = int(row[0]) if row is not None else 0
 
 
+def _create_readiness_evidence_summary(con, *, evidence_path: Path, table_row_counts: dict[str, int]) -> None:
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ui.readiness_evidence_summary (
+            generated_at TIMESTAMP,
+            go_decision TEXT,
+            decision_reason TEXT,
+            capability_manifest_status TEXT,
+            capability_boundary_summary_json TEXT,
+            dependency_statuses_json TEXT,
+            artifact_freshness_json TEXT,
+            latest_verification_summary_json TEXT,
+            stale_dependencies_json TEXT,
+            blockers_json TEXT,
+            warnings_json TEXT,
+            evidence_paths_json TEXT
+        )
+        """
+    )
+    if not evidence_path.exists():
+        table_row_counts["ui.readiness_evidence_summary"] = 0
+        return
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        table_row_counts["ui.readiness_evidence_summary"] = 0
+        return
+    con.execute(
+        """
+        INSERT INTO ui.readiness_evidence_summary (
+            generated_at,
+            go_decision,
+            decision_reason,
+            capability_manifest_status,
+            capability_boundary_summary_json,
+            dependency_statuses_json,
+            artifact_freshness_json,
+            latest_verification_summary_json,
+            stale_dependencies_json,
+            blockers_json,
+            warnings_json,
+            evidence_paths_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            _coerce_ts(payload.get("generated_at")),
+            str(payload.get("go_decision") or ""),
+            str(payload.get("decision_reason") or ""),
+            str(payload.get("capability_manifest_status") or ""),
+            json.dumps(payload.get("capability_boundary_summary") or {}, ensure_ascii=True, sort_keys=True),
+            json.dumps(payload.get("dependency_statuses") or {}, ensure_ascii=True, sort_keys=True),
+            json.dumps(payload.get("artifact_freshness") or {}, ensure_ascii=True, sort_keys=True),
+            json.dumps(payload.get("latest_verification_summary") or {}, ensure_ascii=True, sort_keys=True),
+            json.dumps(payload.get("stale_dependencies") or [], ensure_ascii=True, sort_keys=True),
+            json.dumps(payload.get("blockers") or [], ensure_ascii=True, sort_keys=True),
+            json.dumps(payload.get("warnings") or [], ensure_ascii=True, sort_keys=True),
+            json.dumps(payload.get("evidence_paths") or {}, ensure_ascii=True, sort_keys=True),
+        ],
+    )
+    row = con.execute("SELECT COUNT(*) FROM ui.readiness_evidence_summary").fetchone()
+    table_row_counts["ui.readiness_evidence_summary"] = int(row[0]) if row is not None else 0
+
+
+def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    con.execute("DROP TABLE IF EXISTS ui.predicted_vs_realized_summary")
+    base = con.execute(
+        """
+        WITH fill_agg AS (
+            SELECT
+                order_id,
+                SUM(size) AS filled_quantity,
+                SUM(price * size) AS realized_notional,
+                CASE
+                    WHEN SUM(size) > 0 THEN SUM(price * size) / SUM(size)
+                    ELSE NULL
+                END AS realized_fill_price,
+                SUM(fee) AS total_fee,
+                MAX(filled_at) AS latest_fill_at
+            FROM src.trading.fills
+            GROUP BY order_id
+        ),
+        latest_resolution AS (
+            SELECT
+                market_id,
+                expected_outcome,
+                is_correct,
+                created_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY market_id
+                    ORDER BY created_at DESC, verification_id DESC
+                ) AS rn
+            FROM src.resolution.settlement_verifications
+        ),
+        latest_replay_diff AS (
+            SELECT
+                replay.market_id,
+                diff.diff_summary_json,
+                diff.created_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY replay.market_id
+                    ORDER BY diff.created_at DESC, diff.diff_id DESC
+                ) AS rn
+            FROM src.weather.weather_forecast_replay_diffs diff
+            JOIN src.weather.weather_forecast_replays replay
+              ON replay.replay_id = diff.replay_id
+        )
+        SELECT
+            ticket.ticket_id,
+            ticket.run_id,
+            ticket.wallet_id,
+            ticket.strategy_id,
+            ticket.market_id,
+            exec.order_id,
+            ticket.outcome,
+            ticket.side,
+            ticket.reference_price AS ticket_reference_price,
+            ticket.edge_bps AS ticket_edge_bps,
+            ticket.provenance_json,
+            ticket.watch_snapshot_id,
+            fill.filled_quantity,
+            fill.realized_notional,
+            fill.realized_fill_price,
+            fill.total_fee,
+            fill.latest_fill_at,
+            resolution.expected_outcome,
+            resolution.is_correct,
+            resolution.created_at AS latest_resolution_at,
+            replay.diff_summary_json
+        FROM src.runtime.trade_tickets ticket
+        JOIN ui.execution_ticket_summary exec ON exec.ticket_id = ticket.ticket_id
+        JOIN fill_agg fill ON fill.order_id = exec.order_id
+        LEFT JOIN latest_resolution resolution
+          ON resolution.market_id = ticket.market_id
+         AND resolution.rn = 1
+        LEFT JOIN latest_replay_diff replay
+          ON replay.market_id = ticket.market_id
+         AND replay.rn = 1
+        """
+    ).df()
+    if base.empty:
+        con.execute(
+            """
+            CREATE TABLE ui.predicted_vs_realized_summary (
+                ticket_id TEXT,
+                run_id TEXT,
+                wallet_id TEXT,
+                strategy_id TEXT,
+                market_id TEXT,
+                order_id TEXT,
+                outcome TEXT,
+                predicted_edge_bps DOUBLE,
+                expected_fill_price DOUBLE,
+                realized_fill_price DOUBLE,
+                filled_quantity DOUBLE,
+                realized_notional DOUBLE,
+                realized_pnl DOUBLE,
+                resolution_value DOUBLE,
+                forecast_freshness TEXT,
+                source_disagreement TEXT,
+                post_trade_error DOUBLE,
+                evaluation_status TEXT,
+                latest_fill_at TIMESTAMP,
+                latest_resolution_at TIMESTAMP
+            )
+            """
+        )
+        table_row_counts["ui.predicted_vs_realized_summary"] = 0
+        return
+
+    rows: list[dict[str, Any]] = []
+    for _, item in base.iterrows():
+        provenance = _json_object(item.get("provenance_json"))
+        pricing_context = _json_object(provenance.get("pricing_context"))
+        predicted_edge_bps = _coerce_float(pricing_context.get("edge_bps_executable"))
+        if predicted_edge_bps is None:
+            predicted_edge_bps = _coerce_float(item.get("ticket_edge_bps")) or 0.0
+        snapshot_reference_price = _coerce_float(pricing_context.get("reference_price"))
+        expected_fill_price = snapshot_reference_price
+        if expected_fill_price is None:
+            expected_fill_price = _coerce_float(item.get("ticket_reference_price"))
+        realized_fill_price = _coerce_float(item.get("realized_fill_price"))
+        filled_quantity = _coerce_float(item.get("filled_quantity")) or 0.0
+        realized_notional = _coerce_float(item.get("realized_notional")) or 0.0
+        total_fee = _coerce_float(item.get("total_fee")) or 0.0
+        resolution_value = _resolution_value(item.get("expected_outcome"))
+        realized_pnl = None
+        evaluation_status = "pending_resolution"
+        post_trade_error = None
+        if resolution_value is not None and realized_fill_price is not None:
+            contract_value = resolution_value if str(item.get("outcome") or "").upper() == "YES" else 1.0 - resolution_value
+            if str(item.get("side") or "").upper() == "SELL":
+                realized_pnl = (realized_fill_price - contract_value) * filled_quantity - total_fee
+            else:
+                realized_pnl = (contract_value - realized_fill_price) * filled_quantity - total_fee
+            implied_pnl = (float(predicted_edge_bps) / 10000.0) * filled_quantity
+            post_trade_error = realized_pnl - implied_pnl
+            evaluation_status = "resolved"
+        rows.append(
+            {
+                "ticket_id": item.get("ticket_id"),
+                "run_id": item.get("run_id"),
+                "wallet_id": item.get("wallet_id"),
+                "strategy_id": item.get("strategy_id"),
+                "market_id": item.get("market_id"),
+                "order_id": item.get("order_id"),
+                "outcome": item.get("outcome"),
+                "predicted_edge_bps": predicted_edge_bps,
+                "expected_fill_price": expected_fill_price,
+                "realized_fill_price": realized_fill_price,
+                "filled_quantity": filled_quantity,
+                "realized_notional": realized_notional,
+                "realized_pnl": realized_pnl,
+                "resolution_value": resolution_value,
+                "forecast_freshness": str(pricing_context.get("source_freshness_status") or "unavailable"),
+                "source_disagreement": _source_disagreement(item.get("diff_summary_json")),
+                "post_trade_error": post_trade_error,
+                "evaluation_status": evaluation_status,
+                "latest_fill_at": item.get("latest_fill_at"),
+                "latest_resolution_at": item.get("latest_resolution_at"),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    con.register("predicted_vs_realized_df", frame)
+    con.execute("CREATE OR REPLACE TABLE ui.predicted_vs_realized_summary AS SELECT * FROM predicted_vs_realized_df")
+    row = con.execute("SELECT COUNT(*) FROM ui.predicted_vs_realized_summary").fetchone()
+    table_row_counts["ui.predicted_vs_realized_summary"] = int(row[0]) if row is not None else 0
+    con.unregister("predicted_vs_realized_df")
+
+
+def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    frame = con.execute(
+        """
+        WITH latest_signal AS (
+            SELECT
+                market_id,
+                snapshot_id,
+                token_id,
+                outcome,
+                decision,
+                side,
+                edge_bps,
+                threshold_bps,
+                reference_price,
+                fair_value,
+                pricing_context_json,
+                created_at
+            FROM (
+                SELECT
+                    market_id,
+                    snapshot_id,
+                    token_id,
+                    outcome,
+                    decision,
+                    side,
+                    edge_bps,
+                    threshold_bps,
+                    reference_price,
+                    fair_value,
+                    pricing_context_json,
+                    created_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY market_id
+                        ORDER BY
+                            CASE WHEN decision = 'TAKE' THEN 0 ELSE 1 END,
+                            ABS(COALESCE(edge_bps, 0)) DESC,
+                            created_at DESC,
+                            snapshot_id DESC
+                    ) AS rn
+                FROM src.weather.weather_watch_only_snapshots
+            )
+            WHERE rn = 1
+        ),
+        agent_rollup AS (
+            SELECT
+                subject_id AS market_id,
+                MAX(CASE WHEN invocation_status = 'failure' THEN 1 ELSE 0 END) AS has_failure,
+                MAX(CASE WHEN COALESCE(human_review_required, FALSE) THEN 1 ELSE 0 END) AS has_review_required,
+                MAX(CASE WHEN invocation_status = 'success' THEN 1 ELSE 0 END) AS has_success,
+                MAX(COALESCE(CAST(confidence AS DOUBLE), 0.0)) AS max_confidence,
+                MAX(updated_at) AS updated_at
+            FROM ui.agent_review_summary
+            WHERE subject_type = 'weather_market'
+            GROUP BY subject_id
+        ),
+        live_rollup AS (
+            SELECT
+                market_id,
+                MAX(CASE WHEN COALESCE(live_prereq_attention_required, FALSE) THEN 1 ELSE 0 END) AS has_attention,
+                MAX(CASE WHEN live_prereq_execution_status = 'shadow_aligned' THEN 1 ELSE 0 END) AS has_shadow_aligned,
+                MAX(CASE WHEN live_prereq_execution_status IS NOT NULL THEN 1 ELSE 0 END) AS has_any_live,
+                MAX(COALESCE(latest_submit_created_at, latest_sign_attempt_created_at)) AS updated_at
+            FROM ui.live_prereq_execution_summary
+            GROUP BY market_id
+        )
+        SELECT
+            market.market_id,
+            market.title AS question,
+            watch.location_name,
+            watch.station_id,
+            COALESCE(market.close_time, market.end_date) AS market_close_time,
+            market.accepting_orders,
+            market.enable_order_book,
+            signal.snapshot_id,
+            signal.token_id,
+            signal.outcome,
+            signal.decision,
+            signal.side,
+            signal.edge_bps,
+            signal.threshold_bps,
+            signal.reference_price,
+            signal.fair_value,
+            signal.pricing_context_json,
+            signal.created_at AS signal_created_at,
+            watch.latest_run_source,
+            watch.latest_forecast_target_time,
+            CASE
+                WHEN COALESCE(agent.has_failure, 0) = 1 THEN 'agent_failure'
+                WHEN COALESCE(agent.has_review_required, 0) = 1 THEN 'review_required'
+                WHEN COALESCE(agent.has_success, 0) = 1 THEN 'passed'
+                ELSE 'no_agent_signal'
+            END AS agent_review_status,
+            CASE
+                WHEN COALESCE(live.has_attention, 0) = 1 THEN 'attention_required'
+                WHEN COALESCE(live.has_shadow_aligned, 0) = 1 THEN 'shadow_aligned'
+                WHEN COALESCE(live.has_any_live, 0) = 1 THEN 'in_progress'
+                ELSE 'not_started'
+            END AS live_prereq_status,
+            COALESCE(agent.max_confidence, 0.0) AS agent_confidence,
+            agent.updated_at AS agent_updated_at,
+            live.updated_at AS live_updated_at
+        FROM src.weather.weather_markets market
+        LEFT JOIN ui.market_watch_summary watch ON watch.market_id = market.market_id
+        LEFT JOIN latest_signal signal ON signal.market_id = market.market_id
+        LEFT JOIN agent_rollup agent ON agent.market_id = market.market_id
+        LEFT JOIN live_rollup live ON live.market_id = market.market_id
+        WHERE market.active = TRUE
+          AND COALESCE(market.closed, FALSE) = FALSE
+          AND COALESCE(market.archived, FALSE) = FALSE
+        """
+    ).df()
+    rows: list[dict[str, Any]] = []
+    for _, row in frame.iterrows():
+        pricing_context = _json_object(row.get("pricing_context_json"))
+        model_fair_value = _coerce_float(pricing_context.get("model_fair_value")) or _coerce_float(row.get("fair_value")) or 0.0
+        market_price = _coerce_float(row.get("reference_price")) or 0.0
+        token_id = str(row.get("token_id") or "")
+        outcome = str(row.get("outcome") or "")
+        confidence_score = _coerce_float(pricing_context.get("confidence_score"))
+        if confidence_score is None:
+            confidence_score = max(float(_coerce_float(row.get("agent_confidence")) or 0.0) * 100.0, 50.0 if market_price else 0.0)
+        threshold_bps = int(_coerce_float(pricing_context.get("threshold_bps")) or _coerce_float(row.get("threshold_bps")) or 0)
+        mapping_confidence = _coerce_float(pricing_context.get("mapping_confidence"))
+        if mapping_confidence is None:
+            mapping_confidence = 1.0
+        source_freshness_status = str(pricing_context.get("source_freshness_status") or "missing")
+        price_staleness_ms = int(_coerce_float(pricing_context.get("price_staleness_ms")) or 0)
+        market_quality_status = str(pricing_context.get("market_quality_status") or "review_required")
+        if not token_id or not outcome or market_price <= 0.0:
+            actionability_status = (
+                "blocked"
+                if (not bool(row.get("accepting_orders")) or str(row.get("live_prereq_status") or "") == "attention_required")
+                else "review_required"
+                if str(row.get("agent_review_status") or "") != "passed"
+                else "no_trade"
+            )
+            rows.append(
+                {
+                    "market_id": row.get("market_id"),
+                    "question": row.get("question"),
+                    "location_name": row.get("location_name"),
+                    "station_id": row.get("station_id"),
+                    "market_close_time": row.get("market_close_time"),
+                    "accepting_orders": bool(row.get("accepting_orders")),
+                    "best_side": None,
+                    "best_outcome": outcome or None,
+                    "best_decision": "NO_TRADE",
+                    "market_price": None,
+                    "fair_value": None,
+                    "edge_bps": None,
+                    "model_fair_value": None,
+                    "execution_adjusted_fair_value": None,
+                    "edge_bps_model": None,
+                    "edge_bps_executable": None,
+                    "fees_bps": None,
+                    "slippage_bps": None,
+                    "fill_probability": None,
+                    "depth_proxy": None,
+                    "mapping_confidence": mapping_confidence,
+                    "source_freshness_status": source_freshness_status,
+                    "price_staleness_ms": price_staleness_ms,
+                    "market_quality_status": market_quality_status,
+                    "liquidity_proxy": 25.0 if not bool(row.get("accepting_orders")) else 55.0,
+                    "liquidity_penalty_bps": None,
+                    "confidence_score": confidence_score,
+                    "confidence_proxy": confidence_score,
+                    "ops_readiness_score": 0.0,
+                    "expected_value_score": 0.0,
+                    "expected_pnl_score": 0.0,
+                    "ranking_score": 0.0,
+                    "agent_review_status": row.get("agent_review_status"),
+                    "live_prereq_status": row.get("live_prereq_status"),
+                    "opportunity_bucket": "negative_edge",
+                    "opportunity_score": 0.0,
+                    "actionability_status": actionability_status,
+                    "latest_run_source": row.get("latest_run_source"),
+                    "latest_forecast_target_time": row.get("latest_forecast_target_time"),
+                    "threshold_bps": threshold_bps,
+                    "signal_created_at": row.get("signal_created_at"),
+                    "agent_updated_at": row.get("agent_updated_at"),
+                    "live_updated_at": row.get("live_updated_at"),
+                }
+            )
+            continue
+        assessment = build_weather_opportunity_assessment(
+            market_id=str(row.get("market_id")),
+            token_id=token_id,
+            outcome=outcome,
+            reference_price=market_price,
+            model_fair_value=model_fair_value,
+            accepting_orders=bool(row.get("accepting_orders")),
+            enable_order_book=bool(row.get("enable_order_book")) if row.get("enable_order_book") is not None else None,
+            threshold_bps=threshold_bps,
+            fees_bps=int(_coerce_float(pricing_context.get("fees_bps")) or 0),
+            agent_review_status=str(row.get("agent_review_status") or "no_agent_signal"),
+            live_prereq_status=str(row.get("live_prereq_status") or "not_started"),
+            confidence_score=confidence_score,
+            mapping_confidence=mapping_confidence,
+            price_staleness_ms=price_staleness_ms,
+            source_freshness_status=source_freshness_status,
+            spread_bps=int(_coerce_float(pricing_context.get("spread_bps")) or 0) or None,
+            source_context={
+                "forecast_target_time": str(row.get("latest_forecast_target_time") or ""),
+                "latest_run_source": row.get("latest_run_source"),
+                "mapping_method": pricing_context.get("mapping_method"),
+                "market_quality_reason_codes": pricing_context.get("market_quality_reason_codes"),
+                "price_staleness_ms": price_staleness_ms,
+                "signal_created_at": str(row.get("signal_created_at") or ""),
+                "snapshot_id": row.get("snapshot_id"),
+                "source_freshness_status": source_freshness_status,
+            },
+        )
+        best_side = derive_opportunity_side(assessment.edge_bps_executable)
+        rows.append(
+            {
+                "market_id": row.get("market_id"),
+                "question": row.get("question"),
+                "location_name": row.get("location_name"),
+                "station_id": row.get("station_id"),
+                "market_close_time": row.get("market_close_time"),
+                "accepting_orders": bool(row.get("accepting_orders")),
+                "best_side": best_side,
+                "best_outcome": row.get("outcome"),
+                "best_decision": row.get("decision"),
+                "market_price": assessment.reference_price,
+                "fair_value": assessment.execution_adjusted_fair_value,
+                "edge_bps": assessment.edge_bps_executable,
+                "model_fair_value": assessment.model_fair_value,
+                "execution_adjusted_fair_value": assessment.execution_adjusted_fair_value,
+                "edge_bps_model": assessment.edge_bps_model,
+                "edge_bps_executable": assessment.edge_bps_executable,
+                "fees_bps": assessment.fees_bps,
+                "slippage_bps": assessment.slippage_bps,
+                "fill_probability": assessment.fill_probability,
+                "depth_proxy": assessment.depth_proxy,
+                "mapping_confidence": assessment.assessment_context_json.get("mapping_confidence"),
+                "source_freshness_status": assessment.assessment_context_json.get("source_freshness_status"),
+                "price_staleness_ms": assessment.assessment_context_json.get("price_staleness_ms"),
+                "market_quality_status": assessment.assessment_context_json.get("market_quality_status"),
+                "liquidity_proxy": assessment.depth_proxy * 100.0,
+                "liquidity_penalty_bps": assessment.liquidity_penalty_bps,
+                "confidence_score": assessment.confidence_score,
+                "confidence_proxy": assessment.confidence_score,
+                "ops_readiness_score": assessment.ops_readiness_score,
+                "expected_value_score": assessment.expected_value_score,
+                "expected_pnl_score": assessment.expected_pnl_score,
+                "ranking_score": assessment.ranking_score,
+                "agent_review_status": row.get("agent_review_status"),
+                "live_prereq_status": row.get("live_prereq_status"),
+                "opportunity_bucket": _opportunity_bucket(assessment.edge_bps_executable),
+                "opportunity_score": assessment.ranking_score,
+                "actionability_status": assessment.actionability_status,
+                "latest_run_source": row.get("latest_run_source"),
+                "latest_forecast_target_time": row.get("latest_forecast_target_time"),
+                "threshold_bps": threshold_bps,
+                "signal_created_at": row.get("signal_created_at"),
+                "agent_updated_at": row.get("agent_updated_at"),
+                "live_updated_at": row.get("live_updated_at"),
+            }
+        )
+    result = pd.DataFrame(rows, columns=[
+        "market_id",
+        "question",
+        "location_name",
+        "station_id",
+        "market_close_time",
+        "accepting_orders",
+        "best_side",
+        "best_outcome",
+        "best_decision",
+        "market_price",
+        "fair_value",
+        "edge_bps",
+        "model_fair_value",
+        "execution_adjusted_fair_value",
+        "edge_bps_model",
+        "edge_bps_executable",
+        "fees_bps",
+        "slippage_bps",
+        "fill_probability",
+        "depth_proxy",
+        "mapping_confidence",
+        "source_freshness_status",
+        "price_staleness_ms",
+        "market_quality_status",
+        "liquidity_proxy",
+        "liquidity_penalty_bps",
+        "confidence_score",
+        "confidence_proxy",
+        "ops_readiness_score",
+        "expected_value_score",
+        "expected_pnl_score",
+        "ranking_score",
+        "agent_review_status",
+        "live_prereq_status",
+        "opportunity_bucket",
+        "opportunity_score",
+        "actionability_status",
+        "latest_run_source",
+        "latest_forecast_target_time",
+        "threshold_bps",
+        "signal_created_at",
+        "agent_updated_at",
+        "live_updated_at",
+    ])
+    con.register("market_opportunity_summary_df", result)
+    con.execute("CREATE OR REPLACE TABLE ui.market_opportunity_summary AS SELECT * FROM market_opportunity_summary_df")
+    row = con.execute("SELECT COUNT(*) FROM ui.market_opportunity_summary").fetchone()
+    table_row_counts["ui.market_opportunity_summary"] = int(row[0]) if row is not None else 0
+    con.unregister("market_opportunity_summary_df")
+
+
 def _create_table_from_src(con, *, target: str, sql_body: str, table_row_counts: dict[str, int]) -> None:
     con.execute(f"CREATE OR REPLACE TABLE {target} AS {sql_body}")
     row = con.execute(f"SELECT COUNT(*) FROM {target}").fetchone()
@@ -1644,6 +2049,56 @@ def _coerce_ts(value: Any) -> str | None:
         return str(datetime.fromisoformat(text).replace(tzinfo=None))
     except Exception:  # noqa: BLE001
         return text
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if value in {None, ""}:
+        return {}
+    try:
+        payload = json.loads(str(value))
+    except Exception:  # noqa: BLE001
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _source_disagreement(value: Any) -> str:
+    payload = _json_object(value)
+    changed_fields = payload.get("changed_fields")
+    if not isinstance(changed_fields, list):
+        return "unavailable"
+    normalized = {str(item) for item in changed_fields}
+    if {"temperature_distribution", "pricing_context"} & normalized:
+        return "different"
+    return "match"
+
+
+def _resolution_value(expected_outcome: Any) -> float | None:
+    text = str(expected_outcome or "").strip().upper()
+    if not text:
+        return None
+    return 1.0 if text == "YES" else 0.0 if text == "NO" else None
+
+
+def _opportunity_bucket(edge_bps: int) -> str:
+    magnitude = abs(int(edge_bps))
+    if magnitude >= 1500:
+        return "high_edge"
+    if magnitude >= 750:
+        return "medium_edge"
+    if magnitude > 0:
+        return "low_edge"
+    return "negative_edge"
 
 
 def _table_exists(con, table_name: str) -> bool:
@@ -1695,6 +2150,7 @@ def _create_source_snapshot(src: Path) -> Path:
 
 
 __all__ = [
+    "DEFAULT_READINESS_EVIDENCE_JSON_PATH",
     "DEFAULT_READINESS_REPORT_JSON_PATH",
     "DEFAULT_UI_DB_REPLICA_SOURCE_PATH",
     "DEFAULT_UI_LITE_DB_PATH",

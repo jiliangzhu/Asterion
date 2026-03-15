@@ -157,6 +157,20 @@ def recompute_pricing_outputs(
                 fair_value=fair_value,
                 reference_price=original.reference_price,
                 threshold_bps=original.threshold_bps,
+                accepting_orders=bool(market.accepting_orders),
+                enable_order_book=market.enable_order_book,
+                agent_review_status=str((original.pricing_context or {}).get("agent_review_status") or "no_agent_signal"),
+                live_prereq_status=str((original.pricing_context or {}).get("live_prereq_status") or "not_started"),
+                pricing_context={
+                    "forecast_run_id": forecast_run.run_id,
+                    "mapping_confidence": (original.pricing_context or {}).get("mapping_confidence"),
+                    "market_quality_reason_codes": (original.pricing_context or {}).get("market_quality_reason_codes"),
+                    "price_staleness_ms": (original.pricing_context or {}).get("price_staleness_ms"),
+                    "source_freshness_status": (original.pricing_context or {}).get("source_freshness_status"),
+                    "source_trace": forecast_run.source_trace,
+                    "source_used": forecast_run.source,
+                    "spread_bps": (original.pricing_context or {}).get("spread_bps"),
+                },
             )
         )
     return fair_values, snapshots
@@ -389,6 +403,7 @@ def _build_watch_only_snapshot_diffs(
                     _compare_scalar(changed, "threshold_bps", left.threshold_bps, right.threshold_bps),
                     _compare_scalar(changed, "decision", left.decision, right.decision),
                     _compare_scalar(changed, "side", left.side, right.side),
+                    _compare_json(changed, "pricing_context", left.pricing_context, right.pricing_context),
                 ),
             )
         )

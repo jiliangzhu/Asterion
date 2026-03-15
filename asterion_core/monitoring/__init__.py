@@ -42,6 +42,13 @@ from .readiness_checker_v1 import (
     evaluate_p4_live_prereq_readiness,
     write_readiness_report,
 )
+from .readiness_evidence_v1 import (
+    DEFAULT_READINESS_EVIDENCE_JSON_PATH,
+    ReadinessEvidenceBundle,
+    build_readiness_evidence_bundle,
+    load_readiness_evidence_bundle,
+    write_readiness_evidence_bundle,
+)
 
 __all__ = [
     "ChainTxHealthSnapshot",
@@ -51,11 +58,13 @@ __all__ = [
     "DEFAULT_READINESS_REPORT_MARKDOWN_PATH",
     "DEFAULT_P4_READINESS_REPORT_JSON_PATH",
     "DEFAULT_P4_READINESS_REPORT_MARKDOWN_PATH",
+    "DEFAULT_READINESS_EVIDENCE_JSON_PATH",
     "ExternalExecutionHealthSnapshot",
     "LivePrereqHealthSnapshot",
     "QueueHealthSnapshot",
     "QuoteHealthSnapshot",
     "ReadinessConfig",
+    "ReadinessEvidenceBundle",
     "ReadinessGateResult",
     "ReadinessReport",
     "ReadinessTarget",
@@ -65,6 +74,7 @@ __all__ = [
     "WSHealthSnapshot",
     "build_capability_boundary_summary",
     "build_controlled_live_capability_manifest",
+    "build_readiness_evidence_bundle",
     "collect_chain_tx_health",
     "collect_degrade_status",
     "collect_external_execution_health",
@@ -78,6 +88,8 @@ __all__ = [
     "evaluate_p3_readiness",
     "evaluate_p4_live_prereq_readiness",
     "load_controlled_live_capability_manifest",
+    "load_readiness_evidence_bundle",
     "write_controlled_live_capability_manifest",
+    "write_readiness_evidence_bundle",
     "write_readiness_report",
 ]

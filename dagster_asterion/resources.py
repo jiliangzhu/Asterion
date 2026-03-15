@@ -16,7 +16,10 @@ from asterion_core.blockchain import (
 )
 from asterion_core.clients import ClobPublicClient
 from asterion_core.clients.http_retry import RetryHttpClient
-from asterion_core.monitoring import DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH
+from asterion_core.monitoring import (
+    DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH,
+    DEFAULT_READINESS_EVIDENCE_JSON_PATH,
+)
 from asterion_core.execution import (
     DisabledSubmitterBackend,
     SafeDefaultChainAccountCapabilityReader,
@@ -39,7 +42,13 @@ from asterion_core.ui import (
     default_ui_lite_meta_path,
     default_ui_replica_meta_path,
 )
-from domains.weather.forecast import AdapterRouter, ForecastService, InMemoryForecastCache, NWSAdapter, OpenMeteoAdapter
+from domains.weather.forecast import (
+    AdapterRouter,
+    ForecastService,
+    InMemoryForecastCache,
+    NWSAdapter,
+    OpenMeteoAdapter,
+)
 from domains.weather.resolution import BackfillRpcClient, FallbackRpcPool, RpcEndpointConfig
 
 
@@ -82,6 +91,7 @@ class AsterionColdPathSettings:
     watcher_rpc_urls: list[str]
     readiness_report_json_path: str = "data/ui/asterion_readiness_p4.json"
     readiness_report_markdown_path: str = "data/ui/asterion_readiness_p4.md"
+    readiness_evidence_json_path: str = DEFAULT_READINESS_EVIDENCE_JSON_PATH
     controlled_live_capability_manifest_path: str = DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH
 
     @classmethod
@@ -140,6 +150,10 @@ class AsterionColdPathSettings:
             readiness_report_json_path=os.getenv("ASTERION_READINESS_REPORT_JSON_PATH", "data/ui/asterion_readiness_p4.json"),
             readiness_report_markdown_path=os.getenv(
                 "ASTERION_READINESS_REPORT_MARKDOWN_PATH", "data/ui/asterion_readiness_p4.md"
+            ),
+            readiness_evidence_json_path=os.getenv(
+                "ASTERION_READINESS_EVIDENCE_JSON_PATH",
+                DEFAULT_READINESS_EVIDENCE_JSON_PATH,
             ),
         )
 
@@ -328,6 +342,9 @@ class LivePrereqReadinessRuntimeResource:
     def resolve_readiness_report_markdown_path(self) -> str:
         return str(Path(self.settings.readiness_report_markdown_path))
 
+    def resolve_readiness_evidence_json_path(self) -> str:
+        return str(Path(self.settings.readiness_evidence_json_path))
+
     def resolve_capability_manifest_path(self) -> str:
         return str(Path(self.settings.controlled_live_capability_manifest_path))
 
@@ -336,14 +353,14 @@ class LivePrereqReadinessRuntimeResource:
 class ForecastRuntimeResource:
     settings: AsterionColdPathSettings
 
-    def build_adapter_router(self, *, client: Any | None = None, adapters: list[Any] | None = None) -> AdapterRouter:
+    def build_adapter_router(self, *, client: Any | None = None, adapters: list[Any] | None = None, std_dev_provider: Any | None = None) -> AdapterRouter:
         if adapters is not None:
             return AdapterRouter(list(adapters))
         http_client = client or RetryHttpClient(HttpJsonClient())
         return AdapterRouter(
             [
-                OpenMeteoAdapter(client=http_client),
-                NWSAdapter(client=http_client),
+                OpenMeteoAdapter(client=http_client, std_dev_provider=std_dev_provider),
+                NWSAdapter(client=http_client, std_dev_provider=std_dev_provider),
             ]
         )
 
@@ -356,9 +373,10 @@ class ForecastRuntimeResource:
         client: Any | None = None,
         adapters: list[Any] | None = None,
         cache: InMemoryForecastCache | None = None,
+        std_dev_provider: Any | None = None,
     ) -> ForecastService:
         return ForecastService(
-            adapter_router=self.build_adapter_router(client=client, adapters=adapters),
+            adapter_router=self.build_adapter_router(client=client, adapters=adapters, std_dev_provider=std_dev_provider),
             cache=cache or self.build_cache(),
         )
 
@@ -802,6 +820,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
     class DagsterLivePrereqReadinessRuntimeResource(ConfigurableResource):
         readiness_report_json_path: str = "data/ui/asterion_readiness_p4.json"
         readiness_report_markdown_path: str = "data/ui/asterion_readiness_p4.md"
+        readiness_evidence_json_path: str = DEFAULT_READINESS_EVIDENCE_JSON_PATH
         controlled_live_capability_manifest_path: str = DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH
 
         def build_runtime(self) -> LivePrereqReadinessRuntimeResource:
@@ -838,6 +857,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 watcher_rpc_urls=list(settings.watcher_rpc_urls),
                 readiness_report_json_path=self.readiness_report_json_path,
                 readiness_report_markdown_path=self.readiness_report_markdown_path,
+                readiness_evidence_json_path=self.readiness_evidence_json_path,
                 controlled_live_capability_manifest_path=self.controlled_live_capability_manifest_path,
             )
             return LivePrereqReadinessRuntimeResource(settings=settings)
@@ -954,6 +974,7 @@ def build_dagster_resource_defs(settings: AsterionColdPathSettings | None = None
         "live_prereq_readiness_runtime": DagsterLivePrereqReadinessRuntimeResource(
             readiness_report_json_path=active.readiness_report_json_path,
             readiness_report_markdown_path=active.readiness_report_markdown_path,
+            readiness_evidence_json_path=active.readiness_evidence_json_path,
             controlled_live_capability_manifest_path=active.controlled_live_capability_manifest_path,
         ),
         "controlled_live_smoke_runtime": DagsterControlledLiveSmokeRuntimeResource(

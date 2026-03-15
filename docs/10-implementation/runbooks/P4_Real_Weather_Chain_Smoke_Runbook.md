@@ -28,6 +28,19 @@ Gamma market discovery
 - 真实 forecast adapters 能生成 `weather.weather_forecast_runs`
 - 定价与机会发现能落成 `weather.weather_fair_values` / `weather.weather_watch_only_snapshots`
 
+当前固定语义：
+
+- `weather.weather_fair_values` 保存 `model fair value`
+- `weather.weather_watch_only_snapshots.fair_value` 保存 `execution-adjusted fair value`
+- `weather.weather_watch_only_snapshots.edge_bps` 保存 `executable edge`
+- `fees / slippage / liquidity penalty / model edge / ranking` 进入 `pricing_context_json`
+- Phase 3 之后，`pricing_context_json` 还会携带：
+  - `mapping_confidence`
+  - `source_freshness_status`
+  - `price_staleness_ms`
+  - `market_quality_status`
+  - `market_quality_reason_codes`
+
 明确不覆盖：
 
 - `weather_paper_execution`
@@ -151,6 +164,7 @@ source .venv/bin/activate
 
 - `real_weather_chain.duckdb`
 - `real_weather_chain_report.json`
+- `weather.source_health_snapshots`
 
 当前 report 固定包含：
 
@@ -183,6 +197,16 @@ UI 侧的当前约定：
 
 - 市场页会展示所有 selected open markets 的详细分析，而不是只展示首条
 - agent 页会展示每个 agent 实际做了什么、产出了什么、是否需要人工复核
+- 市场页会显示 Phase 3 的质量字段：
+  - `mapping_confidence`
+  - `source_freshness_status`
+  - `price_staleness_ms`
+  - `market_quality_status`
+
+说明：
+
+- `weather.forecast_calibration_samples` 不在本 smoke 中直接产生
+- calibration sample 的 canonical 生产路径在 `weather_resolution_reconciliation`，当 verification evidence 含 `observed_value` 时，会基于该市场最新 forecast run 生成 residual 样本
 
 ---
 

@@ -216,6 +216,93 @@ class WatchOnlySnapshotRecord:
 
 
 @dataclass(frozen=True)
+class CalibrationLookupKey:
+    station_id: str
+    source: str
+    forecast_horizon_bucket: str
+    season_bucket: str
+    metric: str
+
+    def __post_init__(self) -> None:
+        if not self.station_id or not self.source or not self.metric:
+            raise ValueError("station_id, source, and metric are required")
+        if not self.forecast_horizon_bucket or not self.season_bucket:
+            raise ValueError("forecast_horizon_bucket and season_bucket are required")
+
+
+@dataclass(frozen=True)
+class ForecastCalibrationSampleRecord:
+    sample_id: str
+    market_id: str
+    station_id: str
+    source: str
+    forecast_horizon_bucket: str
+    season_bucket: str
+    metric: str
+    forecast_target_time: datetime
+    forecast_mean: float
+    observed_value: float
+    residual: float
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if not self.sample_id or not self.market_id or not self.station_id:
+            raise ValueError("sample_id, market_id, and station_id are required")
+        if not self.source or not self.metric:
+            raise ValueError("source and metric are required")
+        if not self.forecast_horizon_bucket or not self.season_bucket:
+            raise ValueError("forecast_horizon_bucket and season_bucket are required")
+
+
+@dataclass(frozen=True)
+class SourceHealthSnapshotRecord:
+    snapshot_id: str
+    market_id: str
+    station_id: str
+    source: str
+    latest_market_updated_at: datetime | None
+    latest_forecast_created_at: datetime | None
+    latest_snapshot_created_at: datetime | None
+    price_staleness_ms: int
+    source_freshness_status: str
+    degraded_reason_codes: list[str]
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if not self.snapshot_id or not self.market_id or not self.station_id:
+            raise ValueError("snapshot_id, market_id, and station_id are required")
+        if not self.source:
+            raise ValueError("source is required")
+        if self.price_staleness_ms < 0:
+            raise ValueError("price_staleness_ms must be non-negative")
+        if self.source_freshness_status not in {"fresh", "stale", "degraded", "missing"}:
+            raise ValueError("source_freshness_status must be fresh/stale/degraded/missing")
+        if not isinstance(self.degraded_reason_codes, list):
+            raise ValueError("degraded_reason_codes must be a list")
+
+
+@dataclass(frozen=True)
+class StationMappingReviewRecord:
+    review_id: str
+    market_id: str
+    location_name: str
+    station_id: str
+    mapping_method: str
+    mapping_confidence: float
+    review_status: str
+    review_reason: str | None
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if not self.review_id or not self.market_id or not self.station_id:
+            raise ValueError("review_id, market_id, and station_id are required")
+        if not self.location_name or not self.mapping_method or not self.review_status:
+            raise ValueError("location_name, mapping_method, and review_status are required")
+        if not (0.0 <= float(self.mapping_confidence) <= 1.0):
+            raise ValueError("mapping_confidence must be between 0 and 1")
+
+
+@dataclass(frozen=True)
 class ForecastResolutionContract:
     market_id: str
     condition_id: str

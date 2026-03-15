@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
@@ -226,6 +226,7 @@ class StrategyDecision:
     size: Decimal
     forecast_run_id: str
     watch_snapshot_id: str
+    pricing_context_json: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.decision_id or not self.run_id:
@@ -246,6 +247,8 @@ class StrategyDecision:
             raise ValueError("size must be positive")
         if not self.forecast_run_id or not self.watch_snapshot_id:
             raise ValueError("forecast_run_id and watch_snapshot_id are required")
+        if not isinstance(self.pricing_context_json, dict):
+            raise ValueError("pricing_context_json must be a dictionary")
 
 
 @dataclass(frozen=True)

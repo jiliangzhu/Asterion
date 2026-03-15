@@ -39,12 +39,19 @@ class UiPagesSmokeTest(unittest.TestCase):
                 "weather_locations": [],
                 "agent_activity_count": 0,
                 "agent_review_required_count": 0,
+                "resolved_trade_count": 0,
+                "pending_resolution_count": 0,
+                "avg_predicted_edge_bps": 0.0,
+                "avg_realized_pnl": 0.0,
             },
             "wallet_attention": pd.DataFrame(),
             "top_opportunities": pd.DataFrame(),
             "largest_blocker": {"source": "clear", "summary": "No material blocker"},
             "recent_agent_summary": {},
             "agent_data": {"frame": pd.DataFrame()},
+            "readiness_evidence": {"exists": False, "blockers": [], "warnings": [], "decision_reason": "", "capability_manifest_status": "missing"},
+            "predicted_vs_realized_snapshot": pd.DataFrame(),
+            "degraded_inputs": ["market_source:weather_smoke_db"],
         }
 
         with patch("ui.pages.home.load_home_decision_snapshot", return_value=fake_snapshot), \

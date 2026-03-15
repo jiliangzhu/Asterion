@@ -5,7 +5,12 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from ui.data_access import load_operator_surface_status, load_readiness_summary, load_system_runtime_status
+from ui.data_access import (
+    load_operator_surface_status,
+    load_readiness_evidence_bundle,
+    load_readiness_summary,
+    load_system_runtime_status,
+)
 
 
 def _build_component_rows(status: dict[str, object], readiness: dict[str, object]) -> list[dict[str, object]]:
@@ -58,11 +63,12 @@ def _build_component_rows(status: dict[str, object], readiness: dict[str, object
 
 def show() -> None:
     readiness = load_readiness_summary()
+    evidence = load_readiness_evidence_bundle()
     status = load_system_runtime_status()
     surface_status = load_operator_surface_status()
 
-    st.markdown("### System & Readiness")
-    st.caption("System 页面只保留 operator 真正关心的健康面：readiness、UI surfaces freshness 和最小运行时摘要。")
+    st.markdown("### Readiness Evidence")
+    st.caption("System 页面主叙事是 evidence bundle，而不是单一的 GO/NO-GO 口号或文件路径。")
 
     surface_rows = [
         {
@@ -94,9 +100,9 @@ def show() -> None:
     with c4:
         st.metric("Weather Smoke", status.get("weather_smoke_status") or "unknown", delta="real weather chain")
 
-    st.markdown("#### Readiness Summary")
-    st.info(readiness.get("decision_reason") or "尚未生成 readiness 报告。")
-    boundary = readiness.get("capability_boundary_summary") or {}
+    st.markdown("#### Decision")
+    st.info(evidence.get("decision_reason") or readiness.get("decision_reason") or "尚未生成 readiness 证据包。")
+    boundary = evidence.get("capability_boundary_summary") or readiness.get("capability_boundary_summary") or {}
     if boundary:
         st.caption(
             "Capability boundary: "
@@ -106,11 +112,46 @@ def show() -> None:
             f"shadow_submitter_only={boundary.get('shadow_submitter_only')} · "
             f"manifest_status={boundary.get('manifest_status')}"
         )
-    phase_table = readiness["phase_table"]
-    if phase_table.empty:
-        st.warning("当前没有 `ui.phase_readiness_summary` 数据。请先运行 `weather_live_prereq_readiness`。")
+    st.markdown("#### Capability Boundary")
+    boundary_rows = [
+        {"字段": "manifest_status", "值": evidence.get("capability_manifest_status") or readiness.get("capability_manifest_status")},
+        {"字段": "manual_only", "值": boundary.get("manual_only")},
+        {"字段": "default_off", "值": boundary.get("default_off")},
+        {"字段": "approve_usdc_only", "值": boundary.get("approve_usdc_only")},
+        {"字段": "shadow_submitter_only", "值": boundary.get("shadow_submitter_only")},
+    ]
+    st.dataframe(pd.DataFrame(boundary_rows), width="stretch", hide_index=True)
+
+    st.markdown("#### Dependency Freshness")
+    dependency_rows = []
+    for name, payload in (evidence.get("dependency_statuses") or {}).items():
+        dependency_rows.append(
+            {
+                "Dependency": name,
+                "Status": payload.get("status"),
+                "Updated At": payload.get("updated_at"),
+                "Path": payload.get("path"),
+            }
+        )
+    if dependency_rows:
+        st.dataframe(pd.DataFrame(dependency_rows), width="stretch", hide_index=True)
     else:
-        st.dataframe(phase_table, width="stretch", hide_index=True)
+        st.info("当前还没有 readiness evidence dependency rows。")
+
+    st.markdown("#### Evidence Paths")
+    path_rows = [{"路径类型": key, "路径": value} for key, value in (evidence.get("evidence_paths") or {}).items()]
+    if path_rows:
+        st.dataframe(pd.DataFrame(path_rows), width="stretch", hide_index=True)
+    else:
+        st.info("当前还没有 evidence path rows。")
+
+    st.markdown("#### Blockers / Warnings")
+    blocker_rows = [{"type": "blocker", "value": item} for item in (evidence.get("blockers") or [])]
+    blocker_rows.extend({"type": "warning", "value": item} for item in (evidence.get("warnings") or []))
+    if blocker_rows:
+        st.dataframe(pd.DataFrame(blocker_rows), width="stretch", hide_index=True)
+    else:
+        st.success("当前 evidence bundle 没有 blockers / warnings。")
 
     st.markdown("#### Runtime Component Surface")
     rows = _build_component_rows(status, readiness)
@@ -127,12 +168,18 @@ def show() -> None:
     ]
     st.dataframe(pd.DataFrame(health_rows), width="stretch", hide_index=True)
 
+    phase_table = readiness["phase_table"]
+    if not phase_table.empty:
+        with st.expander("Readiness Gate Details", expanded=False):
+            st.dataframe(phase_table, width="stretch", hide_index=True)
+
     with st.expander("File Paths", expanded=False):
         path_rows = [
             {"路径类型": "UI Lite DB", "路径": status["ui_lite_db_path"]},
             {"路径类型": "UI Replica DB", "路径": status["ui_replica_db_path"]},
             {"路径类型": "Readiness JSON", "路径": status["readiness_report_path"]},
             {"路径类型": "Readiness Markdown", "路径": status["readiness_report_markdown_path"]},
+            {"路径类型": "Readiness Evidence", "路径": status["readiness_evidence_path"]},
             {"路径类型": "Capability Manifest", "路径": status["capability_manifest_path"]},
             {"路径类型": "Weather Smoke Report", "路径": status["weather_smoke_report_path"]},
         ]

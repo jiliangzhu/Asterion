@@ -63,6 +63,9 @@ class StationMapperTest(unittest.TestCase):
                 source="operator_override",
                 authoritative_source="weather.com",
                 is_override=True,
+                mapping_method="market_override",
+                mapping_confidence=0.99,
+                override_reason="manual override",
                 metadata={"kind": "override"},
             )
             task_id = enqueue_station_mapping_upserts(queue_cfg, mappings=[default_mapping, override_mapping], run_id="run_station_map")
@@ -93,12 +96,21 @@ class StationMapperTest(unittest.TestCase):
                             location_name="New York City",
                             authoritative_source="weather.com",
                         )
+                        station_record = mapper.resolve_record_from_spec_inputs(
+                            con,
+                            market_id="mkt_weather_1",
+                            location_name="New York City",
+                            authoritative_source="weather.com",
+                        )
                         fallback = mapper.get_station_metadata(con, station_id="KNYC")
                     finally:
                         con.close()
 
             self.assertEqual(station.station_id, "KLGA")
             self.assertEqual(station.source, "operator_override")
+            self.assertEqual(station_record.mapping_method, "market_override")
+            self.assertAlmostEqual(station_record.mapping_confidence, 0.99)
+            self.assertEqual(station_record.override_reason, "manual override")
             self.assertEqual(fallback.station_id, "KNYC")
             self.assertEqual(fallback.source, "station_registry")
 
