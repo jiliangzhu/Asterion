@@ -1,5 +1,12 @@
 """Monitoring and readiness modules."""
 
+from .capability_manifest_v1 import (
+    DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH,
+    build_capability_boundary_summary,
+    build_controlled_live_capability_manifest,
+    load_controlled_live_capability_manifest,
+    write_controlled_live_capability_manifest,
+)
 from .health_monitor_v1 import (
     ChainTxHealthSnapshot,
     DegradeStatus,
@@ -38,6 +45,7 @@ from .readiness_checker_v1 import (
 
 __all__ = [
     "ChainTxHealthSnapshot",
+    "DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH",
     "DegradeStatus",
     "DEFAULT_READINESS_REPORT_JSON_PATH",
     "DEFAULT_READINESS_REPORT_MARKDOWN_PATH",
@@ -55,6 +63,8 @@ __all__ = [
     "SubmitterHealthSnapshot",
     "SystemHealthSnapshot",
     "WSHealthSnapshot",
+    "build_capability_boundary_summary",
+    "build_controlled_live_capability_manifest",
     "collect_chain_tx_health",
     "collect_degrade_status",
     "collect_external_execution_health",
@@ -67,5 +77,7 @@ __all__ = [
     "collect_ws_health",
     "evaluate_p3_readiness",
     "evaluate_p4_live_prereq_readiness",
+    "load_controlled_live_capability_manifest",
+    "write_controlled_live_capability_manifest",
     "write_readiness_report",
 ]

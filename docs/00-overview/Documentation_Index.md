@@ -1,7 +1,7 @@
 # Asterion Documentation Index
 
 **版本**: v1.2
-**更新日期**: 2026-03-12
+**更新日期**: 2026-03-15
 **目标**: 统一 Asterion 文档的目录结构、分类规则和 source-of-truth，避免后续开发中出现重复文档、重复接口定义和失效导航。
 
 ---
@@ -57,6 +57,7 @@ source-of-truth：
 - `phase-plans/P2_Implementation_Plan.md`
 - `phase-plans/P3_Implementation_Plan.md`
 - `phase-plans/P4_Implementation_Plan.md`
+- `phase-plans/Post_P4_Remediation_Implementation_Plan.md`
 - `checklists/P0_Closeout_Checklist.md`
 - `checklists/P1_Closeout_Checklist.md`
 - `checklists/P2_Closeout_Checklist.md`
@@ -96,6 +97,7 @@ source-of-truth：
 
 - “这一阶段具体先做什么、后做什么、交付什么”
 - “每个阶段计划、检查清单、迁移台账分别放在哪里”
+- post-P4 remediation 的 canonical 实施路径，以及治理/安全/交易能力增强的分阶段修复顺序
 
 ### `docs/20-architecture/`
 

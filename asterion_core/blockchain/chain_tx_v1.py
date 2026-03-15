@@ -168,7 +168,6 @@ class ControlledLiveSmokeWalletPolicy:
     allowed_tx_kinds: list[str]
     allowed_spenders: list[str]
     max_approve_amount: Decimal
-    private_key_env_var: str
 
 
 @dataclass(frozen=True)
@@ -746,17 +745,24 @@ def load_controlled_live_smoke_policy(path: str | Path) -> ControlledLiveSmokePo
                 allowed_tx_kinds=[str(value).strip() for value in list(item.get("allowed_tx_kinds") or []) if str(value).strip()],
                 allowed_spenders=[_normalize_address(value) for value in list(item.get("allowed_spenders") or []) if str(value).strip()],
                 max_approve_amount=max_approve_amount,
-                private_key_env_var=str(item.get("private_key_env_var") or "").strip(),
             )
         )
     invalid_wallets = [
         item.wallet_id
         for item in wallets
-        if not item.wallet_id or not item.allowed_tx_kinds or not item.allowed_spenders or not item.private_key_env_var
+        if not item.wallet_id or not item.allowed_tx_kinds or not item.allowed_spenders
     ]
     if invalid_wallets:
         raise ValueError("controlled live smoke policy contains incomplete wallet entries")
     return ControlledLiveSmokePolicy(chain_id=chain_id, wallets=wallets)
+
+
+def controlled_live_wallet_secret_env_var(wallet_id: str) -> str:
+    normalized = "".join(char if char.isalnum() else "_" for char in str(wallet_id).strip())
+    normalized = "_".join(part for part in normalized.upper().split("_") if part)
+    if not normalized:
+        raise ValueError("wallet_id is required to derive controlled live secret env var")
+    return f"ASTERION_CONTROLLED_LIVE_SECRET_PK_{normalized}"
 
 
 def _sanitize_signed_payload_json(signed_payload_json: dict[str, Any]) -> dict[str, Any]:

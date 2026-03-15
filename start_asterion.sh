@@ -11,10 +11,41 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# 项目目录
-PROJECT_DIR="/Users/jayzhu/web3/Asterion"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$SCRIPT_DIR"
 VENV_PATH="$PROJECT_DIR/.venv"
 DATA_DIR="$PROJECT_DIR/data"
+LOG_DIR="$PROJECT_DIR/logs"
+
+print_boundary_summary() {
+    echo ""
+    echo "当前边界:"
+    echo "  - manual-only"
+    echo "  - default-off"
+    echo "  - approve_usdc only"
+    echo "  - remediation in progress"
+}
+
+require_path() {
+    local path="$1"
+    local label="$2"
+    if [ ! -e "$path" ]; then
+        echo -e "${RED}错误: 缺少 ${label}: ${path}${NC}"
+        exit 1
+    fi
+}
+
+validate_common_layout() {
+    require_path "$PROJECT_DIR/README.md" "repo root marker"
+    require_path "$PROJECT_DIR/ui/app.py" "Operator Console 入口"
+    require_path "$PROJECT_DIR/scripts/run_real_weather_chain_loop.py" "real weather chain loop"
+    require_path "$PROJECT_DIR/scripts/refresh_operator_console_surfaces.py" "operator console refresh script"
+}
+
+validate_runtime_prereqs() {
+    validate_common_layout
+    require_path "$VENV_PATH" "虚拟环境"
+}
 
 load_project_env() {
     if [ -f "$PROJECT_DIR/.env" ]; then
@@ -34,25 +65,24 @@ show_help() {
     echo "选项:"
     echo "  --help, -h          显示帮助信息"
     echo "  --web, -w           启动 Operator Console (Streamlit)"
-    echo "  --data, -d          运行真实天气数据链 (默认启用 weather agents)"
-    echo "  --paper, -p         运行 Paper 交易"
-    echo "  --all, -a           启动所有服务 (Web + 数据 + Paper)"
+    echo "  --data, -d          启动真实天气数据链后台 loop (默认启用 weather agents)"
+    echo "  --inspect-paper, -p 执行 paper execution 只读检查，不启动独立服务"
+    echo "  --all, -a           启动当前可运行 surfaces (Data loop + Web)"
     echo "  --setup, -s         首次安装依赖"
     echo "  --stop, -x          停止所有服务"
+    print_boundary_summary
     echo ""
     echo "示例:"
-    echo "  ./start_asterion.sh --web      # 仅启动 Operator Console"
-    echo "  ./start_asterion.sh --all      # 启动完整系统"
-    echo "  ./start_asterion.sh --setup    # 首次安装"
+    echo "  ./start_asterion.sh --web           # 仅启动 Operator Console"
+    echo "  ./start_asterion.sh --data          # 仅启动真实天气数据链后台 loop"
+    echo "  ./start_asterion.sh --inspect-paper # 检查 paper execution 代码路径"
+    echo "  ./start_asterion.sh --all           # 启动 data loop + web"
+    echo "  ./start_asterion.sh --setup         # 首次安装"
 }
 
 # 检查并激活虚拟环境
 activate_venv() {
-    if [ ! -d "$VENV_PATH" ]; then
-        echo -e "${RED}错误: 虚拟环境不存在，请先运行: ./start_asterion.sh --setup${NC}"
-        exit 1
-    fi
-    
+    validate_runtime_prereqs
     source "$VENV_PATH/bin/activate"
     load_project_env
     echo -e "${GREEN}✓ 虚拟环境已激活${NC}"
@@ -105,16 +135,18 @@ setup() {
 start_web() {
     echo -e "${BLUE}🌐 启动 Asterion Operator Console...${NC}"
     activate_venv
-    
+
     cd "$PROJECT_DIR"
-    
+
     # 检查 Streamlit 是否安装
     if ! pip show streamlit &> /dev/null; then
         echo "📦 安装 Streamlit..."
         pip install streamlit -q
     fi
 
-    refresh_operator_console_surfaces || true
+    if ! refresh_operator_console_surfaces; then
+        echo -e "${YELLOW}⚠ readiness / UI surfaces 刷新失败，将以 degraded 模式继续启动 Web UI${NC}"
+    fi
     
     # 启动 Streamlit
     echo "🚀 启动 Streamlit 服务..."
@@ -124,21 +156,20 @@ start_web() {
 
 refresh_operator_console_surfaces() {
     echo -e "${BLUE}🧭 刷新 readiness / UI lite 读面...${NC}"
-    activate_venv
-
+    validate_runtime_prereqs
     cd "$PROJECT_DIR"
-    mkdir -p "$DATA_DIR/ui" "$DATA_DIR/meta" logs
+    mkdir -p "$DATA_DIR/ui" "$DATA_DIR/meta" "$LOG_DIR"
 
     local refresh_output
     if refresh_output=$("$VENV_PATH/bin/python" scripts/refresh_operator_console_surfaces.py 2>&1); then
-        echo "$refresh_output" > logs/operator_console_refresh.log
+        echo "$refresh_output" > "$LOG_DIR/operator_console_refresh.log"
         echo -e "${GREEN}✓ readiness / UI lite 刷新完成${NC}"
         echo -e "${YELLOW}📋 刷新日志: logs/operator_console_refresh.log${NC}"
         return 0
     fi
 
-    echo "$refresh_output" > logs/operator_console_refresh.log
-    echo -e "${YELLOW}⚠ readiness / UI lite 刷新失败，将继续启动 Web UI${NC}"
+    echo "$refresh_output" > "$LOG_DIR/operator_console_refresh.log"
+    echo -e "${YELLOW}⚠ readiness / UI lite 刷新失败${NC}"
     echo -e "${YELLOW}📋 刷新日志: logs/operator_console_refresh.log${NC}"
     return 1
 }
@@ -147,11 +178,11 @@ refresh_operator_console_surfaces() {
 start_data() {
     echo -e "${BLUE}📊 启动真实天气数据链...${NC}"
     activate_venv
-    
+
     cd "$PROJECT_DIR"
-    
+
     # 创建日志目录
-    mkdir -p logs
+    mkdir -p "$LOG_DIR"
     
     if pgrep -f "scripts/run_real_weather_chain_loop.py" > /dev/null; then
         echo -e "${YELLOW}♻ 检测到已有真实天气数据链进程，先停止旧进程以加载最新代码${NC}"
@@ -165,7 +196,7 @@ start_data() {
         --interval-minutes 10 \
         --recent-within-days 14 \
         --force-rebuild-on-start \
-        < /dev/null > logs/real_weather_chain_loop.log 2>&1 &
+        < /dev/null > "$LOG_DIR/real_weather_chain_loop.log" 2>&1 &
     local loop_pid=$!
     disown "$loop_pid" 2>/dev/null || true
     sleep 1
@@ -180,18 +211,14 @@ start_data() {
     echo -e "${YELLOW}📄 结果报告: data/dev/real_weather_chain/real_weather_chain_report.json${NC}"
 }
 
-# 启动 Paper 交易
-start_paper() {
-    echo -e "${BLUE}⚡ 启动 Paper 交易...${NC}"
+# 只读检查 Paper 交易路径
+inspect_paper() {
+    echo -e "${BLUE}🔎 检查 Paper execution 路径...${NC}"
     activate_venv
-    
+
     cd "$PROJECT_DIR"
-    
-    echo "📝 Paper 交易模块已就绪"
-    echo "✓ paper_adapter_v1 已加载"
-    echo "✓ Paper order journal payload 已配置"
-    
-    # 显示可用的 paper 功能
+
+    echo "📝 检查 paper execution 代码路径和关键入口..."
     python -c "
 from asterion_core.execution.paper_adapter_v1 import (
     build_paper_order,
@@ -203,21 +230,17 @@ print('  - build_paper_order')
 print('  - build_order_state_transition')  
 print('  - paper_order_journal_payload')
 "
-    
-    echo -e "${GREEN}✓ Paper 交易已启动${NC}"
+
+    echo -e "${GREEN}✓ Paper execution 路径检查通过${NC}"
 }
 
 # 启动所有服务
 start_all() {
-    echo -e "${BLUE}🚀 启动完整 Asterion 系统...${NC}"
-    
-    # 数据收集（后台）
-    start_data
-    
-    # Paper 交易
-    start_paper
+    echo -e "${BLUE}🚀 启动当前可运行的 Asterion operator surfaces...${NC}"
+    print_boundary_summary
 
-    echo -e "${GREEN}✓ 所有服务已启动${NC}"
+    start_data
+    echo -e "${GREEN}✓ data loop 已启动，接下来启动 Operator Console${NC}"
     start_web
 }
 
@@ -255,8 +278,8 @@ main() {
         --data|-d)
             start_data
             ;;
-        --paper|-p)
-            start_paper
+        --inspect-paper|-p)
+            inspect_paper
             ;;
         --all|-a)
             start_all

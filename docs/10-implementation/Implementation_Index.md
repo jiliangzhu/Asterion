@@ -1,7 +1,7 @@
 # Asterion Implementation Index
 
 **版本**: v1.2
-**更新日期**: 2026-03-12
+**更新日期**: 2026-03-15
 **目标**: 作为 `docs/10-implementation/` 的统一入口，按“阶段计划 / 检查清单 / runbook / 迁移台账 / module notes”分类组织实施文档，便于快速定位每个阶段的实施计划、关闭条件和运行入口。
 
 ---
@@ -24,6 +24,7 @@
 docs/10-implementation/
   Implementation_Index.md
   phase-plans/
+    Post_P4_Remediation_Implementation_Plan.md
     P0_Implementation_Plan.md
     P1_Implementation_Plan.md
     P2_Implementation_Plan.md
@@ -71,6 +72,7 @@ docs/10-implementation/
 
 ### 3.1 当前阶段计划
 
+- [Post_P4_Remediation_Implementation_Plan.md](./phase-plans/Post_P4_Remediation_Implementation_Plan.md)
 - [P4_Implementation_Plan.md](./phase-plans/P4_Implementation_Plan.md)
 - [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
 - [P0_Implementation_Plan.md](./phase-plans/P0_Implementation_Plan.md)
@@ -187,21 +189,22 @@ docs/10-implementation/
 ## 5. 当前建议阅读顺序
 
 1. [Implementation_Index.md](./Implementation_Index.md)
-2. [P4_Implementation_Plan.md](./phase-plans/P4_Implementation_Plan.md)
-3. [P4_Closeout_Checklist.md](./checklists/P4_Closeout_Checklist.md)
-4. [P4_Controlled_Rollout_Decision_Runbook.md](./runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
-5. [P4_Real_Weather_Chain_Smoke_Runbook.md](./runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md)
-6. [P4_Controlled_Live_Smoke_Runbook.md](./runbooks/P4_Controlled_Live_Smoke_Runbook.md)
-7. [P3_Closeout_Checklist.md](./checklists/P3_Closeout_Checklist.md)
-8. [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
-9. [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
-10. [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
-11. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
-12. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
-13. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
-14. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
-15. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
-16. 对应模块的 module note
+2. [Post_P4_Remediation_Implementation_Plan.md](./phase-plans/Post_P4_Remediation_Implementation_Plan.md)
+3. [P4_Implementation_Plan.md](./phase-plans/P4_Implementation_Plan.md)
+4. [P4_Closeout_Checklist.md](./checklists/P4_Closeout_Checklist.md)
+5. [P4_Controlled_Rollout_Decision_Runbook.md](./runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
+6. [P4_Real_Weather_Chain_Smoke_Runbook.md](./runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md)
+7. [P4_Controlled_Live_Smoke_Runbook.md](./runbooks/P4_Controlled_Live_Smoke_Runbook.md)
+8. [P3_Closeout_Checklist.md](./checklists/P3_Closeout_Checklist.md)
+9. [P3_Paper_Execution_Runbook.md](./runbooks/P3_Paper_Execution_Runbook.md)
+10. [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
+11. [P2_Closeout_Checklist.md](./checklists/P2_Closeout_Checklist.md)
+12. [P2_Implementation_Plan.md](./phase-plans/P2_Implementation_Plan.md)
+13. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
+14. [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+15. [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+16. [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md)
+17. 对应模块的 module note
 
 ---
 
@@ -209,6 +212,7 @@ docs/10-implementation/
 
 - 不要再把新的实施文档直接平铺到 `docs/10-implementation/` 根目录
 - 一个阶段只保留一个 canonical 实施计划
+- post-P4 remediation 统一以 [Post_P4_Remediation_Implementation_Plan.md](./phase-plans/Post_P4_Remediation_Implementation_Plan.md) 为实施入口
 - 同类清单放到 `checklists/`，不要混入 `phase-plans/`
 - 运行入口、读路径、交接说明统一放到 `runbooks/`
 - module note 更新时，同时检查 [AlphaDesk_Migration_Ledger.md](./migration-ledger/AlphaDesk_Migration_Ledger.md) 的状态字段是否需要同步

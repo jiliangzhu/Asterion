@@ -7,7 +7,7 @@
 **文档版本**: v1.2
 **创建日期**: 2026-03-07
 **更新日期**: 2026-03-12
-**状态**: 详细设计完成，P3 已关闭，P4 已关闭（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` / `P4-12` 已完成；ready for controlled live rollout decision）
+**状态**: 详细设计完成，`P0` 到 `P4` scaffold 已落地；当前 active 状态为 `post-P4 remediation`（closeout pending objective verification）
 
 ---
 
@@ -26,6 +26,7 @@
 - [Documentation Index](./Documentation_Index.md)
 - [开发路线图](./DEVELOPMENT_ROADMAP.md)
 - [Implementation Index](../10-implementation/Implementation_Index.md)
+- [Post-P4 Remediation 实施计划](../10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
 - [P4 实施文档](../10-implementation/phase-plans/P4_Implementation_Plan.md)
 - [P4 关闭清单](../10-implementation/checklists/P4_Closeout_Checklist.md)
 - [P4 Controlled Rollout Decision Runbook](../10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
@@ -2281,7 +2282,7 @@ class CircuitBreaker:
 - `P4` closeout checklist
 - controlled live smoke runbook
 - controlled rollout decision runbook
-- `ready for controlled live rollout decision`
+- historical rollout decision boundary artifacts；当前 active development 已切换到 `post-P4 remediation`
 
 ---
 

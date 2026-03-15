@@ -16,6 +16,12 @@ from asterion_core.monitoring.health_monitor_v1 import (
     collect_signer_health,
     collect_submitter_health,
 )
+from asterion_core.monitoring.capability_manifest_v1 import (
+    DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH,
+    build_capability_boundary_summary,
+    build_controlled_live_capability_manifest,
+    write_controlled_live_capability_manifest,
+)
 from asterion_core.storage.logger import get_logger
 from asterion_core.storage.write_queue import default_write_queue_path
 from asterion_core.storage.utils import safe_json_dumps
@@ -138,6 +144,9 @@ class ReadinessReport:
     decision_reason: str
     data_hash: str
     gate_results: list[ReadinessGateResult]
+    capability_boundary_summary: dict[str, Any] | None = None
+    capability_manifest_path: str | None = None
+    capability_manifest_status: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -148,6 +157,9 @@ class ReadinessReport:
             "decision_reason": self.decision_reason,
             "data_hash": self.data_hash,
             "gate_results": [item.to_dict() for item in self.gate_results],
+            "capability_boundary_summary": dict(self.capability_boundary_summary or {}),
+            "capability_manifest_path": self.capability_manifest_path,
+            "capability_manifest_status": self.capability_manifest_status,
         }
 
     @classmethod
@@ -160,6 +172,9 @@ class ReadinessReport:
             decision_reason=str(data["decision_reason"]),
             data_hash=str(data["data_hash"]),
             gate_results=[ReadinessGateResult.from_dict(item) for item in list(data.get("gate_results", []))],
+            capability_boundary_summary=dict(data.get("capability_boundary_summary") or {}) or None,
+            capability_manifest_path=str(data["capability_manifest_path"]) if data.get("capability_manifest_path") else None,
+            capability_manifest_status=str(data["capability_manifest_status"]) if data.get("capability_manifest_status") else None,
         )
 
     def to_markdown(self) -> str:
@@ -175,10 +190,27 @@ class ReadinessReport:
             f"**Decision**: `{self.go_decision}`",
             f"**Reason**: {self.decision_reason}",
             f"**Data Hash**: `{self.data_hash}`",
+            f"**Capability Manifest**: `{self.capability_manifest_status or 'missing'}`",
             "",
             "## Gate Results",
             "",
         ]
+        if self.capability_boundary_summary:
+            lines.extend(
+                [
+                    "## Capability Boundary",
+                    "",
+                    f"- `manual_only`: {self.capability_boundary_summary.get('manual_only')}",
+                    f"- `default_off`: {self.capability_boundary_summary.get('default_off')}",
+                    f"- `approve_usdc_only`: {self.capability_boundary_summary.get('approve_usdc_only')}",
+                    f"- `shadow_submitter_only`: {self.capability_boundary_summary.get('shadow_submitter_only')}",
+                    f"- `manifest_status`: {self.capability_boundary_summary.get('manifest_status')}",
+                    "",
+                ]
+            )
+            if self.capability_manifest_path:
+                lines.append(f"- `manifest_path`: `{self.capability_manifest_path}`")
+                lines.append("")
         for gate in self.gate_results:
             status = "PASS" if gate.passed else "FAIL"
             lines.append(f"### {gate.gate_name}: {status}")
@@ -209,6 +241,11 @@ class ReadinessConfig:
     readiness_report_json_path: str = DEFAULT_READINESS_REPORT_JSON_PATH
     readiness_report_markdown_path: str = DEFAULT_READINESS_REPORT_MARKDOWN_PATH
     write_queue_path: str = dataclasses.field(default_factory=default_write_queue_path)
+    controlled_live_smoke_policy_path: str = "config/controlled_live_smoke.json"
+    controlled_live_capability_manifest_path: str = DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH
+    signer_backend_kind: str = "disabled"
+    submitter_backend_kind: str = "disabled"
+    chain_tx_backend_kind: str = "disabled"
     require_agent_surface: bool = True
     require_ui_lite: bool = True
 
@@ -267,6 +304,17 @@ def evaluate_p4_live_prereq_readiness(config: ReadinessConfig) -> ReadinessRepor
         if all_passed
         else f"failed gates: {', '.join(failed)}; not ready for controlled live rollout decision"
     )
+    capability_manifest = build_controlled_live_capability_manifest(
+        policy_path=config.controlled_live_smoke_policy_path,
+        signer_backend_kind=config.signer_backend_kind,
+        chain_tx_backend_kind=config.chain_tx_backend_kind,
+        submitter_backend_kind=config.submitter_backend_kind,
+    )
+    capability_manifest_path = write_controlled_live_capability_manifest(
+        capability_manifest,
+        path=config.controlled_live_capability_manifest_path,
+    )
+    capability_boundary_summary = build_capability_boundary_summary(capability_manifest)
     generated_at = datetime.now(UTC)
     hash_payload = {
         "target": ReadinessTarget.P4_LIVE_PREREQUISITES.value,
@@ -275,6 +323,8 @@ def evaluate_p4_live_prereq_readiness(config: ReadinessConfig) -> ReadinessRepor
         "go_decision": go_decision,
         "decision_reason": decision_reason,
         "gate_results": [item.to_dict() for item in gate_results],
+        "capability_boundary_summary": capability_boundary_summary,
+        "capability_manifest_status": capability_manifest.get("manifest_status"),
     }
     return ReadinessReport(
         target=ReadinessTarget.P4_LIVE_PREREQUISITES,
@@ -284,6 +334,9 @@ def evaluate_p4_live_prereq_readiness(config: ReadinessConfig) -> ReadinessRepor
         decision_reason=decision_reason,
         data_hash=_stable_hash(hash_payload),
         gate_results=gate_results,
+        capability_boundary_summary=capability_boundary_summary,
+        capability_manifest_path=capability_manifest_path,
+        capability_manifest_status=str(capability_manifest.get("manifest_status") or "missing"),
     )
 
 

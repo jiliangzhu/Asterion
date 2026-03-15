@@ -16,6 +16,7 @@ from asterion_core.blockchain import (
 )
 from asterion_core.clients import ClobPublicClient
 from asterion_core.clients.http_retry import RetryHttpClient
+from asterion_core.monitoring import DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH
 from asterion_core.execution import (
     DisabledSubmitterBackend,
     SafeDefaultChainAccountCapabilityReader,
@@ -81,6 +82,7 @@ class AsterionColdPathSettings:
     watcher_rpc_urls: list[str]
     readiness_report_json_path: str = "data/ui/asterion_readiness_p4.json"
     readiness_report_markdown_path: str = "data/ui/asterion_readiness_p4.md"
+    controlled_live_capability_manifest_path: str = DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH
 
     @classmethod
     def from_env(cls) -> "AsterionColdPathSettings":
@@ -119,6 +121,10 @@ class AsterionColdPathSettings:
             chain_registry_path=os.getenv("ASTERION_CHAIN_REGISTRY_PATH", "config/chain_registry.polygon.json"),
             controlled_live_smoke_policy_path=os.getenv(
                 "ASTERION_CONTROLLED_LIVE_SMOKE_POLICY_PATH", "config/controlled_live_smoke.json"
+            ),
+            controlled_live_capability_manifest_path=os.getenv(
+                "ASTERION_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH",
+                DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH,
             ),
             capability_chain_id=int(os.getenv("ASTERION_CAPABILITY_CHAIN_ID", "137")),
             capability_rpc_urls=capability_rpc_urls,
@@ -296,6 +302,9 @@ class ControlledLiveSmokeRuntimeResource:
     def resolve_policy_path(self) -> str:
         return str(Path(self.settings.controlled_live_smoke_policy_path))
 
+    def resolve_manifest_path(self) -> str:
+        return str(Path(self.settings.controlled_live_capability_manifest_path))
+
 
 @dataclass(frozen=True)
 class LivePrereqReadinessRuntimeResource:
@@ -318,6 +327,9 @@ class LivePrereqReadinessRuntimeResource:
 
     def resolve_readiness_report_markdown_path(self) -> str:
         return str(Path(self.settings.readiness_report_markdown_path))
+
+    def resolve_capability_manifest_path(self) -> str:
+        return str(Path(self.settings.controlled_live_capability_manifest_path))
 
 
 @dataclass(frozen=True)
@@ -391,6 +403,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
                 controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
+                controlled_live_capability_manifest_path=settings.controlled_live_capability_manifest_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -430,6 +443,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
                 controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
+                controlled_live_capability_manifest_path=settings.controlled_live_capability_manifest_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -477,6 +491,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
                 controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
+                controlled_live_capability_manifest_path=settings.controlled_live_capability_manifest_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -521,6 +536,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 wallet_registry_path=self.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
                 controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
+                controlled_live_capability_manifest_path=settings.controlled_live_capability_manifest_path,
                 capability_chain_id=int(self.capability_chain_id),
                 capability_rpc_urls=list(self.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -562,6 +578,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=self.chain_registry_path,
                 controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
+                controlled_live_capability_manifest_path=settings.controlled_live_capability_manifest_path,
                 capability_chain_id=int(self.capability_chain_id),
                 capability_rpc_urls=list(self.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -601,6 +618,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
                 controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
+                controlled_live_capability_manifest_path=settings.controlled_live_capability_manifest_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -640,6 +658,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
                 controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
+                controlled_live_capability_manifest_path=settings.controlled_live_capability_manifest_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -680,6 +699,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
                 controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
+                controlled_live_capability_manifest_path=settings.controlled_live_capability_manifest_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=self.signer_backend_kind,
@@ -720,6 +740,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=settings.chain_registry_path,
                 controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
+                controlled_live_capability_manifest_path=settings.controlled_live_capability_manifest_path,
                 capability_chain_id=settings.capability_chain_id,
                 capability_rpc_urls=list(settings.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -762,6 +783,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 wallet_registry_path=settings.wallet_registry_path,
                 chain_registry_path=self.chain_registry_path,
                 controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
+                controlled_live_capability_manifest_path=settings.controlled_live_capability_manifest_path,
                 capability_chain_id=int(self.capability_chain_id),
                 capability_rpc_urls=list(self.capability_rpc_urls),
                 signer_backend_kind=settings.signer_backend_kind,
@@ -780,6 +802,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
     class DagsterLivePrereqReadinessRuntimeResource(ConfigurableResource):
         readiness_report_json_path: str = "data/ui/asterion_readiness_p4.json"
         readiness_report_markdown_path: str = "data/ui/asterion_readiness_p4.md"
+        controlled_live_capability_manifest_path: str = DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH
 
         def build_runtime(self) -> LivePrereqReadinessRuntimeResource:
             settings = AsterionColdPathSettings.from_env()
@@ -815,12 +838,14 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 watcher_rpc_urls=list(settings.watcher_rpc_urls),
                 readiness_report_json_path=self.readiness_report_json_path,
                 readiness_report_markdown_path=self.readiness_report_markdown_path,
+                controlled_live_capability_manifest_path=self.controlled_live_capability_manifest_path,
             )
             return LivePrereqReadinessRuntimeResource(settings=settings)
 
 
     class DagsterControlledLiveSmokeRuntimeResource(ConfigurableResource):
         controlled_live_smoke_policy_path: str = "config/controlled_live_smoke.json"
+        controlled_live_capability_manifest_path: str = DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH
 
         def build_runtime(self) -> ControlledLiveSmokeRuntimeResource:
             settings = AsterionColdPathSettings.from_env()
@@ -856,6 +881,7 @@ if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
                 watcher_rpc_urls=list(settings.watcher_rpc_urls),
                 readiness_report_json_path=settings.readiness_report_json_path,
                 readiness_report_markdown_path=settings.readiness_report_markdown_path,
+                controlled_live_capability_manifest_path=self.controlled_live_capability_manifest_path,
             )
             return ControlledLiveSmokeRuntimeResource(settings=settings)
 
@@ -928,9 +954,11 @@ def build_dagster_resource_defs(settings: AsterionColdPathSettings | None = None
         "live_prereq_readiness_runtime": DagsterLivePrereqReadinessRuntimeResource(
             readiness_report_json_path=active.readiness_report_json_path,
             readiness_report_markdown_path=active.readiness_report_markdown_path,
+            controlled_live_capability_manifest_path=active.controlled_live_capability_manifest_path,
         ),
         "controlled_live_smoke_runtime": DagsterControlledLiveSmokeRuntimeResource(
             controlled_live_smoke_policy_path=active.controlled_live_smoke_policy_path,
+            controlled_live_capability_manifest_path=active.controlled_live_capability_manifest_path,
         ),
         "forecast_runtime": DagsterForecastRuntimeResource(forecast_primary_source=active.forecast_primary_source),
         "watcher_rpc_pool": DagsterWatcherRpcPoolResource(watcher_chain_id=active.watcher_chain_id),

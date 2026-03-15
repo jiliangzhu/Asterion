@@ -22,6 +22,7 @@ DEFAULT_UI_LITE_DB_PATH = UI_DIR / "asterion_ui_lite.duckdb"
 DEFAULT_UI_REPLICA_DB_PATH = UI_DIR / "asterion_ui.duckdb"
 DEFAULT_P4_READINESS_REPORT_PATH = UI_DIR / "asterion_readiness_p4.json"
 DEFAULT_P4_READINESS_REPORT_MD_PATH = UI_DIR / "asterion_readiness_p4.md"
+DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH = DATA_DIR / "meta" / "controlled_live_capability_manifest.json"
 DEFAULT_REAL_WEATHER_CHAIN_REPORT_PATH = REAL_WEATHER_CHAIN_DIR / "real_weather_chain_report.json"
 DEFAULT_REAL_WEATHER_CHAIN_DB_PATH = REAL_WEATHER_CHAIN_DIR / "real_weather_chain.duckdb"
 DEFAULT_CANONICAL_DB_PATH = DATA_DIR / "asterion.duckdb"
@@ -74,6 +75,18 @@ def _safe_read_json(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _read_json_result(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"payload": None, "exists": False, "error": None}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {"payload": None, "exists": True, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"payload": None, "exists": True, "error": "json payload is not an object"}
+    return {"payload": payload, "exists": True, "error": None}
+
+
 def _resolve_real_weather_smoke_report_path() -> Path:
     path = os.getenv("ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH", "").strip()
     return Path(path) if path else DEFAULT_REAL_WEATHER_CHAIN_REPORT_PATH
@@ -113,31 +126,48 @@ def _resolve_readiness_markdown_path() -> Path:
     return Path(path) if path else DEFAULT_P4_READINESS_REPORT_MD_PATH
 
 
+def _resolve_controlled_live_capability_manifest_path() -> Path:
+    path = os.getenv("ASTERION_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH", "").strip()
+    return Path(path) if path else DEFAULT_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH
+
+
 def _empty_df() -> pd.DataFrame:
     return pd.DataFrame()
 
 
 def _read_ui_table(db_path: Path, table: str) -> pd.DataFrame:
+    return _read_ui_table_result(db_path, table)["frame"]
+
+
+def _read_ui_table_result(db_path: Path, table: str) -> dict[str, Any]:
     if duckdb is None or not db_path.exists():
-        return _empty_df()
-    con = duckdb.connect(str(db_path), read_only=True)
+        return {"frame": _empty_df(), "error": None}
     try:
-        return con.execute(f"SELECT * FROM {table}").df()
-    except Exception:  # noqa: BLE001
-        return _empty_df()
+        con = duckdb.connect(str(db_path), read_only=True)
+    except Exception as exc:  # noqa: BLE001
+        return {"frame": _empty_df(), "error": str(exc)}
+    try:
+        return {"frame": con.execute(f"SELECT * FROM {table}").df(), "error": None}
+    except Exception as exc:  # noqa: BLE001
+        return {"frame": _empty_df(), "error": str(exc)}
     finally:
         con.close()
 
 
 def _read_agent_review_from_runtime(db_path: Path) -> pd.DataFrame:
+    return _read_agent_review_from_runtime_result(db_path)["frame"]
+
+
+def _read_agent_review_from_runtime_result(db_path: Path) -> dict[str, Any]:
     if duckdb is None or not db_path.exists():
-        return _empty_df()
+        return {"frame": _empty_df(), "error": None}
     try:
         con = duckdb.connect(str(db_path), read_only=True)
-    except Exception:  # noqa: BLE001
-        return _empty_df()
+    except Exception as exc:  # noqa: BLE001
+        return {"frame": _empty_df(), "error": str(exc)}
     try:
-        return con.execute(
+        return {
+            "frame": con.execute(
             """
             WITH latest_invocation AS (
                 SELECT
@@ -264,22 +294,29 @@ def _read_agent_review_from_runtime(db_path: Path) -> pd.DataFrame:
             LEFT JOIN latest_review review ON review.invocation_id = inv.invocation_id
             LEFT JOIN latest_evaluation evaluation ON evaluation.invocation_id = inv.invocation_id
             """
-        ).df()
-    except Exception:  # noqa: BLE001
-        return _empty_df()
+        ).df(),
+            "error": None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"frame": _empty_df(), "error": str(exc)}
     finally:
         con.close()
 
 
 def _read_weather_market_rows_from_runtime(db_path: Path) -> pd.DataFrame:
+    return _read_weather_market_rows_from_runtime_result(db_path)["frame"]
+
+
+def _read_weather_market_rows_from_runtime_result(db_path: Path) -> dict[str, Any]:
     if duckdb is None or not db_path.exists():
-        return _empty_df()
+        return {"frame": _empty_df(), "error": None}
     try:
         con = duckdb.connect(str(db_path), read_only=True)
-    except Exception:  # noqa: BLE001
-        return _empty_df()
+    except Exception as exc:  # noqa: BLE001
+        return {"frame": _empty_df(), "error": str(exc)}
     try:
-        return con.execute(
+        return {
+            "frame": con.execute(
             """
             WITH latest_invocation AS (
                 SELECT
@@ -383,9 +420,11 @@ def _read_weather_market_rows_from_runtime(db_path: Path) -> pd.DataFrame:
               AND COALESCE(m.archived, FALSE) = FALSE
             ORDER BY COALESCE(m.close_time, m.end_date) ASC, m.market_id ASC
             """
-        ).df()
-    except Exception:  # noqa: BLE001
-        return _empty_df()
+        ).df(),
+            "error": None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"frame": _empty_df(), "error": str(exc)}
     finally:
         con.close()
 
@@ -668,12 +707,16 @@ def _derive_market_opportunities_from_report(report: dict[str, Any] | None) -> p
 
 def load_ui_lite_snapshot() -> dict[str, Any]:
     db_path = _resolve_ui_lite_db_path()
-    tables = {name: _read_ui_table(db_path, table) for name, table in UI_TABLES.items()}
+    table_results = {name: _read_ui_table_result(db_path, table) for name, table in UI_TABLES.items()}
+    tables = {name: result["frame"] for name, result in table_results.items()}
+    table_errors = {name: result["error"] for name, result in table_results.items() if result["error"]}
     return {
         "db_path": str(db_path),
         "exists": db_path.exists(),
         "tables": tables,
         "table_row_counts": {name: int(len(frame.index)) for name, frame in tables.items()},
+        "table_errors": table_errors,
+        "read_error": next(iter(table_errors.values()), None),
     }
 
 
@@ -681,17 +724,35 @@ def load_readiness_summary() -> dict[str, Any]:
     snapshot = load_ui_lite_snapshot()
     frame = snapshot["tables"]["phase_readiness_summary"]
     report_path = _resolve_readiness_report_path()
-    report = _safe_read_json(report_path)
+    report_result = _read_json_result(report_path)
+    report = report_result["payload"]
+    manifest_path = _resolve_controlled_live_capability_manifest_path()
+    manifest_result = _read_json_result(manifest_path)
+    manifest = manifest_result["payload"]
 
     target = None
     go_decision = None
     decision_reason = None
     updated_at = None
+    capability_boundary_summary = None
+    capability_manifest_status = None
     if report:
         target = report.get("target")
         go_decision = report.get("go_decision")
         decision_reason = report.get("decision_reason")
-        updated_at = report.get("evaluated_at")
+        updated_at = report.get("evaluated_at") or report.get("generated_at")
+        capability_boundary_summary = report.get("capability_boundary_summary")
+        capability_manifest_status = report.get("capability_manifest_status")
+    if manifest and capability_boundary_summary is None:
+        capability_boundary_summary = {
+            "manual_only": manifest.get("controlled_live_mode") == "manual_only",
+            "default_off": bool(manifest.get("default_off")),
+            "approve_usdc_only": manifest.get("allowed_tx_kinds") == ["approve_usdc"],
+            "shadow_submitter_only": manifest.get("submitter_capability") == "shadow_only",
+            "manifest_status": manifest.get("manifest_status"),
+        }
+    if manifest and not capability_manifest_status:
+        capability_manifest_status = manifest.get("manifest_status")
 
     failed_gate_names: list[str] = []
     if not frame.empty:
@@ -714,8 +775,13 @@ def load_readiness_summary() -> dict[str, Any]:
         "go_decision": go_decision,
         "decision_reason": decision_reason,
         "updated_at": updated_at,
+        "capability_boundary_summary": capability_boundary_summary or {},
+        "capability_manifest_path": str(manifest_path),
+        "capability_manifest_exists": manifest_path.exists(),
+        "capability_manifest_status": capability_manifest_status or (manifest or {}).get("manifest_status"),
         "failed_gate_names": failed_gate_names,
         "source": "ui_lite+json" if (snapshot["exists"] or report_path.exists()) else "missing",
+        "read_error": snapshot.get("read_error") or report_result["error"] or manifest_result["error"],
     }
 
 
@@ -754,30 +820,41 @@ def load_market_opportunity_data() -> dict[str, Any]:
     snapshot = load_ui_lite_snapshot()
     frame = _sort_market_opportunities(snapshot["tables"]["market_opportunity_summary"])
     if not frame.empty:
-        return {"source": "ui_lite", "frame": frame}
+        return {"source": "ui_lite", "frame": frame, "read_error": snapshot.get("read_error")}
     report_frame = _derive_market_opportunities_from_report(load_real_weather_smoke_report())
     if not report_frame.empty:
-        return {"source": "smoke_report", "frame": report_frame}
-    runtime_frame = _sort_market_opportunities(_read_weather_market_rows_from_runtime(_resolve_real_weather_chain_db_path()))
-    return {"source": "weather_smoke_db", "frame": runtime_frame}
+        return {"source": "smoke_report", "frame": report_frame, "read_error": snapshot.get("read_error")}
+    runtime_result = _read_weather_market_rows_from_runtime_result(_resolve_real_weather_chain_db_path())
+    runtime_frame = _sort_market_opportunities(runtime_result["frame"])
+    return {"source": "weather_smoke_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
 
 
 def load_agent_review_data() -> dict[str, Any]:
     snapshot = load_ui_lite_snapshot()
     frame = _sort_desc(snapshot["tables"]["agent_review_summary"], "updated_at")
     if not frame.empty:
-        return {"source": "ui_lite", "frame": frame}
+        return {"source": "ui_lite", "frame": frame, "read_error": snapshot.get("read_error")}
 
-    runtime_frame = _sort_desc(_read_agent_review_from_runtime(_resolve_canonical_db_path()), "updated_at")
+    runtime_result = _read_agent_review_from_runtime_result(_resolve_canonical_db_path())
+    runtime_frame = _sort_desc(runtime_result["frame"], "updated_at")
     if not runtime_frame.empty:
-        return {"source": "runtime_db", "frame": runtime_frame}
+        return {"source": "runtime_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
 
-    smoke_runtime_frame = _sort_desc(_read_agent_review_from_runtime(_resolve_real_weather_chain_db_path()), "updated_at")
+    smoke_runtime_result = _read_agent_review_from_runtime_result(_resolve_real_weather_chain_db_path())
+    smoke_runtime_frame = _sort_desc(smoke_runtime_result["frame"], "updated_at")
     if not smoke_runtime_frame.empty:
-        return {"source": "weather_smoke_db", "frame": smoke_runtime_frame}
+        return {
+            "source": "weather_smoke_db",
+            "frame": smoke_runtime_frame,
+            "read_error": snapshot.get("read_error") or runtime_result["error"] or smoke_runtime_result["error"],
+        }
 
     smoke_frame = _sort_desc(_agent_rows_from_smoke_report(load_real_weather_smoke_report()), "updated_at")
-    return {"source": "smoke_report", "frame": smoke_frame}
+    return {
+        "source": "smoke_report",
+        "frame": smoke_frame,
+        "read_error": snapshot.get("read_error") or runtime_result["error"] or smoke_runtime_result["error"],
+    }
 
 
 def load_market_chain_analysis_data() -> dict[str, Any]:
@@ -918,9 +995,12 @@ def load_agent_runtime_status() -> dict[str, Any]:
 def load_system_runtime_status() -> dict[str, Any]:
     readiness = load_readiness_summary()
     snapshot = load_ui_lite_snapshot()
-    report = load_real_weather_smoke_report()
-    opportunities = load_market_opportunity_data()["frame"]
-    agent_data = load_agent_review_data()["frame"]
+    report_result = _read_json_result(_resolve_real_weather_smoke_report_path())
+    report = report_result["payload"]
+    opportunity_payload = load_market_opportunity_data()
+    opportunities = opportunity_payload["frame"]
+    agent_payload = load_agent_review_data()
+    agent_data = agent_payload["frame"]
     return {
         "ui_lite_db_path": snapshot["db_path"],
         "ui_lite_exists": snapshot["exists"],
@@ -930,13 +1010,207 @@ def load_system_runtime_status() -> dict[str, Any]:
         "readiness_report_exists": readiness["report_exists"],
         "readiness_report_markdown_path": readiness["report_markdown_path"],
         "readiness_report_markdown_exists": Path(readiness["report_markdown_path"]).exists(),
+        "capability_manifest_path": readiness["capability_manifest_path"],
+        "capability_manifest_exists": readiness["capability_manifest_exists"],
+        "capability_manifest_status": readiness.get("capability_manifest_status"),
+        "capability_boundary_summary": readiness.get("capability_boundary_summary") or {},
         "weather_smoke_report_path": str(_resolve_real_weather_smoke_report_path()),
         "weather_smoke_report_exists": _resolve_real_weather_smoke_report_path().exists(),
         "weather_smoke_status": (report or {}).get("chain_status"),
+        "weather_smoke_report_error": report_result["error"],
         "table_row_counts": snapshot["table_row_counts"],
+        "ui_lite_read_error": snapshot.get("read_error"),
         "opportunity_row_count": int(len(opportunities.index)),
         "actionable_market_count": int((opportunities["actionability_status"] == "actionable").sum()) if "actionability_status" in opportunities.columns else 0,
         "agent_row_count": int(len(agent_data.index)),
+        "agent_read_error": agent_payload.get("read_error"),
+        "opportunity_read_error": opportunity_payload.get("read_error"),
+    }
+
+
+def _surface_status(status: str, label: str, detail: str, source: str, updated_at: Any) -> dict[str, Any]:
+    return {
+        "status": status,
+        "label": label,
+        "detail": detail,
+        "source": source,
+        "updated_at": updated_at,
+    }
+
+
+def _status_rank(status: str) -> int:
+    return {
+        "read_error": 4,
+        "degraded_source": 3,
+        "refresh_in_progress": 2,
+        "no_data": 1,
+        "ok": 0,
+    }.get(status, 0)
+
+
+def load_operator_surface_status() -> dict[str, dict[str, Any]]:
+    readiness = load_readiness_summary()
+    execution = load_execution_console_data()
+    market_payload = load_market_chain_analysis_data()
+    agent_payload = load_agent_review_data()
+    system_status = load_system_runtime_status()
+
+    readiness_source = readiness.get("source") or "missing"
+    if readiness.get("read_error"):
+        readiness_surface = _surface_status(
+            "read_error",
+            "Readiness 读取失败",
+            str(readiness.get("read_error")),
+            readiness_source,
+            readiness.get("updated_at"),
+        )
+    elif readiness.get("capability_manifest_status") not in {None, "valid"}:
+        readiness_surface = _surface_status(
+            "degraded_source",
+            "Readiness 边界清单未就绪",
+            f"capability manifest status={readiness.get('capability_manifest_status') or 'missing'}",
+            readiness_source,
+            readiness.get("updated_at"),
+        )
+    elif not readiness.get("report_exists") and readiness["phase_table"].empty:
+        readiness_surface = _surface_status(
+            "no_data",
+            "Readiness 暂无数据",
+            "尚未生成 readiness report 或 ui.phase_readiness_summary。",
+            readiness_source,
+            readiness.get("updated_at"),
+        )
+    else:
+        readiness_surface = _surface_status(
+            "ok",
+            "Readiness 就绪",
+            readiness.get("decision_reason") or "readiness report 可读。",
+            readiness_source,
+            readiness.get("updated_at"),
+        )
+
+    report = market_payload["weather_smoke_report"] or {}
+    chain_status = report.get("chain_status")
+    refresh_state = report.get("refresh_state")
+    market_rows = market_payload["market_rows"]
+    market_source = market_payload.get("market_opportunity_source") or "missing"
+    market_read_error = load_market_opportunity_data().get("read_error") or system_status.get("weather_smoke_report_error")
+    if market_read_error and not market_rows:
+        market_surface = _surface_status(
+            "read_error",
+            "Market 链路读取失败",
+            str(market_read_error),
+            market_source,
+            report.get("timestamp"),
+        )
+    elif refresh_state == "initializing" or chain_status == "initializing":
+        market_surface = _surface_status(
+            "refresh_in_progress",
+            "Market 链路刷新中",
+            report.get("refresh_note") or "正在生成最新一轮市场链报告。",
+            market_source,
+            report.get("timestamp"),
+        )
+    elif chain_status in {"transport_error", "degraded"} or (market_source in {"smoke_report", "weather_smoke_db"} and market_rows):
+        market_surface = _surface_status(
+            "degraded_source",
+            "Market 链路处于降级数据源",
+            report.get("note") or ((report.get("forecast_service") or {}).get("note")) or "当前使用 fallback source 或部分上游降级。",
+            market_source,
+            report.get("timestamp"),
+        )
+    elif (chain_status == "no_open_recent_markets") or not market_rows:
+        market_surface = _surface_status(
+            "no_data",
+            "Market 链路暂无数据",
+            report.get("note") or "当前没有命中的开盘近期天气市场。",
+            market_source,
+            report.get("timestamp"),
+        )
+    else:
+        market_surface = _surface_status(
+            "ok",
+            "Market 链路正常",
+            "市场链路已生成可用读面。",
+            market_source,
+            report.get("timestamp"),
+        )
+
+    agent_frame = agent_payload["frame"]
+    agent_source = agent_payload.get("source") or "missing"
+    if agent_payload.get("read_error") and agent_frame.empty:
+        agent_surface = _surface_status(
+            "read_error",
+            "Agent 工作读取失败",
+            str(agent_payload.get("read_error")),
+            agent_source,
+            None,
+        )
+    elif agent_frame.empty:
+        agent_surface = _surface_status(
+            "no_data",
+            "Agent 工作暂无数据",
+            "当前没有可见的 agent work rows。",
+            agent_source,
+            None,
+        )
+    elif agent_source in {"smoke_report", "weather_smoke_db"}:
+        agent_surface = _surface_status(
+            "degraded_source",
+            "Agent 工作来自降级数据源",
+            "当前 agent work 通过 smoke/runtime fallback 暴露，尚未进入 UI lite 主读面。",
+            agent_source,
+            agent_frame.iloc[0].get("updated_at") if not agent_frame.empty else None,
+        )
+    else:
+        agent_surface = _surface_status(
+            "ok",
+            "Agent 工作正常",
+            "agent review rows 可正常读取。",
+            agent_source,
+            agent_frame.iloc[0].get("updated_at") if not agent_frame.empty else None,
+        )
+
+    execution_frames = [execution["tickets"], execution["live_prereq"], execution["exceptions"], load_wallet_readiness_data()]
+    execution_rows = sum(len(frame.index) for frame in execution_frames)
+    if system_status.get("ui_lite_read_error") and execution_rows == 0:
+        execution_surface = _surface_status(
+            "read_error",
+            "Execution / Live-Prereq 读取失败",
+            str(system_status.get("ui_lite_read_error")),
+            "ui_lite",
+            None,
+        )
+    elif execution_rows == 0 and not system_status.get("ui_lite_exists"):
+        execution_surface = _surface_status(
+            "no_data",
+            "Execution / Live-Prereq 暂无数据",
+            "当前没有 execution/live-prereq 读面数据。",
+            "ui_lite",
+            None,
+        )
+    else:
+        execution_surface = _surface_status(
+            "ok",
+            "Execution / Live-Prereq 正常",
+            "execution/live-prereq 读面可读。",
+            "ui_lite",
+            None,
+        )
+
+    surfaces = {
+        "readiness": readiness_surface,
+        "market_chain": market_surface,
+        "agent_review": agent_surface,
+        "execution": execution_surface,
+    }
+    worst_name, worst_surface = max(surfaces.items(), key=lambda item: _status_rank(item[1]["status"]))
+    return {
+        **surfaces,
+        "overall": {
+            "surface": worst_name,
+            **worst_surface,
+        },
     }
 
 
@@ -987,6 +1261,7 @@ def build_ops_console_overview() -> dict[str, Any]:
         "market_data": market_analysis,
         "market_watch_data": market_watch_data,
         "agent_data": agent_data,
+        "surface_status": load_operator_surface_status(),
         "top_opportunities": top_opportunities,
         "largest_blocker": {"summary": largest_blocker, "source": blocker_source},
         "metrics": {

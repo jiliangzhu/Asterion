@@ -19,6 +19,7 @@
 - wallet allowlist / spender allowlist / amount cap
 - env private key transaction signing
 - real transaction broadcast seam
+- capability manifest boundary
 - 审计与 journal 闭环
 
 ---
@@ -53,14 +54,17 @@
 
 必须同时满足：
 
-1. 最新 `P4` readiness 报告是 `GO`
-2. `ui.live_prereq_wallet_summary.wallet_readiness_status = 'ready'`
-3. `ASTERION_CONTROLLED_LIVE_SMOKE_ARMED=true`
-4. request 中的 `approval_token` 与 `ASTERION_CONTROLLED_LIVE_SMOKE_APPROVAL_TOKEN` 完全匹配
-5. wallet 在 `config/controlled_live_smoke.json` allowlist 中
-6. spender 在 wallet allowlist 中
-7. `amount <= max_approve_amount`
-8. wallet 对应私钥环境变量存在，且地址与 wallet `funder` 匹配
+1. `data/meta/controlled_live_capability_manifest.json` 存在且 `manifest_status = valid`
+2. manifest 固定声明：
+   - `controlled_live_mode = manual_only`
+   - `chain_tx_backend_kind = real_broadcast`
+   - `signer_backend_kind = env_private_key_tx`
+3. 最新 `P4` readiness 报告是 `GO`
+4. `ui.live_prereq_wallet_summary.wallet_readiness_status = 'ready'`
+5. `ASTERION_CONTROLLED_LIVE_SECRET_ARMED=true`
+6. request 中的 `approval_token` 与 `ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN` 完全匹配
+7. wallet / tx kind / spender / amount 全部命中 `config/controlled_live_smoke.json` 与 capability manifest
+8. wallet 对应 secret env `ASTERION_CONTROLLED_LIVE_SECRET_PK_<WALLET_ID_UPPER_SNAKE>` 存在，且地址与 wallet `funder` 匹配
 
 任一条件不满足：
 
@@ -74,17 +78,19 @@
 repo 配置：
 
 - `config/controlled_live_smoke.json`
+- `data/meta/controlled_live_capability_manifest.json`
 
 环境变量：
 
-- `ASTERION_CONTROLLED_LIVE_SMOKE_ARMED`
-- `ASTERION_CONTROLLED_LIVE_SMOKE_APPROVAL_TOKEN`
-- 每个 wallet 的 `private_key_env_var`
+- `ASTERION_CONTROLLED_LIVE_SECRET_ARMED`
+- `ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN`
+- 每个 wallet 的 `ASTERION_CONTROLLED_LIVE_SECRET_PK_<WALLET_ID_UPPER_SNAKE>`
 
 策略边界：
 
-- allowlist / cap / wallet-secret-env mapping 以 repo JSON 为准
-- env 只负责 arm、approval token 和 secret
+- allowlist / cap 以 repo JSON 为准
+- capability boundary 以 manifest 为准
+- env 只负责 arm、approval token 和 secret；不再通过 policy JSON 声明 secret env 名
 
 ---
 
@@ -110,6 +116,7 @@ repo 配置：
 
 优先检查：
 
+- capability manifest 是否存在且为 `valid`
 - readiness JSON 是否 `GO`
 - `ui.live_prereq_wallet_summary` 的 `wallet_readiness_status`
 - env arm/token 是否正确
@@ -149,3 +156,8 @@ repo 配置：
 本阶段结论只能是：
 
 - `ready for controlled live rollout decision`
+
+注意：
+
+- `GO` 只表示 rollout decision readiness
+- 不表示 capability unrestricted

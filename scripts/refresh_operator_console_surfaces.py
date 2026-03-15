@@ -55,6 +55,8 @@ def main() -> int:
                 ui_lite_meta_path=ui_runtime.resolve_ui_lite_meta_path(),
                 readiness_report_json_path=ui_runtime.resolve_readiness_report_json_path(),
                 readiness_report_markdown_path=ui_runtime.resolve_readiness_report_markdown_path(),
+                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
+                controlled_live_capability_manifest_path=ui_runtime.resolve_capability_manifest_path(),
             )
         finally:
             con.close()

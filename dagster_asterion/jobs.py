@@ -8,7 +8,7 @@ from .job_map import list_weather_cold_path_jobs
 DAGSTER_AVAILABLE = importlib.util.find_spec("dagster") is not None
 
 if DAGSTER_AVAILABLE:  # pragma: no cover - optional dependency
-    from dagster import OpExecutionContext, job, op
+    from dagster import job, op
 
 
 def build_job_definitions():
@@ -27,7 +27,7 @@ def _build_single_job(spec):
         description=spec.description,
         tags={"handler_name": spec.handler_name, "cold_path_mode": spec.mode},
     )
-    def _cold_path_shell_op(context: OpExecutionContext) -> dict[str, str]:
+    def _cold_path_shell_op(context) -> dict[str, str]:
         context.log.info("cold-path shell job=%s handler=%s", spec.job_name, spec.handler_name)
         return {"job_name": spec.job_name, "handler_name": spec.handler_name}
 

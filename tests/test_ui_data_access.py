@@ -16,6 +16,7 @@ from ui.data_access import (
     load_market_chain_analysis_data,
     load_market_opportunity_data,
     load_home_decision_snapshot,
+    load_operator_surface_status,
     load_readiness_summary,
     load_system_runtime_status,
     load_ui_lite_snapshot,
@@ -27,6 +28,7 @@ class UiDataAccessTest(unittest.TestCase):
     def test_load_readiness_summary_uses_json_when_ui_lite_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "readiness.json"
+            manifest_path = Path(tmpdir) / "capability_manifest.json"
             report_path.write_text(
                 json.dumps(
                     {
@@ -34,8 +36,20 @@ class UiDataAccessTest(unittest.TestCase):
                         "go_decision": "GO",
                         "decision_reason": "all readiness gates passed; ready for controlled live rollout decision",
                         "evaluated_at": "2026-03-13T10:00:00+00:00",
+                        "capability_boundary_summary": {
+                            "manual_only": True,
+                            "default_off": True,
+                            "approve_usdc_only": True,
+                            "shadow_submitter_only": True,
+                            "manifest_status": "valid",
+                        },
+                        "capability_manifest_status": "valid",
                     }
                 ),
+                encoding="utf-8",
+            )
+            manifest_path.write_text(
+                json.dumps({"manifest_status": "valid"}),
                 encoding="utf-8",
             )
             with patch.dict(
@@ -43,6 +57,7 @@ class UiDataAccessTest(unittest.TestCase):
                 {
                     "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing.duckdb"),
                     "ASTERION_READINESS_REPORT_JSON_PATH": str(report_path),
+                    "ASTERION_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH": str(manifest_path),
                 },
                 clear=False,
             ):
@@ -50,6 +65,7 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(summary["go_decision"], "GO")
             self.assertEqual(summary["target"], "p4_live_prerequisites")
             self.assertEqual(summary["failed_gate_names"], [])
+            self.assertEqual(summary["capability_manifest_status"], "valid")
 
     def test_load_ui_lite_snapshot_reads_existing_tables_and_tolerates_missing_ones(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -477,7 +493,7 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(overview["metrics"]["weather_chain_status"], "ok")
             self.assertEqual(overview["metrics"]["weather_market_question"], "Will the highest temperature in Seattle be between 36-37°F on March 13?")
             self.assertEqual(overview["metrics"]["weather_market_count"], 0)
-            self.assertEqual(len(system_rows), 6)
+            self.assertEqual(len(system_rows), 7)
 
     def test_load_home_decision_snapshot_surfaces_largest_blocker_and_recent_agent_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -526,6 +542,200 @@ class UiDataAccessTest(unittest.TestCase):
 
             self.assertEqual(snapshot["largest_blocker"]["source"], "readiness")
             self.assertEqual(snapshot["recent_agent_summary"]["agent_type"], "rule2spec")
+
+    def test_load_operator_surface_status_reports_no_data_when_everything_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(Path(tmpdir) / "missing_weather_report.json"),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_weather_runtime.duckdb"),
+                    "ASTERION_READINESS_REPORT_JSON_PATH": str(Path(tmpdir) / "missing_readiness.json"),
+                },
+                clear=False,
+            ):
+                status = load_operator_surface_status()
+
+        self.assertEqual(status["readiness"]["status"], "no_data")
+        self.assertEqual(status["market_chain"]["status"], "no_data")
+        self.assertEqual(status["agent_review"]["status"], "no_data")
+        self.assertEqual(status["overall"]["status"], "no_data")
+
+    def test_load_operator_surface_status_reports_refresh_in_progress_from_market_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "weather_report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "chain_status": "initializing",
+                        "refresh_state": "initializing",
+                        "refresh_note": "refresh in progress",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_weather_runtime.duckdb"),
+                    "ASTERION_READINESS_REPORT_JSON_PATH": str(Path(tmpdir) / "missing_readiness.json"),
+                },
+                clear=False,
+            ):
+                status = load_operator_surface_status()
+
+        self.assertEqual(status["market_chain"]["status"], "refresh_in_progress")
+        self.assertEqual(status["overall"]["status"], "refresh_in_progress")
+
+    def test_load_operator_surface_status_reports_read_error_for_invalid_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "weather_report.json"
+            report_path.write_text("{invalid", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_weather_runtime.duckdb"),
+                    "ASTERION_READINESS_REPORT_JSON_PATH": str(Path(tmpdir) / "missing_readiness.json"),
+                },
+                clear=False,
+            ):
+                status = load_operator_surface_status()
+
+        self.assertEqual(status["market_chain"]["status"], "read_error")
+        self.assertEqual(status["overall"]["status"], "read_error")
+
+    def test_load_operator_surface_status_reports_degraded_source_when_runtime_fallback_is_used(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_path = Path(tmpdir) / "real_weather_chain.duckdb"
+            con = duckdb.connect(str(runtime_path))
+            try:
+                con.execute("CREATE SCHEMA weather")
+                con.execute("CREATE SCHEMA agent")
+                con.execute(
+                    """
+                    CREATE TABLE weather.weather_markets(
+                        market_id TEXT, title TEXT, close_time TIMESTAMP, end_date TIMESTAMP,
+                        active BOOLEAN, closed BOOLEAN, archived BOOLEAN, accepting_orders BOOLEAN
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE weather.weather_market_specs(
+                        market_id TEXT, location_name TEXT, station_id TEXT, authoritative_source TEXT,
+                        metric TEXT, bucket_min_value DOUBLE, bucket_max_value DOUBLE, observation_window_local TEXT
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO weather.weather_markets VALUES
+                    ('mkt_1','Seattle weather','2026-03-15 12:00:00','2026-03-15 12:00:00',TRUE,FALSE,FALSE,TRUE)
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO weather.weather_market_specs VALUES
+                    ('mkt_1','Seattle','KSEA','weather.com','temperature_max',36,37,'daily_max')
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE agent.invocations(
+                        invocation_id TEXT, agent_type TEXT, subject_type TEXT, subject_id TEXT, status TEXT,
+                        model_provider TEXT, model_name TEXT, started_at TIMESTAMP, ended_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE agent.outputs(
+                        output_id TEXT, invocation_id TEXT, verdict TEXT, confidence DOUBLE, summary TEXT,
+                        human_review_required BOOLEAN, output_payload_json TEXT, created_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE agent.reviews(
+                        review_id TEXT, invocation_id TEXT, review_status TEXT, reviewer_id TEXT, review_payload_json TEXT, reviewed_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE agent.evaluations(
+                        evaluation_id TEXT, invocation_id TEXT, verification_method TEXT, is_verified BOOLEAN, created_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO agent.invocations VALUES
+                    ('inv_1','rule2spec','weather_market','mkt_1','success','stub','stub-model','2026-03-15 09:00:00','2026-03-15 09:01:00')
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO agent.outputs VALUES
+                    ('out_1','inv_1','review',0.9,'runtime fallback row',FALSE,'{}','2026-03-15 09:01:00')
+                    """
+                )
+            finally:
+                con.close()
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(Path(tmpdir) / "missing_weather_report.json"),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(runtime_path),
+                    "ASTERION_READINESS_REPORT_JSON_PATH": str(Path(tmpdir) / "missing_readiness.json"),
+                    "ASTERION_DB_PATH": str(Path(tmpdir) / "missing_runtime.duckdb"),
+                },
+                clear=False,
+            ):
+                status = load_operator_surface_status()
+
+        self.assertEqual(status["market_chain"]["status"], "degraded_source")
+        self.assertEqual(status["agent_review"]["status"], "degraded_source")
+
+    def test_load_operator_surface_status_marks_readiness_degraded_when_manifest_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "readiness.json"
+            manifest_path = Path(tmpdir) / "capability_manifest.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "target": "p4_live_prerequisites",
+                        "go_decision": "GO",
+                        "decision_reason": "all readiness gates passed; ready for controlled live rollout decision",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest_path.write_text(
+                json.dumps({"manifest_status": "blocked"}),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(Path(tmpdir) / "missing_weather_report.json"),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_weather_runtime.duckdb"),
+                    "ASTERION_READINESS_REPORT_JSON_PATH": str(report_path),
+                    "ASTERION_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH": str(manifest_path),
+                },
+                clear=False,
+            ):
+                status = load_operator_surface_status()
+        self.assertEqual(status["readiness"]["status"], "degraded_source")
 
 
 if __name__ == "__main__":

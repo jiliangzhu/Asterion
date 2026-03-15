@@ -47,15 +47,18 @@
 - `P1` 已关闭
 - `P2` 已关闭
 - `P3` 已关闭
-- `P4` 已关闭（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` / `P4-12` 已完成）
-- 当前 closeout / planning 入口是：
+- `P4` scaffold 已落地（`P4-01` / `P4-12` artifacts 已存在），但当前 active 开发状态已切换到 `post-P4 remediation`
+- 当前 historical closeout / planning artifacts 是：
   - [P4_Closeout_Checklist.md](../10-implementation/checklists/P4_Closeout_Checklist.md)
   - [P4_Controlled_Rollout_Decision_Runbook.md](../10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
   - [P3_Closeout_Checklist.md](../10-implementation/checklists/P3_Closeout_Checklist.md)
   - [P3_Paper_Execution_Runbook.md](../10-implementation/runbooks/P3_Paper_Execution_Runbook.md)
   - [P4_Implementation_Plan.md](../10-implementation/phase-plans/P4_Implementation_Plan.md)
+- 当前 active implementation entry 是：
+  - [Post_P4_Remediation_Implementation_Plan.md](../10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
 - 当前验证基线：
   - `.venv/bin/python -m unittest discover -s tests -v` 已通过
+  - `python -m unittest tests.test_xxx -v` 与 `discover` 都应保持可用
   - system Python 可能缺少 `duckdb`，但仓库内 `.venv` 是 canonical 验证环境
 - `P1` 的 canonical closeout 文档见：
   - [P1_Closeout_Checklist.md](../10-implementation/checklists/P1_Closeout_Checklist.md)

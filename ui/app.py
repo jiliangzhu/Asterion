@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from ui.auth import enforce_ui_auth
+from ui.data_access import load_operator_surface_status
 from ui.pages import agents, execution, home, markets, system
 
 
@@ -181,21 +183,44 @@ def _render_shell_header() -> None:
             <div class="console-title">
                 <div>
                     <div class="console-kicker">Asterion Ops Console</div>
-                    <h1 class="console-heading">Controlled Live Rollout Decision Boundary</h1>
+                    <h1 class="console-heading">Post-P4 Remediation Console</h1>
                 </div>
                 <div>
-                    {_render_status_badge("P4 closed", "ok")}
-                    {_render_status_badge("Ready for controlled live rollout decision", "info")}
+                    {_render_status_badge("P4 scaffold landed", "ok")}
+                    {_render_status_badge("Closeout pending objective verification", "warn")}
                 </div>
             </div>
             <div class="console-subcopy">
                 当前 UI 聚焦 operator workflow：机会优先的 weather markets、paper execution、live-prereq wallet / execution、readiness 与 controlled-live boundary。
-                这里不承诺 unattended live，也不会暴露 raw signer / submitter payload。
+                这里不承诺 unattended live，也不会暴露 raw signer / submitter payload；当前默认口径是 remediation in progress，而不是阶段已完成。
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def _render_global_surface_banner() -> None:
+    surface_status = load_operator_surface_status()
+    overall = surface_status["overall"]
+    status = overall["status"]
+    detail = overall["detail"]
+    surface = overall["surface"]
+    source = overall["source"]
+
+    if status == "ok":
+        return
+
+    message = f"{overall['label']} · surface={surface} · source={source}"
+    if detail:
+        message = f"{message}\n\n{detail}"
+
+    if status == "read_error":
+        st.error(message)
+    elif status == "degraded_source":
+        st.warning(message)
+    else:
+        st.info(message)
 
 
 PAGES = {
@@ -206,8 +231,13 @@ PAGES = {
     "System": ("系统与 Readiness", system.show),
 }
 
+auth_status = enforce_ui_auth()
+if auth_status != "authenticated":
+    st.stop()
+
 
 _render_shell_header()
+_render_global_surface_banner()
 
 st.sidebar.markdown("## Navigation")
 page_key = st.sidebar.radio(
@@ -225,6 +255,6 @@ st.sidebar.markdown("- `approve_usdc only`")
 st.sidebar.markdown("- 不等于 unattended live")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Asterion v1.2 · P4 closed")
+st.sidebar.caption("Asterion v1.2 · post-P4 remediation")
 
 PAGES[page_key][1]()

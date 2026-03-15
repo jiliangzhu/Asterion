@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
-
 import pandas as pd
 import streamlit as st
 
-from ui.data_access import load_market_chain_analysis_data
+from ui.data_access import load_market_chain_analysis_data, load_operator_surface_status
 
 
 def _format_value(value: object) -> str:
@@ -96,6 +94,7 @@ def _build_market_table_rows(
 
 def show() -> None:
     payload = load_market_chain_analysis_data()
+    market_surface = load_operator_surface_status()["market_chain"]
     report = payload["weather_smoke_report"] or {}
     opportunities = payload["market_opportunities"]
     market_rows = payload["market_rows"]
@@ -107,6 +106,14 @@ def show() -> None:
 
     st.markdown("### Opportunity Terminal")
     st.caption("Markets 现在首先回答哪些市场最值得优先看、最可执行、最值得赚钱，而不是只展示链路 debug 细节。")
+
+    if market_surface["status"] in {"read_error", "degraded_source", "refresh_in_progress", "no_data"}:
+        if market_surface["status"] == "read_error":
+            st.error(market_surface["detail"])
+        elif market_surface["status"] == "degraded_source":
+            st.warning(market_surface["detail"])
+        else:
+            st.info(market_surface["detail"])
 
     actionable = opportunities[opportunities["actionability_status"] == "actionable"] if ("actionability_status" in opportunities.columns and not opportunities.empty) else opportunities.iloc[0:0]
     top_row = opportunities.iloc[0] if not opportunities.empty else {}

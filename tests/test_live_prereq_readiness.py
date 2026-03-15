@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
 
-from asterion_core.monitoring import ReadinessConfig, evaluate_p4_live_prereq_readiness
+from asterion_core.monitoring import (
+    ReadinessConfig,
+    build_controlled_live_capability_manifest,
+    evaluate_p4_live_prereq_readiness,
+    write_controlled_live_capability_manifest,
+)
 from asterion_core.storage.write_queue import WriteQueueConfig, enqueue_task, init_queue, mark_task_failed
 from tests.test_p2_closeout import _apply_schema
 
@@ -22,6 +28,8 @@ class LivePrereqReadinessTest(unittest.TestCase):
                 report.decision_reason,
                 "all readiness gates passed; ready for controlled live rollout decision",
             )
+            self.assertEqual(report.capability_manifest_status, "valid")
+            self.assertTrue((report.capability_boundary_summary or {}).get("manual_only"))
 
     def test_signer_path_health_fail(self) -> None:
         import duckdb
@@ -107,6 +115,8 @@ def _seed_p4_readiness_environment(
     db_path = str(Path(tmpdir) / "asterion.duckdb")
     lite_db_path = str(Path(tmpdir) / "ui_lite.duckdb")
     queue_path = str(Path(tmpdir) / "write_queue.sqlite")
+    policy_path = str(Path(tmpdir) / "controlled_live_smoke.json")
+    capability_manifest_path = str(Path(tmpdir) / "controlled_live_capability_manifest.json")
     _apply_schema(db_path)
     con = duckdb.connect(db_path)
     try:
@@ -225,10 +235,41 @@ def _seed_p4_readiness_environment(
         external_status=external_status,
         can_trade=can_trade,
     )
+    Path(policy_path).write_text(
+        json.dumps(
+            {
+                "chain_id": 137,
+                "wallets": [
+                    {
+                        "wallet_id": "wallet_weather_1",
+                        "allowed_tx_kinds": ["approve_usdc"],
+                        "allowed_spenders": ["0x2222222222222222222222222222222222222222"],
+                        "max_approve_amount": "100",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.environ["ASTERION_CONTROLLED_LIVE_SECRET_ARMED"] = "false"
+    os.environ["ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN"] = "live-token"
+    os.environ["ASTERION_CONTROLLED_LIVE_SECRET_PK_WALLET_WEATHER_1"] = "0xabc"
+    manifest = build_controlled_live_capability_manifest(
+        policy_path=policy_path,
+        signer_backend_kind="env_private_key_tx",
+        chain_tx_backend_kind="real_broadcast",
+        submitter_backend_kind="shadow_stub",
+    )
+    write_controlled_live_capability_manifest(manifest, path=capability_manifest_path)
     return ReadinessConfig(
         db_path=db_path,
         ui_lite_db_path=lite_db_path,
         write_queue_path=queue_path,
+        controlled_live_smoke_policy_path=policy_path,
+        controlled_live_capability_manifest_path=capability_manifest_path,
+        signer_backend_kind="env_private_key_tx",
+        submitter_backend_kind="shadow_stub",
+        chain_tx_backend_kind="real_broadcast",
     )
 
 

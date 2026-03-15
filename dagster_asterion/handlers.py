@@ -25,6 +25,7 @@ from asterion_core.blockchain import (
     ChainTxServiceShell,
     build_approve_usdc_request,
     build_chain_tx_attempt_record,
+    controlled_live_wallet_secret_env_var,
     load_controlled_live_smoke_policy,
     build_transaction_signer_request,
     build_wallet_state_observations,
@@ -112,6 +113,7 @@ from asterion_core.journal import (
 from asterion_core.monitoring import (
     ReadinessReport,
     ReadinessConfig,
+    load_controlled_live_capability_manifest,
     evaluate_p4_live_prereq_readiness,
     write_readiness_report,
 )
@@ -898,6 +900,7 @@ def run_weather_controlled_live_smoke_job(
     chain_tx_service: ChainTxServiceShell,
     chain_registry_path: str,
     controlled_live_smoke_policy_path: str,
+    controlled_live_capability_manifest_path: str,
     readiness_report_json_path: str,
     ui_lite_db_path: str,
     chain_tx_reader,
@@ -960,6 +963,7 @@ def run_weather_controlled_live_smoke_job(
             "tx_hash": None,
             "payload_hash": None,
             "reason": reason,
+            "capability_manifest_path": controlled_live_capability_manifest_path,
         }
         if metadata_extra:
             metadata.update(metadata_extra)
@@ -971,6 +975,77 @@ def run_weather_controlled_live_smoke_job(
             metadata=metadata,
         )
 
+    try:
+        manifest = load_controlled_live_capability_manifest(controlled_live_capability_manifest_path)
+    except Exception as exc:  # noqa: BLE001
+        return _blocked(
+            "invalid_controlled_live_capability_manifest",
+            metadata_extra={"manifest_error": str(exc)},
+        )
+    if manifest is None:
+        return _blocked("missing_controlled_live_capability_manifest")
+    manifest_status = str(manifest.get("manifest_status") or "").strip()
+    if manifest_status != "valid":
+        return _blocked(
+            "invalid_controlled_live_capability_manifest",
+            metadata_extra={
+                "manifest_status": manifest_status or "missing",
+                "manifest_blockers": list(manifest.get("blockers") or []),
+            },
+        )
+    if str(manifest.get("controlled_live_mode") or "") != "manual_only":
+        return _blocked("controlled_live_mode_not_manual_only")
+    if str(manifest.get("chain_tx_backend_kind") or "") != "real_broadcast":
+        return _blocked("chain_tx_backend_not_real_broadcast")
+    if str(manifest.get("signer_backend_kind") or "") != "env_private_key_tx":
+        return _blocked("signer_backend_not_env_private_key_tx")
+
+    policy = load_controlled_live_smoke_policy(controlled_live_smoke_policy_path)
+    if policy.chain_id <= 0:
+        return _blocked("invalid_controlled_live_policy")
+
+    try:
+        wallet_policy = policy.wallet_policy(normalized_request.wallet_id)
+    except ValueError:
+        return _blocked("wallet_not_allowlisted")
+    allowed_wallet_ids = {str(item) for item in list(manifest.get("allowed_wallet_ids") or [])}
+    if normalized_request.wallet_id not in allowed_wallet_ids:
+        return _blocked("wallet_not_allowlisted")
+    if normalized_request.tx_kind.value not in wallet_policy.allowed_tx_kinds:
+        return _blocked("tx_kind_not_allowlisted")
+    allowed_tx_kinds = {str(item) for item in list(manifest.get("allowed_tx_kinds") or [])}
+    if normalized_request.tx_kind.value not in allowed_tx_kinds:
+        return _blocked("tx_kind_not_allowlisted")
+    normalized_spender = Web3.to_checksum_address(normalized_request.spender.strip())
+    if normalized_spender not in wallet_policy.allowed_spenders:
+        return _blocked("spender_not_allowlisted")
+    allowed_spenders_by_wallet = {
+        str(key): [Web3.to_checksum_address(str(value)) for value in list(values or [])]
+        for key, values in dict(manifest.get("allowed_spenders_by_wallet") or {}).items()
+    }
+    if normalized_spender not in allowed_spenders_by_wallet.get(normalized_request.wallet_id, []):
+        return _blocked("spender_not_allowlisted")
+    if normalized_request.amount > wallet_policy.max_approve_amount:
+        return _blocked("amount_cap_exceeded")
+    manifest_amount_cap = Decimal(
+        str((manifest.get("max_approve_amount_by_wallet") or {}).get(normalized_request.wallet_id) or "0")
+    )
+    if manifest_amount_cap <= 0 or normalized_request.amount > manifest_amount_cap:
+        return _blocked("amount_cap_exceeded")
+
+    private_key_env_var = controlled_live_wallet_secret_env_var(normalized_request.wallet_id)
+    is_armed = str(os.getenv("ASTERION_CONTROLLED_LIVE_SECRET_ARMED") or "").strip().lower() == "true"
+    if not is_armed:
+        return _blocked("controlled_live_smoke_not_armed")
+    expected_token = str(os.getenv("ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN") or "").strip()
+    if not expected_token or normalized_request.approval_token != expected_token:
+        return _blocked("approval_token_mismatch")
+    if not str(os.getenv(private_key_env_var) or "").strip():
+        return _blocked(
+            "controlled_live_wallet_secret_missing",
+            metadata_extra={"wallet_secret_env_var": private_key_env_var},
+        )
+
     readiness_report = _load_readiness_report_or_none(readiness_report_json_path)
     if readiness_report is None or readiness_report.target.value != "p4_live_prerequisites":
         return _blocked("missing_p4_readiness_report")
@@ -979,28 +1054,6 @@ def run_weather_controlled_live_smoke_job(
     wallet_readiness_status = _load_live_prereq_wallet_status(ui_lite_db_path, wallet_id=normalized_request.wallet_id)
     if wallet_readiness_status != "ready":
         return _blocked("wallet_not_ready", metadata_extra={"wallet_readiness_status": wallet_readiness_status})
-
-    policy = load_controlled_live_smoke_policy(controlled_live_smoke_policy_path)
-    if policy.chain_id <= 0:
-        return _blocked("invalid_controlled_live_policy")
-    is_armed = str(os.getenv("ASTERION_CONTROLLED_LIVE_SMOKE_ARMED") or "").strip().lower() == "true"
-    if not is_armed:
-        return _blocked("controlled_live_smoke_not_armed")
-    expected_token = str(os.getenv("ASTERION_CONTROLLED_LIVE_SMOKE_APPROVAL_TOKEN") or "").strip()
-    if not expected_token or normalized_request.approval_token != expected_token:
-        return _blocked("approval_token_mismatch")
-
-    try:
-        wallet_policy = policy.wallet_policy(normalized_request.wallet_id)
-    except ValueError:
-        return _blocked("wallet_not_allowlisted")
-    if normalized_request.tx_kind.value not in wallet_policy.allowed_tx_kinds:
-        return _blocked("tx_kind_not_allowlisted")
-    normalized_spender = Web3.to_checksum_address(normalized_request.spender.strip())
-    if normalized_spender not in wallet_policy.allowed_spenders:
-        return _blocked("spender_not_allowlisted")
-    if normalized_request.amount > wallet_policy.max_approve_amount:
-        return _blocked("amount_cap_exceeded")
 
     account_capability = load_account_trading_capability(con, wallet_id=normalized_request.wallet_id)
     chain_registry = load_polygon_chain_registry(chain_registry_path)
@@ -1034,7 +1087,7 @@ def run_weather_controlled_live_smoke_job(
         context=signer_request.context,
         payload={
             **signer_request.payload,
-            "private_key_env_var": wallet_policy.private_key_env_var,
+            "private_key_env_var": private_key_env_var,
             "approval_id": normalized_request.approval_id,
             "approval_reason": normalized_request.approval_reason,
         },
@@ -1115,6 +1168,8 @@ def run_weather_controlled_live_smoke_job(
             "status": attempt.status,
             "payload_hash": attempt.payload_hash,
             "tx_hash": attempt.tx_hash,
+            "capability_manifest_path": controlled_live_capability_manifest_path,
+            "manifest_status": manifest_status,
         },
     )
 
@@ -1230,6 +1285,8 @@ def run_weather_live_prereq_readiness_job(
     ui_lite_meta_path: str,
     readiness_report_json_path: str,
     readiness_report_markdown_path: str,
+    controlled_live_smoke_policy_path: str,
+    controlled_live_capability_manifest_path: str,
     run_id: str | None = None,
 ) -> ColdPathHandlerResult:
     request_id = run_id or new_request_id()
@@ -1243,6 +1300,11 @@ def run_weather_live_prereq_readiness_job(
             ui_lite_meta_path=ui_lite_meta_path,
             readiness_report_json_path=readiness_report_json_path,
             readiness_report_markdown_path=readiness_report_markdown_path,
+            controlled_live_smoke_policy_path=controlled_live_smoke_policy_path,
+            controlled_live_capability_manifest_path=controlled_live_capability_manifest_path,
+            signer_backend_kind=os.getenv("ASTERION_SIGNER_BACKEND_KIND", "disabled"),
+            submitter_backend_kind=os.getenv("ASTERION_SUBMITTER_BACKEND_KIND", "disabled"),
+            chain_tx_backend_kind=os.getenv("ASTERION_CHAIN_TX_BACKEND_KIND", "disabled"),
             write_queue_path=queue_cfg.path,
         )
     )
@@ -1276,6 +1338,8 @@ def run_weather_live_prereq_readiness_job(
             "failed_gate_names": failed_gate_names,
             "report_json_path": readiness_report_json_path,
             "report_markdown_path": readiness_report_markdown_path,
+            "capability_manifest_path": report.capability_manifest_path,
+            "capability_manifest_status": report.capability_manifest_status,
             "ui_replica_ok": replica_result.ok,
             "ui_lite_ok": lite_result.ok,
         },

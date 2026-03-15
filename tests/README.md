@@ -15,8 +15,14 @@ python3 -m pip install -e .
 运行方式：
 
 ```bash
+python3 -m unittest tests.test_p4_closeout -v
 python3 -m unittest discover -s tests -v
 ```
+
+两类入口都应保持可用：
+
+- `python3 -m unittest tests.test_xxx -v`
+- `python3 -m unittest discover -s tests -v`
 
 ## 覆盖范围
 

@@ -40,6 +40,7 @@ from asterion_core.contracts import (
     stable_object_id,
 )
 from asterion_core.monitoring import ReadinessGateResult, ReadinessReport, ReadinessTarget
+from asterion_core.monitoring.capability_manifest_v1 import write_controlled_live_capability_manifest
 from asterion_core.signer import SignatureAuditStatus
 from asterion_core.storage.write_queue import WriteQueueConfig
 from dagster_asterion import (
@@ -100,6 +101,7 @@ def _settings() -> AsterionColdPathSettings:
         write_queue_path="data/meta/write_queue.sqlite",
         gamma_base_url="https://gamma-api.polymarket.com",
         gamma_markets_endpoint="/markets",
+        gamma_tag_slug="weather",
         gamma_page_limit=100,
         gamma_max_pages=5,
         gamma_sleep_s=0.0,
@@ -1170,6 +1172,8 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                 ui_lite_meta_path="data/ui/asterion_ui_lite.meta.json",
                 readiness_report_json_path="data/ui/asterion_readiness_p4.json",
                 readiness_report_markdown_path="data/ui/asterion_readiness_p4.md",
+                controlled_live_smoke_policy_path="config/controlled_live_smoke.json",
+                controlled_live_capability_manifest_path="data/meta/controlled_live_capability_manifest.json",
                 run_id="run_live_prereq",
             )
         evaluate.assert_called_once()
@@ -1201,9 +1205,32 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             init_queue(queue_cfg)
             readiness_path = Path(tmpdir) / "asterion_readiness_p4.json"
             ui_lite_path = Path(tmpdir) / "ui_lite.duckdb"
+            manifest_path = Path(tmpdir) / "controlled_live_capability_manifest.json"
             readiness_path.write_text(
                 json.dumps(report.to_dict()),
                 encoding="utf-8",
+            )
+            write_controlled_live_capability_manifest(
+                {
+                    "schema_version": "controlled_live_capability_manifest.v1",
+                    "generated_at": "2026-03-12T12:00:00+00:00",
+                    "manifest_status": "valid",
+                    "controlled_live_mode": "manual_only",
+                    "default_off": True,
+                    "submitter_capability": "shadow_only",
+                    "signer_backend_kind": "env_private_key_tx",
+                    "chain_tx_backend_kind": "real_broadcast",
+                    "allowed_wallet_ids": ["wallet_weather_1"],
+                    "allowed_tx_kinds": ["approve_usdc"],
+                    "allowed_spenders_by_wallet": {
+                        "wallet_weather_1": ["0x2222222222222222222222222222222222222222"]
+                    },
+                    "max_approve_amount_by_wallet": {"wallet_weather_1": "100"},
+                    "secret_source": "controlled_live_env_prefix",
+                    "required_env_vars": [],
+                    "blockers": [],
+                },
+                path=manifest_path,
             )
             ui_con = duckdb.connect(str(ui_lite_path))
             try:
@@ -1223,6 +1250,7 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                 chain_tx_service=object(),
                 chain_registry_path="config/chain_registry.polygon.json",
                 controlled_live_smoke_policy_path="config/controlled_live_smoke.json",
+                controlled_live_capability_manifest_path=str(manifest_path),
                 readiness_report_json_path=str(readiness_path),
                 ui_lite_db_path=str(ui_lite_path),
                 chain_tx_reader=object(),

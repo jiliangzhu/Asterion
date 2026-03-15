@@ -16,6 +16,7 @@ def _format_metric_value(value: object) -> str:
 
 def show() -> None:
     overview = load_home_decision_snapshot()
+    surface_status = overview["surface_status"]
     readiness = overview["readiness"]
     execution = overview["execution"]
     market_data = overview["market_data"]
@@ -28,6 +29,14 @@ def show() -> None:
 
     st.markdown("### Decision Console")
     st.caption("首页现在优先回答 readiness、最大 blocker、当前最佳机会，以及最近 agent 实际产出。")
+
+    degraded_surfaces = [
+        f"{name}: {payload['label']}"
+        for name, payload in surface_status.items()
+        if name != "overall" and payload["status"] in {"read_error", "refresh_in_progress", "degraded_source", "no_data"}
+    ]
+    if degraded_surfaces:
+        st.warning("当前关键数据面状态: " + " | ".join(degraded_surfaces))
 
     top1, top2, top3, top4 = st.columns(4)
     with top1:
@@ -49,8 +58,8 @@ def show() -> None:
         else:
             st.success("当前没有 gate-level blocker。")
         st.caption(
-            "当前仓库状态是 `P4 closed / ready for controlled live rollout decision`，"
-            "但这不表示 unattended live。"
+            "当前仓库状态是 `post-P4 remediation active / closeout pending objective verification`，"
+            "这不表示 unattended live。"
         )
 
     with row1_right:

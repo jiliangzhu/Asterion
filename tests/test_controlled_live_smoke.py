@@ -17,8 +17,14 @@ from asterion_core.blockchain import (
     GasEstimate,
     NonceSelection,
     RealBroadcastBackend,
+    controlled_live_wallet_secret_env_var,
 )
-from asterion_core.monitoring import ReadinessReport, ReadinessTarget
+from asterion_core.monitoring import (
+    ReadinessReport,
+    ReadinessTarget,
+    build_controlled_live_capability_manifest,
+    write_controlled_live_capability_manifest,
+)
 from asterion_core.signer import EnvPrivateKeyTransactionSignerBackend, SignerServiceShell
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.write_queue import WriteQueueConfig
@@ -44,7 +50,15 @@ class ControlledLiveSmokeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             env = _seed_env(tmpdir, wallet_status="ready", readiness_go=True)
             try:
-                with patch.dict(os.environ, {}, clear=False):
+                with patch.dict(
+                    os.environ,
+                    {
+                        "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "false",
+                        "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
+                        env["wallet_secret_env_var"]: env["private_key"],
+                    },
+                    clear=False,
+                ):
                     result = run_weather_controlled_live_smoke_job(
                         env["con"],
                         env["queue_cfg"],
@@ -52,6 +66,7 @@ class ControlledLiveSmokeTest(unittest.TestCase):
                         chain_tx_service=ChainTxServiceShell(RealBroadcastBackend(chain_id=137, rpc_urls=["http://rpc.invalid"])),
                         chain_registry_path=env["chain_registry_path"],
                         controlled_live_smoke_policy_path=env["policy_path"],
+                        controlled_live_capability_manifest_path=env["manifest_path"],
                         readiness_report_json_path=env["readiness_path"],
                         ui_lite_db_path=env["ui_lite_db_path"],
                         chain_tx_reader=_Reader(),
@@ -87,9 +102,9 @@ class ControlledLiveSmokeTest(unittest.TestCase):
                 with patch.dict(
                     os.environ,
                     {
-                        "ASTERION_CONTROLLED_LIVE_SMOKE_ARMED": "true",
-                        "ASTERION_CONTROLLED_LIVE_SMOKE_APPROVAL_TOKEN": "live-token",
-                        env["private_key_env_var"]: env["private_key"],
+                        "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "true",
+                        "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
+                        env["wallet_secret_env_var"]: env["private_key"],
                     },
                     clear=False,
                 ):
@@ -100,6 +115,7 @@ class ControlledLiveSmokeTest(unittest.TestCase):
                         chain_tx_service=ChainTxServiceShell(RealBroadcastBackend(chain_id=137, rpc_urls=["http://rpc.invalid"])),
                         chain_registry_path=env["chain_registry_path"],
                         controlled_live_smoke_policy_path=env["policy_path"],
+                        controlled_live_capability_manifest_path=env["manifest_path"],
                         readiness_report_json_path=env["readiness_path"],
                         ui_lite_db_path=env["ui_lite_db_path"],
                         chain_tx_reader=_Reader(),
@@ -119,9 +135,9 @@ class ControlledLiveSmokeTest(unittest.TestCase):
                 with patch.dict(
                     os.environ,
                     {
-                        "ASTERION_CONTROLLED_LIVE_SMOKE_ARMED": "true",
-                        "ASTERION_CONTROLLED_LIVE_SMOKE_APPROVAL_TOKEN": "live-token",
-                        env["private_key_env_var"]: env["private_key"],
+                        "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "true",
+                        "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
+                        env["wallet_secret_env_var"]: env["private_key"],
                     },
                     clear=False,
                 ):
@@ -132,6 +148,7 @@ class ControlledLiveSmokeTest(unittest.TestCase):
                         chain_tx_service=ChainTxServiceShell(RealBroadcastBackend(chain_id=137, rpc_urls=["http://rpc.invalid"])),
                         chain_registry_path=env["chain_registry_path"],
                         controlled_live_smoke_policy_path=env["policy_path"],
+                        controlled_live_capability_manifest_path=env["manifest_path"],
                         readiness_report_json_path=env["readiness_path"],
                         ui_lite_db_path=env["ui_lite_db_path"],
                         chain_tx_reader=_Reader(),
@@ -151,9 +168,9 @@ class ControlledLiveSmokeTest(unittest.TestCase):
                 with patch.dict(
                     os.environ,
                     {
-                        "ASTERION_CONTROLLED_LIVE_SMOKE_ARMED": "true",
-                        "ASTERION_CONTROLLED_LIVE_SMOKE_APPROVAL_TOKEN": "live-token",
-                        env["private_key_env_var"]: env["private_key"],
+                        "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "true",
+                        "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
+                        env["wallet_secret_env_var"]: env["private_key"],
                     },
                     clear=False,
                 ):
@@ -164,6 +181,7 @@ class ControlledLiveSmokeTest(unittest.TestCase):
                         chain_tx_service=ChainTxServiceShell(RealBroadcastBackend(chain_id=137, rpc_urls=["http://rpc.invalid"])),
                         chain_registry_path=env["chain_registry_path"],
                         controlled_live_smoke_policy_path=env["policy_path"],
+                        controlled_live_capability_manifest_path=env["manifest_path"],
                         readiness_report_json_path=env["readiness_path"],
                         ui_lite_db_path=env["ui_lite_db_path"],
                         chain_tx_reader=_Reader(),
@@ -178,6 +196,7 @@ class ControlledLiveSmokeTest(unittest.TestCase):
                         chain_tx_service=ChainTxServiceShell(RealBroadcastBackend(chain_id=137, rpc_urls=["http://rpc.invalid"])),
                         chain_registry_path=env["chain_registry_path"],
                         controlled_live_smoke_policy_path=env["policy_path"],
+                        controlled_live_capability_manifest_path=env["manifest_path"],
                         readiness_report_json_path=env["readiness_path"],
                         ui_lite_db_path=env["ui_lite_db_path"],
                         chain_tx_reader=_Reader(),
@@ -199,9 +218,9 @@ class ControlledLiveSmokeTest(unittest.TestCase):
                 with patch.dict(
                     os.environ,
                     {
-                        "ASTERION_CONTROLLED_LIVE_SMOKE_ARMED": "true",
-                        "ASTERION_CONTROLLED_LIVE_SMOKE_APPROVAL_TOKEN": "live-token",
-                        env["private_key_env_var"]: env["private_key"],
+                        "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "true",
+                        "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
+                        env["wallet_secret_env_var"]: env["private_key"],
                     },
                     clear=False,
                 ), patch(
@@ -215,6 +234,7 @@ class ControlledLiveSmokeTest(unittest.TestCase):
                         chain_tx_service=chain_tx_service,
                         chain_registry_path=env["chain_registry_path"],
                         controlled_live_smoke_policy_path=env["policy_path"],
+                        controlled_live_capability_manifest_path=env["manifest_path"],
                         readiness_report_json_path=env["readiness_path"],
                         ui_lite_db_path=env["ui_lite_db_path"],
                         chain_tx_reader=_Reader(),
@@ -262,6 +282,55 @@ class ControlledLiveSmokeTest(unittest.TestCase):
                         "controlled_live_smoke.broadcasted",
                     },
                 )
+            finally:
+                con.close()
+
+    def test_writerd_denies_non_allowlisted_controlled_live_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = _seed_env(tmpdir, wallet_status="ready", readiness_go=True)
+            signer_service = SignerServiceShell(EnvPrivateKeyTransactionSignerBackend())
+            chain_tx_service = ChainTxServiceShell(RealBroadcastBackend(chain_id=137, rpc_urls=["http://rpc.invalid"]))
+            try:
+                with patch.dict(
+                    os.environ,
+                    {
+                        "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "true",
+                        "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
+                        env["wallet_secret_env_var"]: env["private_key"],
+                    },
+                    clear=False,
+                ), patch(
+                    "asterion_core.blockchain.chain_tx_v1.RealBroadcastBackend._broadcast_raw_transaction",
+                    return_value="0xabc123",
+                ):
+                    run_weather_controlled_live_smoke_job(
+                        env["con"],
+                        env["queue_cfg"],
+                        signer_service=signer_service,
+                        chain_tx_service=chain_tx_service,
+                        chain_registry_path=env["chain_registry_path"],
+                        controlled_live_smoke_policy_path=env["policy_path"],
+                        controlled_live_capability_manifest_path=env["manifest_path"],
+                        readiness_report_json_path=env["readiness_path"],
+                        ui_lite_db_path=env["ui_lite_db_path"],
+                        chain_tx_reader=_Reader(),
+                        params_json=_request_params(),
+                        run_id="run_controlled_live_allowlist",
+                        observed_at=datetime(2026, 3, 12, 12, 5, tzinfo=UTC),
+                    )
+            finally:
+                env["con"].close()
+
+            _drain_queue(
+                env["queue_cfg"],
+                env["db_path"],
+                "runtime.journal_events",
+            )
+            con = connect_duckdb(DuckDBConfig(db_path=env["db_path"], ddl_path=None))
+            try:
+                self.assertEqual(con.execute("SELECT COUNT(*) FROM meta.signature_audit_logs").fetchone()[0], 1)
+                self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.chain_tx_attempts").fetchone()[0], 0)
+                self.assertGreater(con.execute("SELECT COUNT(*) FROM runtime.journal_events").fetchone()[0], 0)
             finally:
                 con.close()
 
@@ -383,7 +452,7 @@ def _seed_env(tmpdir: str, *, wallet_status: str, readiness_go: bool) -> dict[st
         gate_results=[],
     )
     Path(readiness_path).write_text(json.dumps(report.to_dict()), encoding="utf-8")
-    private_key_env_var = "ASTERION_CONTROLLED_LIVE_SMOKE_PK_WALLET_WEATHER_1"
+    wallet_secret_env_var = controlled_live_wallet_secret_env_var("wallet_weather_1")
     Path(policy_path).write_text(
         json.dumps(
             {
@@ -394,21 +463,38 @@ def _seed_env(tmpdir: str, *, wallet_status: str, readiness_go: bool) -> dict[st
                         "allowed_tx_kinds": ["approve_usdc"],
                         "allowed_spenders": ["0x2222222222222222222222222222222222222222"],
                         "max_approve_amount": "100",
-                        "private_key_env_var": private_key_env_var,
                     }
                 ],
             }
         ),
         encoding="utf-8",
     )
+    manifest_path = str(Path(tmpdir) / "controlled_live_capability_manifest.json")
+    with patch.dict(
+        os.environ,
+        {
+            "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "false",
+            "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
+            wallet_secret_env_var: _private_key(),
+        },
+        clear=False,
+    ):
+        manifest = build_controlled_live_capability_manifest(
+            policy_path=policy_path,
+            signer_backend_kind="env_private_key_tx",
+            chain_tx_backend_kind="real_broadcast",
+            submitter_backend_kind="shadow_stub",
+        )
+        write_controlled_live_capability_manifest(manifest, path=manifest_path)
     return {
         "db_path": db_path,
         "queue_cfg": WriteQueueConfig(path=queue_path),
         "ui_lite_db_path": ui_lite_db_path,
         "readiness_path": readiness_path,
         "policy_path": policy_path,
+        "manifest_path": manifest_path,
         "chain_registry_path": chain_registry_path,
-        "private_key_env_var": private_key_env_var,
+        "wallet_secret_env_var": wallet_secret_env_var,
         "private_key": _private_key(),
         "con": connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None)),
     }

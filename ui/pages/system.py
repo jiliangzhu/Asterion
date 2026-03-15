@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from ui.data_access import load_readiness_summary, load_system_runtime_status
+from ui.data_access import load_operator_surface_status, load_readiness_summary, load_system_runtime_status
 
 
 def _build_component_rows(status: dict[str, object], readiness: dict[str, object]) -> list[dict[str, object]]:
@@ -16,6 +16,12 @@ def _build_component_rows(status: dict[str, object], readiness: dict[str, object
             "状态": readiness.get("go_decision") or "UNKNOWN",
             "来源": report.get("target") or "p4_live_prerequisites",
             "详情": readiness.get("decision_reason") or "未生成 readiness 报告",
+        },
+        {
+            "组件": "Controlled-Live Capability Manifest",
+            "状态": (status.get("capability_manifest_status") or "MISSING").upper(),
+            "来源": status.get("capability_manifest_path"),
+            "详情": f"boundary={readiness.get('capability_boundary_summary') or {}}",
         },
         {
             "组件": "UI Lite DB",
@@ -53,9 +59,30 @@ def _build_component_rows(status: dict[str, object], readiness: dict[str, object
 def show() -> None:
     readiness = load_readiness_summary()
     status = load_system_runtime_status()
+    surface_status = load_operator_surface_status()
 
     st.markdown("### System & Readiness")
     st.caption("System 页面只保留 operator 真正关心的健康面：readiness、UI surfaces freshness 和最小运行时摘要。")
+
+    surface_rows = [
+        {
+            "Surface": name,
+            "Status": payload["status"],
+            "Label": payload["label"],
+            "Source": payload["source"],
+            "Detail": payload["detail"],
+        }
+        for name, payload in surface_status.items()
+        if name != "overall"
+    ]
+    worst_surface = surface_status["overall"]
+    if worst_surface["status"] != "ok":
+        if worst_surface["status"] == "read_error":
+            st.error(f"{worst_surface['label']}: {worst_surface['detail']}")
+        elif worst_surface["status"] == "degraded_source":
+            st.warning(f"{worst_surface['label']}: {worst_surface['detail']}")
+        else:
+            st.info(f"{worst_surface['label']}: {worst_surface['detail']}")
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -69,6 +96,16 @@ def show() -> None:
 
     st.markdown("#### Readiness Summary")
     st.info(readiness.get("decision_reason") or "尚未生成 readiness 报告。")
+    boundary = readiness.get("capability_boundary_summary") or {}
+    if boundary:
+        st.caption(
+            "Capability boundary: "
+            f"manual_only={boundary.get('manual_only')} · "
+            f"default_off={boundary.get('default_off')} · "
+            f"approve_usdc_only={boundary.get('approve_usdc_only')} · "
+            f"shadow_submitter_only={boundary.get('shadow_submitter_only')} · "
+            f"manifest_status={boundary.get('manifest_status')}"
+        )
     phase_table = readiness["phase_table"]
     if phase_table.empty:
         st.warning("当前没有 `ui.phase_readiness_summary` 数据。请先运行 `weather_live_prereq_readiness`。")
@@ -78,6 +115,9 @@ def show() -> None:
     st.markdown("#### Runtime Component Surface")
     rows = _build_component_rows(status, readiness)
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+    st.markdown("#### Surface Status Summary")
+    st.dataframe(pd.DataFrame(surface_rows), width="stretch", hide_index=True)
 
     st.markdown("#### Minimal Health Summary")
     health_rows = [
@@ -93,6 +133,7 @@ def show() -> None:
             {"路径类型": "UI Replica DB", "路径": status["ui_replica_db_path"]},
             {"路径类型": "Readiness JSON", "路径": status["readiness_report_path"]},
             {"路径类型": "Readiness Markdown", "路径": status["readiness_report_markdown_path"]},
+            {"路径类型": "Capability Manifest", "路径": status["capability_manifest_path"]},
             {"路径类型": "Weather Smoke Report", "路径": status["weather_smoke_report_path"]},
         ]
         st.dataframe(pd.DataFrame(path_rows), width="stretch", hide_index=True)
