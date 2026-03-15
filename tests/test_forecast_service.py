@@ -102,7 +102,10 @@ class ForecastServiceTest(unittest.TestCase):
             model_run="2026-03-07T12:00Z",
             forecast_target_time=forecast_target_time,
         )
-        self.assertEqual(first.temperature_distribution, {55: 1.0})
+        # Verify normal distribution centered around 55°F
+        self.assertAlmostEqual(sum(first.temperature_distribution.values()), 1.0, places=6)
+        self.assertIn(55, first.temperature_distribution)
+        self.assertGreater(first.temperature_distribution[55], 0.1)  # Peak probability at mean
         self.assertFalse(first.from_cache)
         self.assertTrue(second.from_cache)
         self.assertEqual(second.cache_key, expected_key)
@@ -146,7 +149,10 @@ class ForecastServiceTest(unittest.TestCase):
         self.assertEqual(forecast.source, "nws")
         self.assertTrue(forecast.fallback_used)
         self.assertEqual(forecast.source_trace, ["openmeteo", "nws"])
-        self.assertEqual(forecast.temperature_distribution, {58: 1.0})
+        # Verify normal distribution centered around 58°F
+        self.assertAlmostEqual(sum(forecast.temperature_distribution.values()), 1.0, places=6)
+        self.assertIn(58, forecast.temperature_distribution)
+        self.assertGreater(forecast.temperature_distribution[58], 0.1)  # Peak probability at mean
 
 
 if __name__ == "__main__":

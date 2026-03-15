@@ -54,8 +54,28 @@ def write_status_report(
     recent_within_days: int,
     command: list[str],
 ) -> None:
+    payload = _build_status_payload(
+        report_path,
+        chain_status=chain_status,
+        note=note,
+        recent_within_days=recent_within_days,
+        command=command,
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _build_status_payload(
+    report_path: Path,
+    *,
+    chain_status: str,
+    note: str,
+    recent_within_days: int,
+    command: list[str],
+) -> dict[str, object]:
+    now = datetime.now(UTC).isoformat()
     payload = {
-        "timestamp": datetime.now(UTC).isoformat(),
+        "timestamp": now,
         "chain_status": chain_status,
         "report_scope": ["市场发现", "规则解析", "预测服务", "定价引擎", "机会发现"],
         "market_discovery": {
@@ -66,6 +86,8 @@ def write_status_report(
             "discovered_count": 0,
             "note": note,
             "selected_horizon_days": int(recent_within_days),
+            "selected_market_count": 0,
+            "selected_markets": [],
         },
         "rule_parse": {"status": "skipped"},
         "forecast_service": {"status": "skipped"},
@@ -76,8 +98,40 @@ def write_status_report(
             "runner_command": command,
         },
     }
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    previous = _read_existing_report(report_path)
+    if previous and chain_status == "initializing":
+        payload = dict(previous)
+        payload["timestamp"] = now
+        payload["chain_status"] = previous.get("chain_status") or "initializing"
+        payload["refresh_state"] = "initializing"
+        payload["refresh_note"] = note
+        payload["artifacts"] = {
+            **dict(previous.get("artifacts") or {}),
+            "report_path": str(report_path),
+            "runner_command": command,
+        }
+        market_discovery = dict(previous.get("market_discovery") or {})
+        market_discovery.setdefault("input_mode", "live_weather_market_auto_horizon")
+        market_discovery["note"] = market_discovery.get("note") or note
+        market_discovery["refresh_note"] = note
+        market_discovery["selected_horizon_days"] = market_discovery.get("selected_horizon_days") or int(recent_within_days)
+        payload["market_discovery"] = market_discovery
+    else:
+        payload["refresh_state"] = chain_status if chain_status == "initializing" else None
+        payload["refresh_note"] = note if chain_status == "initializing" else None
+    return payload
+
+
+def _read_existing_report(report_path: Path) -> dict[str, object] | None:
+    if not report_path.exists():
+        return None
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
 
 
 def run_cycle(args: argparse.Namespace, *, force_rebuild: bool) -> int:

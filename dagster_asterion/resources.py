@@ -15,6 +15,7 @@ from asterion_core.blockchain import (
     ShadowBroadcastBackend,
 )
 from asterion_core.clients import ClobPublicClient
+from asterion_core.clients.http_retry import RetryHttpClient
 from asterion_core.execution import (
     DisabledSubmitterBackend,
     SafeDefaultChainAccountCapabilityReader,
@@ -326,7 +327,7 @@ class ForecastRuntimeResource:
     def build_adapter_router(self, *, client: Any | None = None, adapters: list[Any] | None = None) -> AdapterRouter:
         if adapters is not None:
             return AdapterRouter(list(adapters))
-        http_client = client or HttpJsonClient()
+        http_client = client or RetryHttpClient(HttpJsonClient())
         return AdapterRouter(
             [
                 OpenMeteoAdapter(client=http_client),

@@ -211,6 +211,8 @@ class ForecastAdapter(ABC):
 - Open-Meteo：使用 `latitude / longitude`
 - NWS：使用 `latitude / longitude` 或已知站点衍生 endpoint，但上游 contract 不变
 - 任何 adapter 都不能要求额外的 `city`
+- adapter 输出必须是离散化的温度概率分布；当前实现允许从单点 forecast 通过正态近似生成 deterministic distribution
+- HTTP client 应支持 retry；若上游持续异常，可叠加 circuit breaker 保护
 
 ---
 
@@ -269,6 +271,13 @@ class ForecastCache:
 - cache key 不能依赖未出现在 `ForecastRequest` 的字段
 - cache key 不再使用 `city`
 
+### 8.4 当前运行时语义
+
+- In-memory forecast cache 当前语义为 `TTL + LRU`
+- `get()` 命中会刷新最近访问时间
+- 淘汰按 `last_accessed_at` 进行，而不是 `cached_at`
+- `spec_version`、`source`、`model_run`、`forecast_target_time` 仍然必须进入 cache key，保证 replay determinism
+
 ---
 
 ## 9. Forecast Service
@@ -298,6 +307,11 @@ class ForecastService:
         )
         return await self.adapter_router.fetch(request)
 ```
+
+当前实现补充：
+
+- Open-Meteo / NWS adapter 当前会把 forecast value 转成离散温度分布，而不是直接返回 `{temp: 1.0}`
+- 分布宽度可按 forecast horizon 使用不同的标准差近似，保证 pricing engine 能生成有意义的 fair value
 
 ---
 

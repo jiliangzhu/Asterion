@@ -316,9 +316,11 @@ def _openai_compatible_retry_count() -> int:
 
 
 def _should_use_curl_fallback(base_url: str | None) -> bool:
+    if os.getenv("ASTERION_OPENAI_COMPATIBLE_ENABLE_CURL_FALLBACK", "").strip().lower() in {"1", "true", "yes", "y"}:
+        return True
     if not base_url:
         return False
-    return "dashscope.aliyuncs.com" in base_url
+    return "dashscope.aliyuncs.com" in base_url or "llm-api.healwrap.cn" in base_url
 
 
 def _post_json_with_curl(
@@ -329,7 +331,38 @@ def _post_json_with_curl(
     timeout_seconds: float | None,
 ) -> dict[str, Any]:
     timeout = max(1, int(timeout_seconds or 60))
-    cmd = ["curl", "-sS", "-L", "--max-time", str(timeout)]
+    max_attempts = max(1, _openai_compatible_retry_count())
+    last_error: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return _post_json_with_curl_once(
+                url,
+                headers=headers,
+                payload=payload,
+                timeout=timeout,
+            )
+        except RuntimeError as exc:
+            last_error = exc
+            if attempt + 1 >= max_attempts:
+                raise
+            time.sleep(min(1.5 * (attempt + 1), 3.0))
+        except ValueError as exc:
+            last_error = exc
+            # Non-JSON upstream error pages are transport/provider failures, not parse errors.
+            raise RuntimeError(str(exc)) from exc
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("curl fallback failed without returning a response")
+
+
+def _post_json_with_curl_once(
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout: int,
+) -> dict[str, Any]:
+    cmd = ["curl", "-sS", "-L", "--max-time", str(timeout), "-w", "\n__CODEX_HTTP_STATUS__:%{http_code}"]
     for key, value in headers.items():
         cmd.extend(["-H", f"{key}: {value}"])
     cmd.extend([url, "-d", json.dumps(payload, ensure_ascii=False)])
@@ -337,10 +370,22 @@ def _post_json_with_curl(
     if proc.returncode != 0:
         stderr = proc.stderr.strip() or "curl request failed"
         raise RuntimeError(stderr)
+    stdout = proc.stdout or ""
+    marker = "\n__CODEX_HTTP_STATUS__:"
+    if marker in stdout:
+        body, _, raw_status = stdout.rpartition(marker)
+        http_status = int(raw_status.strip() or "0")
+    else:
+        body = stdout
+        http_status = 200
+    if http_status >= 400:
+        text = body.strip() or f"HTTP {http_status}"
+        raise RuntimeError(f"upstream returned HTTP {http_status}: {text[:400]}")
     try:
-        raw = json.loads(proc.stdout)
+        raw = json.loads(body)
     except json.JSONDecodeError as exc:
-        raise ValueError("curl fallback returned non-JSON response") from exc
+        preview = body.strip().replace("\n", " ")[:240] or "empty response"
+        raise ValueError(f"curl fallback returned non-JSON response: {preview}") from exc
     if isinstance(raw, dict) and raw.get("error"):
         raise RuntimeError(json.dumps(raw["error"], ensure_ascii=False, sort_keys=True))
     if not isinstance(raw, dict):

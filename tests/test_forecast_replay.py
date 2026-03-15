@@ -55,6 +55,7 @@ from domains.weather.spec import (
     load_weather_markets_for_rule2spec,
     parse_rule2spec_draft,
 )
+from domains.weather.forecast.adapters import build_normal_distribution
 
 
 HAS_DUCKDB = importlib.util.find_spec("duckdb") is not None
@@ -155,6 +156,7 @@ def _weather_spec() -> WeatherMarketSpecRecord:
 
 
 def _forecast_run(*, run_id: str, confidence: float = 1.0, temperature: int = 55) -> ForecastRunRecord:
+    distribution = build_normal_distribution(float(temperature), 3.0)
     return ForecastRunRecord(
         run_id=run_id,
         market_id="mkt_weather_1",
@@ -174,7 +176,7 @@ def _forecast_run(*, run_id: str, confidence: float = 1.0, temperature: int = 55
         fallback_used=False,
         from_cache=False,
         confidence=confidence,
-        forecast_payload={"temperature_distribution": {temperature: 1.0}},
+        forecast_payload={"temperature_distribution": distribution},
         raw_payload={"daily": {"temperature_2m_max": [float(temperature)]}},
     )
 
@@ -317,7 +319,10 @@ class ForecastReplayDuckDBTest(unittest.TestCase):
             db_path, queue_path = _bootstrap_weather_state(tmpdir)
             request = _build_request_from_db(db_path)
             replay_result, _, _ = _run_replay(db_path, queue_path, request, temperature=55.0)
-            self.assertEqual(replay_result.forecast_run.forecast_payload["temperature_distribution"], {55: 1.0})
+            self.assertEqual(
+                replay_result.forecast_run.forecast_payload["temperature_distribution"],
+                build_normal_distribution(55.0, 3.0),
+            )
             self.assertEqual(len(replay_result.fair_values), 2)
             self.assertEqual(len(replay_result.watch_only_snapshots), 2)
 

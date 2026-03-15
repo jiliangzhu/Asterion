@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import duckdb
+import ui.data_access as data_access_module
 
 from ui.data_access import (
     build_ops_console_overview,
@@ -148,6 +149,42 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(payload["source"], "smoke_report")
             self.assertEqual(len(payload["frame"].index), 3)
             self.assertIn("rule2spec", payload["frame"]["agent_type"].tolist())
+
+    def test_load_agent_review_data_tolerates_locked_runtime_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "real_weather_chain_report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-03-15T00:00:00+00:00",
+                        "market_discovery": {
+                            "selected_markets": [
+                                {
+                                    "market_id": "mkt_1",
+                                    "rule2spec_status": "success",
+                                    "rule2spec_verdict": "review",
+                                    "rule2spec_summary": "fallback row",
+                                }
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
+                    "ASTERION_DB_PATH": str(Path(tmpdir) / "missing_runtime.duckdb"),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "locked_smoke_runtime.duckdb"),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                },
+                clear=False,
+            ):
+                with patch.object(data_access_module.duckdb, "connect", side_effect=RuntimeError("lock conflict")):
+                    payload = load_agent_review_data()
+            self.assertEqual(payload["source"], "smoke_report")
+            self.assertEqual(len(payload["frame"].index), 1)
 
     def test_load_market_chain_analysis_data_merges_per_market_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -291,6 +328,122 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(len(payload["market_opportunities"]), 1)
             self.assertEqual(payload["market_opportunities"].iloc[0]["market_id"], "mkt_nyc_1")
 
+    def test_load_market_chain_analysis_data_falls_back_to_runtime_smoke_db_when_report_is_initializing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "real_weather_chain_report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "chain_status": "initializing",
+                        "refresh_state": "initializing",
+                        "market_discovery": {
+                            "selected_markets": [],
+                            "discovered_count": 0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runtime_path = Path(tmpdir) / "real_weather_chain.duckdb"
+            con = duckdb.connect(str(runtime_path))
+            try:
+                con.execute("CREATE SCHEMA weather")
+                con.execute("CREATE SCHEMA agent")
+                con.execute(
+                    """
+                    CREATE TABLE weather.weather_markets(
+                        market_id TEXT, condition_id TEXT, event_id TEXT, slug TEXT, title TEXT, description TEXT, rules TEXT,
+                        status TEXT, active BOOLEAN, closed BOOLEAN, archived BOOLEAN, accepting_orders BOOLEAN, enable_order_book BOOLEAN,
+                        tags_json TEXT, outcomes_json TEXT, token_ids_json TEXT, close_time TIMESTAMP, end_date TIMESTAMP,
+                        raw_market_json TEXT, created_at TIMESTAMP, updated_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO weather.weather_markets VALUES
+                    ('mkt_sea_1','cond_1','evt_1','slug_1','Seattle market',NULL,NULL,'active',true,false,false,true,true,'[]','[]','[]','2026-03-15 12:00:00','2026-03-15 12:00:00','{}','2026-03-15 00:00:00','2026-03-15 00:00:00')
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE weather.weather_market_specs(
+                        market_id TEXT, condition_id TEXT, location_name TEXT, station_id TEXT, latitude DOUBLE, longitude DOUBLE, timezone TEXT,
+                        observation_date DATE, observation_window_local TEXT, metric TEXT, unit TEXT, bucket_min_value DOUBLE, bucket_max_value DOUBLE,
+                        authoritative_source TEXT, fallback_sources TEXT, rounding_rule TEXT, inclusive_bounds BOOLEAN, spec_version TEXT,
+                        parse_confidence DOUBLE, risk_flags_json TEXT, created_at TIMESTAMP, updated_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO weather.weather_market_specs VALUES
+                    ('mkt_sea_1','cond_1','Seattle','KSEA',47.6,-122.3,'America/Los_Angeles','2026-03-15','daily_max','temperature_max','fahrenheit',36,37,'weather.com','[]','identity',true,'spec_1',0.9,'[]','2026-03-15 00:00:00','2026-03-15 00:00:00')
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE agent.invocations(
+                        invocation_id TEXT, agent_type TEXT, agent_version TEXT, prompt_version TEXT, subject_type TEXT, subject_id TEXT,
+                        input_hash TEXT, input_payload_json TEXT, model_provider TEXT, model_name TEXT, status TEXT, error_message TEXT,
+                        started_at TIMESTAMP, ended_at TIMESTAMP, latency_ms BIGINT, force_rerun BOOLEAN, force_rerun_token TEXT
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO agent.invocations VALUES
+                    ('inv_1','rule2spec','v1','p1','weather_market','mkt_sea_1','hash','{}','openai_compatible','glm-5','success',NULL,'2026-03-15 00:01:00','2026-03-15 00:01:05',5000,false,NULL)
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE agent.outputs(
+                        output_id TEXT, invocation_id TEXT, verdict TEXT, confidence DOUBLE, summary TEXT, findings_json TEXT,
+                        structured_output_json TEXT, human_review_required BOOLEAN, created_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO agent.outputs VALUES
+                    ('out_1','inv_1','review',0.8,'station-first review required','[]','{}',true,'2026-03-15 00:01:05')
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE agent.reviews(
+                        review_id TEXT, invocation_id TEXT, review_status TEXT, reviewer_id TEXT, review_payload_json TEXT, reviewed_at TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE agent.evaluations(
+                        evaluation_id TEXT, invocation_id TEXT, confidence DOUBLE, human_review_required BOOLEAN, score_json TEXT, created_at TIMESTAMP
+                    )
+                    """
+                )
+            finally:
+                con.close()
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(runtime_path),
+                },
+                clear=False,
+            ):
+                payload = load_market_chain_analysis_data()
+
+            self.assertEqual(payload["market_opportunity_source"], "weather_smoke_db")
+            self.assertEqual(len(payload["market_rows"]), 1)
+            self.assertEqual(payload["market_rows"][0]["location_name"], "Seattle")
+            self.assertEqual(payload["market_rows"][0]["rule2spec_status"], "success")
+            self.assertEqual(payload["market_rows"][0]["forecast_status"], "not_started")
+
     def test_console_overview_and_system_rows_handle_partial_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "weather_report.json"
@@ -313,6 +466,7 @@ class UiDataAccessTest(unittest.TestCase):
                 {
                     "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_smoke_runtime.duckdb"),
                     "ASTERION_READINESS_REPORT_JSON_PATH": str(Path(tmpdir) / "missing_readiness.json"),
                 },
                 clear=False,

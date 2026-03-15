@@ -132,7 +132,10 @@ def _read_ui_table(db_path: Path, table: str) -> pd.DataFrame:
 def _read_agent_review_from_runtime(db_path: Path) -> pd.DataFrame:
     if duckdb is None or not db_path.exists():
         return _empty_df()
-    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        con = duckdb.connect(str(db_path), read_only=True)
+    except Exception:  # noqa: BLE001
+        return _empty_df()
     try:
         return con.execute(
             """
@@ -260,6 +263,125 @@ def _read_agent_review_from_runtime(db_path: Path) -> pd.DataFrame:
             LEFT JOIN latest_output output ON output.invocation_id = inv.invocation_id
             LEFT JOIN latest_review review ON review.invocation_id = inv.invocation_id
             LEFT JOIN latest_evaluation evaluation ON evaluation.invocation_id = inv.invocation_id
+            """
+        ).df()
+    except Exception:  # noqa: BLE001
+        return _empty_df()
+    finally:
+        con.close()
+
+
+def _read_weather_market_rows_from_runtime(db_path: Path) -> pd.DataFrame:
+    if duckdb is None or not db_path.exists():
+        return _empty_df()
+    try:
+        con = duckdb.connect(str(db_path), read_only=True)
+    except Exception:  # noqa: BLE001
+        return _empty_df()
+    try:
+        return con.execute(
+            """
+            WITH latest_invocation AS (
+                SELECT
+                    invocation_id,
+                    subject_id,
+                    status
+                FROM (
+                    SELECT
+                        invocation_id,
+                        subject_id,
+                        status,
+                        started_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY subject_id
+                            ORDER BY started_at DESC, invocation_id DESC
+                        ) AS rn
+                    FROM agent.invocations
+                    WHERE agent_type = 'rule2spec'
+                      AND subject_type = 'weather_market'
+                )
+                WHERE rn = 1
+            ),
+            latest_output AS (
+                SELECT
+                    invocation_id,
+                    verdict,
+                    summary
+                FROM (
+                    SELECT
+                        invocation_id,
+                        verdict,
+                        summary,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY invocation_id
+                            ORDER BY created_at DESC, invocation_id DESC
+                        ) AS rn
+                    FROM agent.outputs
+                )
+                WHERE rn = 1
+            )
+            SELECT
+                m.market_id,
+                m.title AS question,
+                s.location_name,
+                s.station_id,
+                COALESCE(m.close_time, m.end_date) AS market_close_time,
+                m.accepting_orders,
+                CAST(NULL AS VARCHAR) AS best_side,
+                CAST(NULL AS DOUBLE) AS market_price,
+                CAST(NULL AS DOUBLE) AS fair_value,
+                CAST(NULL AS DOUBLE) AS edge_bps,
+                CAST(CASE WHEN COALESCE(m.accepting_orders, FALSE) THEN 55.0 ELSE 25.0 END AS DOUBLE) AS liquidity_proxy,
+                CAST(CASE
+                    WHEN o.verdict = 'pass' THEN 85.0
+                    WHEN o.verdict = 'review' THEN 60.0
+                    WHEN i.status = 'failure' THEN 35.0
+                    ELSE 50.0
+                END AS DOUBLE) AS confidence_proxy,
+                CASE
+                    WHEN i.status = 'failure' THEN 'agent_failure'
+                    WHEN o.verdict = 'review' THEN 'review_required'
+                    WHEN i.status = 'success' THEN 'passed'
+                    ELSE 'no_agent_signal'
+                END AS agent_review_status,
+                'not_started' AS live_prereq_status,
+                'runtime_only' AS opportunity_bucket,
+                CAST(CASE
+                    WHEN COALESCE(m.accepting_orders, FALSE) THEN 32.0
+                    ELSE 12.0
+                END AS DOUBLE) AS opportunity_score,
+                CASE
+                    WHEN COALESCE(m.accepting_orders, FALSE) AND i.status = 'success' THEN 'review_required'
+                    WHEN COALESCE(m.accepting_orders, FALSE) THEN 'review_required'
+                    ELSE 'blocked'
+                END AS actionability_status,
+                i.status AS rule2spec_status,
+                o.verdict AS rule2spec_verdict,
+                o.summary AS rule2spec_summary,
+                'not_run' AS data_qa_status,
+                CAST(NULL AS VARCHAR) AS data_qa_verdict,
+                'no canonical forecast replay inputs in smoke chain' AS data_qa_summary,
+                'not_run' AS resolution_status,
+                CAST(NULL AS VARCHAR) AS resolution_verdict,
+                'no canonical resolution inputs in smoke chain' AS resolution_summary,
+                s.authoritative_source,
+                s.metric,
+                s.bucket_min_value,
+                s.bucket_max_value,
+                s.observation_window_local,
+                CAST(NULL AS VARCHAR) AS latest_run_source
+            FROM weather.weather_markets AS m
+            LEFT JOIN weather.weather_market_specs AS s
+                ON s.market_id = m.market_id
+            LEFT JOIN latest_invocation AS i
+                ON i.subject_id = m.market_id
+            LEFT JOIN latest_output AS o
+                ON o.invocation_id = i.invocation_id
+            WHERE COALESCE(m.active, FALSE) = TRUE
+              AND COALESCE(m.closed, FALSE) = FALSE
+              AND COALESCE(m.archived, FALSE) = FALSE
+            ORDER BY COALESCE(m.close_time, m.end_date) ASC, m.market_id ASC
             """
         ).df()
     except Exception:  # noqa: BLE001
@@ -633,7 +755,11 @@ def load_market_opportunity_data() -> dict[str, Any]:
     frame = _sort_market_opportunities(snapshot["tables"]["market_opportunity_summary"])
     if not frame.empty:
         return {"source": "ui_lite", "frame": frame}
-    return {"source": "smoke_report", "frame": _derive_market_opportunities_from_report(load_real_weather_smoke_report())}
+    report_frame = _derive_market_opportunities_from_report(load_real_weather_smoke_report())
+    if not report_frame.empty:
+        return {"source": "smoke_report", "frame": report_frame}
+    runtime_frame = _sort_market_opportunities(_read_weather_market_rows_from_runtime(_resolve_real_weather_chain_db_path()))
+    return {"source": "weather_smoke_db", "frame": runtime_frame}
 
 
 def load_agent_review_data() -> dict[str, Any]:
@@ -684,6 +810,29 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
                 "signals": signals_by_market.get(market_id) or {},
             }
         )
+    if not detail_rows:
+        runtime_rows = _read_weather_market_rows_from_runtime(_resolve_real_weather_chain_db_path())
+        if not runtime_rows.empty:
+            detail_rows = [
+                {
+                    **row.to_dict(),
+                    "spec": {
+                        "location_name": row.get("location_name"),
+                        "station_id": row.get("station_id"),
+                        "authoritative_source": row.get("authoritative_source"),
+                        "metric": row.get("metric"),
+                        "bucket_min_value": row.get("bucket_min_value"),
+                        "bucket_max_value": row.get("bucket_max_value"),
+                        "observation_window_local": row.get("observation_window_local"),
+                    },
+                    "forecast": {},
+                    "pricing": {},
+                    "signals": {},
+                    "forecast_status": "not_started",
+                    "forecast_summary": "forecast stage has not completed yet",
+                }
+                for _, row in runtime_rows.iterrows()
+            ]
     details_by_market = {str(item.get("market_id")): item for item in detail_rows if item.get("market_id") is not None}
     opportunities = opportunity_payload["frame"]
     rows: list[dict[str, Any]] = []

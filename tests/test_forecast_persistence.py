@@ -22,6 +22,7 @@ from domains.weather.forecast import (
     build_forecast_run_record,
     enqueue_forecast_run_upserts,
 )
+from domains.weather.forecast.adapters import build_normal_distribution
 
 
 HAS_DUCKDB = importlib.util.find_spec("duckdb") is not None
@@ -84,11 +85,17 @@ class ForecastPersistenceUnitTest(unittest.TestCase):
         )
 
         record = build_forecast_run_record(distribution)
+        expected_distribution = build_normal_distribution(55.4, 3.0)
 
         self.assertTrue(record.run_id.startswith("frun_"))
         self.assertEqual(record.cache_key, distribution.cache_key)
         self.assertEqual(record.source_trace, ["openmeteo"])
-        self.assertEqual(record.forecast_payload["temperature_distribution"], {55: 1.0})
+        self.assertAlmostEqual(sum(record.forecast_payload["temperature_distribution"].values()), 1.0, places=9)
+        self.assertAlmostEqual(
+            record.forecast_payload["temperature_distribution"][55],
+            expected_distribution[55],
+            places=12,
+        )
         self.assertFalse(record.from_cache)
 
 
@@ -183,8 +190,9 @@ class ForecastPersistenceDuckDBTest(unittest.TestCase):
             self.assertEqual(json.loads(row[3]), ["openmeteo", "nws"])
             self.assertTrue(row[4])
             self.assertFalse(row[5])
-            self.assertEqual(row[6], 1.0)
-            self.assertEqual(json.loads(row[7])["temperature_distribution"], {"58": 1.0})
+            expected_distribution = build_normal_distribution(58.0, 3.0)
+            self.assertAlmostEqual(row[6], max(expected_distribution.values()))
+            self.assertEqual(json.loads(row[7])["temperature_distribution"], {str(k): v for k, v in expected_distribution.items()})
             self.assertIn("forecast", json.loads(row[8]))
 
 

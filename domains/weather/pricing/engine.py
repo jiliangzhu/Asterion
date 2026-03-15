@@ -279,6 +279,7 @@ def load_forecast_run(con, *, run_id: str) -> ForecastRunRecord:
     ).fetchone()
     if row is None:
         raise LookupError(f"forecast run not found for run_id={run_id}")
+    forecast_payload = _normalize_forecast_payload(_json_dict(row[18]))
     return ForecastRunRecord(
         run_id=row[0],
         market_id=row[1],
@@ -298,7 +299,7 @@ def load_forecast_run(con, *, run_id: str) -> ForecastRunRecord:
         fallback_used=bool(row[15]),
         from_cache=bool(row[16]),
         confidence=float(row[17]),
-        forecast_payload=_json_dict(row[18]),
+        forecast_payload=forecast_payload,
         raw_payload=_json_dict(row[19]),
     )
 
@@ -334,3 +335,24 @@ def _json_dict(value: Any) -> dict[str, Any]:
         if isinstance(parsed, dict):
             return parsed
     return {}
+
+
+def _normalize_forecast_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    distribution = normalized.get("temperature_distribution")
+    if isinstance(distribution, dict):
+        normalized["temperature_distribution"] = {
+            _normalize_distribution_key(key): value
+            for key, value in distribution.items()
+        }
+    return normalized
+
+
+def _normalize_distribution_key(value: Any) -> Any:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    if number.is_integer():
+        return int(number)
+    return number

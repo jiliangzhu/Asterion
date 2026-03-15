@@ -281,6 +281,27 @@ class AgentRuntimeContractsTest(unittest.TestCase):
         )
         self.assertEqual(parsed["ok"], True)
 
+    def test_curl_fallback_is_enabled_for_explicit_compatible_flag(self) -> None:
+        with mock.patch.dict(os.environ, {"ASTERION_OPENAI_COMPATIBLE_ENABLE_CURL_FALLBACK": "1"}, clear=False):
+            self.assertEqual(client_module._should_use_curl_fallback("https://example.test/v1/chat/completions"), True)
+
+    def test_curl_fallback_non_json_error_becomes_runtime_error(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["curl"],
+            returncode=0,
+            stdout="<html>bad gateway</html>\n__CODEX_HTTP_STATUS__:502",
+            stderr="",
+        )
+        with mock.patch.object(client_module.subprocess, "run", return_value=completed):
+            with self.assertRaises(RuntimeError) as ctx:
+                client_module._post_json_with_curl(
+                    "https://llm-api.healwrap.cn/v1/chat/completions",
+                    headers={"authorization": "Bearer test"},
+                    payload={"model": "glm-5"},
+                    timeout_seconds=5,
+                )
+        self.assertIn("HTTP 502", str(ctx.exception))
+
 
 @unittest.skipUnless(HAS_HTTPX, "httpx is required for provider adapter tests")
 class AgentProviderAdaptersTest(unittest.TestCase):

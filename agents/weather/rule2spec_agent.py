@@ -306,18 +306,29 @@ def _normalize_verdict(raw: Any) -> AgentVerdict:
     text = str(raw).strip().lower()
     if text in {"pass", "review", "block"}:
         return AgentVerdict(text)
-    if text in {"accepted", "approved"}:
+    if text in {"accepted", "approved", "accept"}:
         return AgentVerdict.PASS
     if text in {
         "accept_with_patches",
         "accept-with-patches",
+        "accepted_with_notes",
+        "accepted-with-notes",
         "accepted_with_changes",
         "accepted-with-changes",
         "acceptable_with_changes",
         "acceptable-with-changes",
+        "awaitingpatch",
+        "awaiting_patch",
+        "awaiting-patch",
+        "discrepancy_found",
+        "discrepancy-found",
         "needs_changes",
         "needs_patch",
         "needs_review",
+        "needs_revision",
+        "needs-revision",
+        "requires_revision",
+        "requires-review",
     }:
         return AgentVerdict.REVIEW
     if text in {"reject", "rejected"}:
@@ -392,6 +403,12 @@ def _parse_findings(raw: Any, *, default_entity_type: str, default_entity_id: st
         severity = str(item.get("severity") or item.get("level") or "info").lower()
         if severity == "warning":
             severity = "warn"
+        elif severity in {"notice", "note", "advisory", "low"}:
+            severity = "info"
+        elif severity in {"medium", "moderate"}:
+            severity = "warn"
+        elif severity in {"high", "critical", "severe", "fatal"}:
+            severity = "error"
         field_name = item.get("field_name")
         if field_name is None:
             field_name = item.get("field") or item.get("path")

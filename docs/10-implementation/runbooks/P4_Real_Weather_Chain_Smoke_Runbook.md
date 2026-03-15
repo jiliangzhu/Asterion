@@ -80,10 +80,19 @@ python3 -m pip install -e .
 
 若需要 agent 生效：
 
-- 在根目录 `.env` 中配置 `ALIBABA_API_KEY`
-- 配置 `QWEN_MODEL`
+- 在根目录 `.env` 中配置兼容接口 key，例如：
+  - `ASTERION_OPENAI_COMPATIBLE_API_KEY`
+  - `ASTERION_OPENAI_COMPATIBLE_MODEL`
+- 若使用自定义兼容网关，还需配置：
+  - `ASTERION_OPENAI_COMPATIBLE_BASE_URL`
 
-若未配置或网络不稳定，可使用 `--skip-agent` 进入 debug/fallback 模式；主链仍可跑通，但 report 和 UI 会明确显示 agent 被跳过。
+说明：
+
+- 当前 weather smoke 的 agent runtime 走 `openai_compatible` provider
+- 默认会把 `rule2spec` 的 work rows 写入 `agent.invocations / outputs / reviews / evaluations`
+- 单个 market 的 agent failure 不应拖垮整条 weather smoke；报告和 UI 会明确显示对应 market 的 agent status
+
+若未配置或上游模型服务不稳定，可使用 `--skip-agent` 进入 debug/fallback 模式；主链仍可跑通，但 report 和 UI 会明确显示 agent 被跳过。
 
 ---
 
@@ -153,6 +162,12 @@ source .venv/bin/activate
 - `db_counts`
 - `agent_summary`
 - `artifacts`
+
+当前运行状态补充：
+
+- `chain_status` 允许出现 `ok / degraded / initializing / transport_error / no_open_recent_markets`
+- `degraded` 表示部分市场的 forecast 或 agent 失败，但整体市场发现与机会链路仍可读
+- `initializing` 表示 loop 正在刷新新一轮报告；UI 会优先回退到 smoke DuckDB 中的最新市场视图，而不是直接显示空白
 
 `market_discovery` 中新增：
 

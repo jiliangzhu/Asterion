@@ -1001,6 +1001,7 @@ Rule2SpecAgentOutput(
 **职责**:
 - 对 ResolutionSpec 中已闭合的站点元数据取 forecast
 - 输出温度分布而不是点预测
+- 当前 runtime 允许从单点 forecast 通过正态近似生成离散概率分布
 
 **数据源**:
 - **Open-Meteo Ensemble** - 主 forecast 分布
@@ -1013,6 +1014,7 @@ Rule2SpecAgentOutput(
 - forecast adapter 使用 `latitude / longitude`
 - `StationMapper` 只负责找站点元数据
 - geocode 不进入热路径
+- HTTP 调用允许使用 retry wrapper，必要时可叠加 circuit breaker
 
 **输出**:
 ```python

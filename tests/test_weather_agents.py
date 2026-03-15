@@ -513,6 +513,115 @@ class Rule2SpecAgentTest(unittest.TestCase):
         assert artifacts.output is not None
         self.assertEqual(artifacts.output.verdict, AgentVerdict.REVIEW)
 
+    def test_rule2spec_agent_normalizes_needs_revision_verdict(self) -> None:
+        request = Rule2SpecAgentRequest(
+            market=_weather_market(),
+            draft=_draft(),
+            current_spec=_weather_spec(),
+            station_metadata=_station_metadata(),
+            station_override_summary={"has_override": True},
+        )
+        client = FakeAgentClient(
+            responses={
+                "rule2spec": {
+                    "verdict": "needs_revision",
+                    "confidence": 0.84,
+                    "summary": "needs revision but should map to review",
+                    "risk_flags": [],
+                    "suggested_patch_json": {"station_id": "KNYC"},
+                    "findings": [],
+                    "human_review_required": True,
+                }
+            }
+        )
+        artifacts = run_rule2spec_agent_review(client, request)
+        assert artifacts.output is not None
+        self.assertEqual(artifacts.output.verdict, AgentVerdict.REVIEW)
+
+    def test_rule2spec_agent_normalizes_additional_review_aliases(self) -> None:
+        request = Rule2SpecAgentRequest(
+            market=_weather_market(),
+            draft=_draft(),
+            current_spec=_weather_spec(),
+            station_metadata=_station_metadata(),
+            station_override_summary={"has_override": True},
+        )
+        for verdict in ["accepted_with_notes", "discrepancy_found", "AwaitingPatch"]:
+            client = FakeAgentClient(
+                responses={
+                    "rule2spec": {
+                        "verdict": verdict,
+                        "confidence": 0.7,
+                        "summary": "requires operator review",
+                        "risk_flags": [],
+                        "suggested_patch_json": {"station_id": "KNYC"},
+                        "findings": [],
+                        "human_review_required": True,
+                    }
+                }
+            )
+            artifacts = run_rule2spec_agent_review(client, request)
+            assert artifacts.output is not None
+            self.assertEqual(artifacts.output.verdict, AgentVerdict.REVIEW)
+
+    def test_rule2spec_agent_normalizes_accept_verdict(self) -> None:
+        request = Rule2SpecAgentRequest(
+            market=_weather_market(),
+            draft=_draft(),
+            current_spec=_weather_spec(),
+            station_metadata=_station_metadata(),
+            station_override_summary={"has_override": True},
+        )
+        client = FakeAgentClient(
+            responses={
+                "rule2spec": {
+                    "verdict": "accept",
+                    "confidence": 0.92,
+                    "summary": "station-first parse accepted",
+                    "risk_flags": [],
+                    "suggested_patch_json": {},
+                    "findings": [],
+                    "human_review_required": False,
+                }
+            }
+        )
+        artifacts = run_rule2spec_agent_review(client, request)
+        assert artifacts.output is not None
+        self.assertEqual(artifacts.output.verdict, AgentVerdict.PASS)
+
+    def test_rule2spec_agent_normalizes_extended_severity_levels(self) -> None:
+        request = Rule2SpecAgentRequest(
+            market=_weather_market(),
+            draft=_draft(),
+            current_spec=_weather_spec(),
+            station_metadata=_station_metadata(),
+            station_override_summary={"has_override": True},
+        )
+        client = FakeAgentClient(
+            responses={
+                "rule2spec": {
+                    "verdict": "review",
+                    "confidence": 0.81,
+                    "summary": "mixed severity aliases",
+                    "risk_flags": [],
+                    "suggested_patch_json": {},
+                    "findings": [
+                        {"finding_code": "notice_1", "severity": "notice", "summary": "minor note"},
+                        {"finding_code": "medium_1", "severity": "medium", "summary": "moderate risk"},
+                        {"finding_code": "critical_1", "severity": "critical", "summary": "hard blocker"},
+                    ],
+                    "human_review_required": True,
+                }
+            }
+        )
+        artifacts = run_rule2spec_agent_review(client, request)
+        assert artifacts.output is not None
+        findings = artifacts.output.structured_output_json["findings"]
+        self.assertEqual(
+            [finding["severity"] for finding in findings],
+            ["info", "warn", "error"],
+        )
+
 
 class DataQaAgentTest(unittest.TestCase):
     def test_data_qa_agent_low_risk_for_match(self) -> None:

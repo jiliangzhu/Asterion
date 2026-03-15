@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -31,6 +31,7 @@ from domains.weather.forecast import (
     build_forecast_run_record,
     enqueue_forecast_run_upserts,
 )
+from domains.weather.forecast.adapters import build_normal_distribution
 from domains.weather.pricing import (
     build_binary_fair_values,
     build_watch_only_snapshot,
@@ -155,13 +156,17 @@ class _WalletStateReader:
 
 
 def _raw_weather_market() -> dict:
+    observation_date = _observation_date()
+    date_label = f"{observation_date.strftime('%B')} {observation_date.day}, {observation_date.year}"
+    close_time = datetime.combine(observation_date, time(23, 59, 59), tzinfo=timezone.utc)
+    created_at = close_time - timedelta(days=7)
     return {
         "id": "mkt_weather_1",
         "conditionId": "cond_weather_1",
-        "question": "Will the high temperature in New York City on March 8, 2026 be 50-59°F?",
+        "question": f"Will the high temperature in New York City on {date_label} be 50-59°F?",
         "description": "Template weather market",
         "rules": "Resolve to Yes if the observed high temperature is within range.",
-        "slug": "nyc-high-temp-mar-8",
+        "slug": f"nyc-high-temp-{observation_date.isoformat()}",
         "active": True,
         "closed": False,
         "archived": False,
@@ -170,14 +175,15 @@ def _raw_weather_market() -> dict:
         "tags": ["Weather", "Temperature"],
         "outcomes": "[\"Yes\", \"No\"]",
         "clobTokenIds": "[\"tok_yes\", \"tok_no\"]",
-        "closeTime": "2026-03-08T23:59:59Z",
-        "endDate": "2026-03-08T23:59:59Z",
-        "createdAt": "2026-03-01T00:00:00Z",
+        "closeTime": close_time.isoformat().replace("+00:00", "Z"),
+        "endDate": close_time.isoformat().replace("+00:00", "Z"),
+        "createdAt": created_at.isoformat().replace("+00:00", "Z"),
         "event": {"id": "evt_weather_1", "category": "Weather"},
     }
 
 
 def _resolution_spec() -> ResolutionSpec:
+    observation_date = _observation_date()
     return ResolutionSpec(
         market_id="mkt_weather_1",
         condition_id="cond_weather_1",
@@ -186,7 +192,7 @@ def _resolution_spec() -> ResolutionSpec:
         latitude=40.7128,
         longitude=-74.0060,
         timezone="America/New_York",
-        observation_date=date(2026, 3, 8),
+        observation_date=observation_date,
         observation_window_local="daily_max",
         metric="temperature_max",
         unit="fahrenheit",
@@ -196,6 +202,19 @@ def _resolution_spec() -> ResolutionSpec:
         inclusive_bounds=True,
         spec_version="spec_abc123",
     )
+
+
+def _observation_date() -> date:
+    return (datetime.now(timezone.utc) + timedelta(days=3)).date()
+
+
+def _forecast_target_time() -> datetime:
+    observation_date = _observation_date()
+    return datetime.combine(observation_date - timedelta(days=1), time(12, 0), tzinfo=timezone.utc)
+
+
+def _model_run() -> str:
+    return _forecast_target_time().strftime("%Y-%m-%dT%H:%MZ")
 
 
 class WeatherPricingUnitTest(unittest.TestCase):
@@ -344,8 +363,8 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
             distribution = service.get_forecast(
                 _resolution_spec(),
                 source="openmeteo",
-                model_run="2026-03-07T12:00Z",
-                forecast_target_time=datetime(2026, 3, 7, 12, 0, tzinfo=timezone.utc),
+                model_run=_model_run(),
+                forecast_target_time=_forecast_target_time(),
             )
             forecast_run = build_forecast_run_record(distribution)
             enqueue_forecast_run_upserts(queue_cfg, forecast_runs=[forecast_run], run_id="run_forecast")
@@ -380,8 +399,14 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
             )
             yes_value = next(item for item in fair_values if item.outcome == "YES")
             no_value = next(item for item in fair_values if item.outcome == "NO")
-            self.assertEqual(yes_value.fair_value, 1.0)
-            self.assertEqual(no_value.fair_value, 0.0)
+            expected_yes = probability_in_bucket(
+                build_normal_distribution(55.0, 3.0),
+                bucket_min=50.0,
+                bucket_max=59.0,
+                inclusive_bounds=True,
+            )
+            self.assertAlmostEqual(yes_value.fair_value, expected_yes)
+            self.assertAlmostEqual(no_value.fair_value, 1.0 - expected_yes)
 
             snapshots = [
                 build_watch_only_snapshot(
@@ -432,7 +457,13 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
             finally:
                 con.close()
 
-            self.assertEqual(fv_rows, [("NO", 0.0, forecast_run.run_id), ("YES", 1.0, forecast_run.run_id)])
+            self.assertEqual(
+                fv_rows,
+                [
+                    ("NO", 1.0 - expected_yes, forecast_run.run_id),
+                    ("YES", expected_yes, forecast_run.run_id),
+                ],
+            )
             self.assertEqual(snap_rows[0][0], "NO")
             self.assertEqual(snap_rows[0][1], "TAKE")
             self.assertEqual(snap_rows[0][2], "SELL")
@@ -591,8 +622,8 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
                         queue_cfg,
                         forecast_service=service,
                         source="openmeteo",
-                        model_run="2026-03-07T12:00Z",
-                        forecast_target_time=datetime(2026, 3, 7, 12, 0, tzinfo=timezone.utc),
+                        model_run=_model_run(),
+                        forecast_target_time=_forecast_target_time(),
                         run_id="run_forecast_refresh",
                     )
                 finally:

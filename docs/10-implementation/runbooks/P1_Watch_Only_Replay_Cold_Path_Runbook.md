@@ -144,6 +144,9 @@ replica / read surface 入口：
 2. 运行 Weather market discovery
 3. 运行 Rule2Spec + StationMapper onboarding
 4. 运行 forecast fetch / cache / forecast run persistence
+   - forecast adapters 产出离散化温度概率分布，不再使用单点值
+   - HTTP 调用默认应经过 retry wrapper；允许可选 circuit breaker
+   - 内存 cache 语义为 TTL + LRU，而不是无限缓存
 5. 运行 pricing / fair value / watch-only snapshot persistence
 6. 运行 UMA watcher replay
 7. 运行 settlement verification / evidence linkage / redeem suggestion

@@ -452,8 +452,33 @@ def _compare_float(changed_fields: dict[str, dict[str, Any]], name: str, origina
 
 
 def _compare_json(changed_fields: dict[str, dict[str, Any]], name: str, original: Any, replayed: Any) -> None:
-    if safe_json_dumps(original) != safe_json_dumps(replayed):
+    canonical_original = _canonical_json_value(original)
+    canonical_replayed = _canonical_json_value(replayed)
+    if safe_json_dumps(canonical_original) != safe_json_dumps(canonical_replayed):
         changed_fields[name] = {"original": original, "replayed": replayed}
+
+
+def _canonical_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            _canonical_json_key(key): _canonical_json_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_canonical_json_value(item) for item in value]
+    if isinstance(value, float):
+        return round(value, 12)
+    return value
+
+
+def _canonical_json_key(key: Any) -> Any:
+    try:
+        number = float(key)
+    except (TypeError, ValueError):
+        return key
+    if number.is_integer():
+        return int(number)
+    return round(number, 12)
 
 
 def _load_original_forecast_run(con, *, request: ForecastReplayRequest) -> ForecastRunRecord:

@@ -15,6 +15,7 @@ from urllib.parse import urljoin
 from agents.common import enqueue_agent_artifact_upserts
 from agents.common.client import build_agent_client_from_env
 from agents.weather.rule2spec_agent import Rule2SpecAgentRequest, run_rule2spec_agent_review
+from asterion_core.clients.http_retry import RetryHttpClient
 from asterion_core.contracts import StationMetadata
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.db_migrate import MigrationConfig, apply_migrations
@@ -321,11 +322,12 @@ def main() -> int:
                     "resolution_summary": agent_market_report.get("resolution_summary"),
                 }
             )
+    forecast_http_client = RetryHttpClient(HttpJsonClient(timeout_seconds=10.0), max_retries=3, initial_delay=0.5)
     forecast_service = ForecastService(
         adapter_router=AdapterRouter(
             [
-                NWSAdapter(client=HttpJsonClient(timeout_seconds=10.0)),
-                OpenMeteoAdapter(client=HttpJsonClient(timeout_seconds=10.0)),
+                NWSAdapter(client=forecast_http_client),
+                OpenMeteoAdapter(client=forecast_http_client),
             ]
         ),
         cache=InMemoryForecastCache(),

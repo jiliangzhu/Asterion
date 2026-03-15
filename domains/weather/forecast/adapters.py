@@ -1,13 +1,56 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+import math
 from typing import Any
 
 from asterion_core.clients.shared import build_url
 from asterion_core.contracts import ForecastRequest
 
 from .service import ForecastDistribution
+
+# Historical forecast error standard deviations (in Fahrenheit)
+# Based on typical weather forecast accuracy
+FORECAST_STD_DEV_1DAY = 3.0
+FORECAST_STD_DEV_3DAY = 4.5
+FORECAST_STD_DEV_7DAY = 6.0
+
+
+def build_normal_distribution(mean: float, std_dev: float, min_temp: int = -100, max_temp: int = 200) -> dict[int, float]:
+    """Build temperature probability distribution based on normal distribution.
+
+    Args:
+        mean: Forecast mean temperature
+        std_dev: Standard deviation based on historical forecast error
+        min_temp: Minimum temperature to consider
+        max_temp: Maximum temperature to consider
+
+    Returns:
+        Dictionary mapping temperature to probability, summing to 1.0
+    """
+    distribution = {}
+    total_prob = 0.0
+
+    for temp in range(min_temp, max_temp + 1):
+        z = (temp - mean) / std_dev
+        prob = math.exp(-0.5 * z * z) / (std_dev * math.sqrt(2 * math.pi))
+        distribution[temp] = prob
+        total_prob += prob
+
+    # Normalize
+    if total_prob > 0:
+        distribution = {t: p / total_prob for t, p in distribution.items()}
+
+    return distribution
+
+
+def _forecast_std_dev(request: ForecastRequest) -> float:
+    horizon_days = max(0, (request.observation_date - request.forecast_target_time.date()).days)
+    if horizon_days <= 1:
+        return FORECAST_STD_DEV_1DAY
+    if horizon_days <= 3:
+        return FORECAST_STD_DEV_3DAY
+    return FORECAST_STD_DEV_7DAY
 
 
 @dataclass(frozen=True)
@@ -37,7 +80,10 @@ class OpenMeteoAdapter:
         if not isinstance(values, list) or not values:
             raise ValueError(f"open-meteo variable missing:{variable}")
         point_value = float(values[0])
-        distribution = {int(round(point_value)): 1.0}
+
+        std_dev = _forecast_std_dev(request)
+        distribution = build_normal_distribution(point_value, std_dev)
+
         return _build_distribution(request, source=self.source_name, distribution=distribution, raw_payload=payload)
 
 
@@ -64,7 +110,10 @@ class NWSAdapter:
             raise ValueError("nws temperature missing")
         metric = request.metric.lower()
         point_value = max(temperatures) if "max" in metric or "high" in metric else min(temperatures)
-        distribution = {int(round(point_value)): 1.0}
+
+        std_dev = _forecast_std_dev(request)
+        distribution = build_normal_distribution(point_value, std_dev)
+
         raw_payload = {"points": points_payload, "forecast": forecast_payload}
         return _build_distribution(request, source=self.source_name, distribution=distribution, raw_payload=raw_payload)
 
@@ -103,6 +152,8 @@ def _openmeteo_variable_for_metric(metric: str) -> str:
     if "min" in lower or "low" in lower:
         return "temperature_2m_min"
     return "temperature_2m_max"
+
+
 def _extract_forecast_url(payload: dict[str, Any]) -> str:
     properties = payload.get("properties")
     if not isinstance(properties, dict):

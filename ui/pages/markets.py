@@ -102,6 +102,8 @@ def show() -> None:
     display_rows = _build_market_table_rows(opportunities, market_rows)
     discovery = report.get("market_discovery") or {}
     chain_status = report.get("chain_status") or ("initializing" if not report else "unknown")
+    refresh_state = report.get("refresh_state")
+    refresh_note = report.get("refresh_note") or discovery.get("refresh_note")
 
     st.markdown("### Opportunity Terminal")
     st.caption("Markets 现在首先回答哪些市场最值得优先看、最可执行、最值得赚钱，而不是只展示链路 debug 细节。")
@@ -120,8 +122,8 @@ def show() -> None:
         liquidity_ready = int(((pd.to_numeric(opportunities["liquidity_proxy"], errors="coerce").fillna(0) >= 60.0) & (opportunities["accepting_orders"] == True)).sum()) if ({"liquidity_proxy", "accepting_orders"} <= set(opportunities.columns)) else 0  # noqa: E712
         st.metric("Liquidity-Ready Markets", liquidity_ready, delta=discovery.get("market_source") or payload.get("market_opportunity_source"))
 
-    if chain_status == "initializing":
-        st.info("市场链路正在生成首份或最新一轮报告，请稍候刷新。")
+    if refresh_state == "initializing" or chain_status == "initializing":
+        st.info(refresh_note or "市场链路正在生成首份或最新一轮报告，请稍候刷新。")
     elif chain_status == "transport_error":
         st.error(discovery.get("note") or "当前是 transport error，不是无市场。")
     elif chain_status == "no_open_recent_markets":
