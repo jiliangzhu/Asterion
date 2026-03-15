@@ -21,6 +21,7 @@ DEFAULT_READINESS_REPORT_JSON_PATH = "data/ui/asterion_readiness_p3.json"
 
 _REQUIRED_UI_TABLES = [
     "ui.market_watch_summary",
+    "ui.market_opportunity_summary",
     "ui.proposal_resolution_summary",
     "ui.execution_ticket_summary",
     "ui.execution_run_summary",
@@ -1308,6 +1309,167 @@ def _build_ui_lite_contract(
             LEFT JOIN latest_output output ON output.invocation_id = inv.invocation_id
             LEFT JOIN latest_review review ON review.invocation_id = inv.invocation_id
             LEFT JOIN latest_evaluation evaluation ON evaluation.invocation_id = inv.invocation_id
+            """,
+            table_row_counts=table_row_counts,
+        )
+        _create_table_from_src(
+            con,
+            target="ui.market_opportunity_summary",
+            sql_body="""
+            WITH latest_signal AS (
+                SELECT
+                    market_id,
+                    snapshot_id,
+                    token_id,
+                    outcome,
+                    decision,
+                    side,
+                    edge_bps,
+                    threshold_bps,
+                    reference_price,
+                    fair_value,
+                    created_at
+                FROM (
+                    SELECT
+                        market_id,
+                        snapshot_id,
+                        token_id,
+                        outcome,
+                        decision,
+                        side,
+                        edge_bps,
+                        threshold_bps,
+                        reference_price,
+                        fair_value,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY market_id
+                            ORDER BY
+                                CASE WHEN decision = 'TAKE' THEN 0 ELSE 1 END,
+                                ABS(COALESCE(edge_bps, 0)) DESC,
+                                created_at DESC,
+                                snapshot_id DESC
+                        ) AS rn
+                    FROM src.weather.weather_watch_only_snapshots
+                )
+                WHERE rn = 1
+            ),
+            agent_rollup AS (
+                SELECT
+                    subject_id AS market_id,
+                    MAX(CASE WHEN invocation_status = 'failure' THEN 1 ELSE 0 END) AS has_failure,
+                    MAX(CASE WHEN COALESCE(human_review_required, FALSE) THEN 1 ELSE 0 END) AS has_review_required,
+                    MAX(CASE WHEN invocation_status = 'success' THEN 1 ELSE 0 END) AS has_success,
+                    MAX(COALESCE(CAST(confidence AS DOUBLE), 0.0)) AS max_confidence,
+                    MAX(updated_at) AS updated_at
+                FROM ui.agent_review_summary
+                WHERE subject_type = 'weather_market'
+                GROUP BY subject_id
+            ),
+            live_rollup AS (
+                SELECT
+                    market_id,
+                    MAX(CASE WHEN COALESCE(live_prereq_attention_required, FALSE) THEN 1 ELSE 0 END) AS has_attention,
+                    MAX(CASE WHEN live_prereq_execution_status = 'shadow_aligned' THEN 1 ELSE 0 END) AS has_shadow_aligned,
+                    MAX(CASE WHEN live_prereq_execution_status IS NOT NULL THEN 1 ELSE 0 END) AS has_any_live,
+                    MAX(COALESCE(latest_submit_created_at, latest_sign_attempt_created_at)) AS updated_at
+                FROM ui.live_prereq_execution_summary
+                GROUP BY market_id
+            )
+            SELECT
+                market.market_id,
+                market.title AS question,
+                watch.location_name,
+                watch.station_id,
+                COALESCE(market.close_time, market.end_date) AS market_close_time,
+                market.accepting_orders,
+                signal.side AS best_side,
+                signal.outcome AS best_outcome,
+                signal.decision AS best_decision,
+                signal.reference_price AS market_price,
+                signal.fair_value,
+                signal.edge_bps,
+                CASE
+                    WHEN COALESCE(market.accepting_orders, FALSE) = FALSE THEN 25.0
+                    WHEN COALESCE(market.enable_order_book, FALSE) = TRUE THEN 85.0
+                    WHEN COALESCE(signal.reference_price, 0.5) BETWEEN 0.10 AND 0.90 THEN 70.0
+                    ELSE 55.0
+                END AS liquidity_proxy,
+                CASE
+                    WHEN COALESCE(agent.has_failure, 0) = 1 THEN 35.0
+                    WHEN COALESCE(agent.has_review_required, 0) = 1 THEN GREATEST(60.0, COALESCE(agent.max_confidence, 0.0) * 100.0)
+                    WHEN COALESCE(agent.has_success, 0) = 1 THEN GREATEST(80.0, COALESCE(agent.max_confidence, 0.0) * 100.0)
+                    WHEN signal.fair_value IS NOT NULL THEN 55.0
+                    ELSE 40.0
+                END AS confidence_proxy,
+                CASE
+                    WHEN COALESCE(agent.has_failure, 0) = 1 THEN 'agent_failure'
+                    WHEN COALESCE(agent.has_review_required, 0) = 1 THEN 'review_required'
+                    WHEN COALESCE(agent.has_success, 0) = 1 THEN 'passed'
+                    ELSE 'no_agent_signal'
+                END AS agent_review_status,
+                CASE
+                    WHEN COALESCE(live.has_attention, 0) = 1 THEN 'attention_required'
+                    WHEN COALESCE(live.has_shadow_aligned, 0) = 1 THEN 'shadow_aligned'
+                    WHEN COALESCE(live.has_any_live, 0) = 1 THEN 'in_progress'
+                    ELSE 'not_started'
+                END AS live_prereq_status,
+                CASE
+                    WHEN COALESCE(signal.edge_bps, 0) >= 1500 THEN 'high_edge'
+                    WHEN COALESCE(signal.edge_bps, 0) >= 750 THEN 'medium_edge'
+                    WHEN COALESCE(signal.edge_bps, 0) > 0 THEN 'low_edge'
+                    ELSE 'negative_edge'
+                END AS opportunity_bucket,
+                CASE
+                    WHEN COALESCE(signal.edge_bps, 0) <= 0 OR signal.decision IS NULL OR signal.side IS NULL THEN 'no_trade'
+                    WHEN COALESCE(market.accepting_orders, FALSE) = FALSE OR market.closed OR market.archived OR COALESCE(live.has_attention, 0) = 1 THEN 'blocked'
+                    WHEN COALESCE(agent.has_failure, 0) = 1 OR COALESCE(agent.has_review_required, 0) = 1 OR COALESCE(agent.has_success, 0) = 0 THEN 'review_required'
+                    ELSE 'actionable'
+                END AS actionability_status,
+                ROUND(
+                    LEAST(
+                        100.0,
+                        GREATEST(COALESCE(signal.edge_bps, 0), 0) / 50.0
+                        + (
+                            CASE
+                                WHEN COALESCE(market.accepting_orders, FALSE) = FALSE THEN 25.0
+                                WHEN COALESCE(market.enable_order_book, FALSE) = TRUE THEN 85.0
+                                WHEN COALESCE(signal.reference_price, 0.5) BETWEEN 0.10 AND 0.90 THEN 70.0
+                                ELSE 55.0
+                            END
+                        ) * 0.25
+                        + (
+                            CASE
+                                WHEN COALESCE(agent.has_failure, 0) = 1 THEN 35.0
+                                WHEN COALESCE(agent.has_review_required, 0) = 1 THEN GREATEST(60.0, COALESCE(agent.max_confidence, 0.0) * 100.0)
+                                WHEN COALESCE(agent.has_success, 0) = 1 THEN GREATEST(80.0, COALESCE(agent.max_confidence, 0.0) * 100.0)
+                                WHEN signal.fair_value IS NOT NULL THEN 55.0
+                                ELSE 40.0
+                            END
+                        ) * 0.25
+                        + CASE WHEN COALESCE(market.accepting_orders, FALSE) THEN 12.0 ELSE 0.0 END
+                        + CASE
+                            WHEN COALESCE(live.has_shadow_aligned, 0) = 1 THEN 10.0
+                            WHEN COALESCE(live.has_any_live, 0) = 0 THEN 6.0
+                            ELSE 0.0
+                          END
+                    ),
+                    2
+                ) AS opportunity_score,
+                watch.latest_run_source,
+                watch.latest_forecast_target_time,
+                signal.threshold_bps,
+                signal.created_at AS signal_created_at,
+                agent.updated_at AS agent_updated_at,
+                live.updated_at AS live_updated_at
+            FROM src.weather.weather_markets market
+            LEFT JOIN ui.market_watch_summary watch ON watch.market_id = market.market_id
+            LEFT JOIN latest_signal signal ON signal.market_id = market.market_id
+            LEFT JOIN agent_rollup agent ON agent.market_id = market.market_id
+            LEFT JOIN live_rollup live ON live.market_id = market.market_id
+            WHERE market.active = TRUE
+              AND COALESCE(market.closed, FALSE) = FALSE
+              AND COALESCE(market.archived, FALSE) = FALSE
             """,
             table_row_counts=table_row_counts,
         )

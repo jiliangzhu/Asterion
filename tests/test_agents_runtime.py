@@ -113,6 +113,9 @@ class AgentRuntimeContractsTest(unittest.TestCase):
         env = {
             "ALIBABA_API_KEY": "test-aliyun-key",
             "QWEN_MODEL": "qwen-max",
+            "ASTERION_OPENAI_COMPATIBLE_API_KEY": "",
+            "ASTERION_OPENAI_COMPATIBLE_MODEL": "",
+            "ASTERION_OPENAI_COMPATIBLE_BASE_URL": "",
         }
         with mock.patch.dict(os.environ, env, clear=True):
             client = build_agent_client_from_env()
@@ -124,12 +127,28 @@ class AgentRuntimeContractsTest(unittest.TestCase):
         env = {
             "QWEN_API_KEY": "test-qwen-key",
             "QWEN_MODEL": "qwen-max",
+            "ASTERION_OPENAI_COMPATIBLE_API_KEY": "",
+            "ASTERION_OPENAI_COMPATIBLE_MODEL": "",
+            "ASTERION_OPENAI_COMPATIBLE_BASE_URL": "",
         }
         with mock.patch.dict(os.environ, env, clear=True):
             client = build_agent_client_from_env()
         self.assertIsInstance(client, OpenAICompatibleAgentClient)
         self.assertEqual(client._model_name, "qwen-max")
         self.assertEqual(client._base_url, "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+
+    def test_build_agent_client_from_env_supports_explicit_openai_compatible_endpoint(self) -> None:
+        env = {
+            "ASTERION_AGENT_PROVIDER": "openai_compatible",
+            "ASTERION_OPENAI_COMPATIBLE_API_KEY": "test-healwrap-key",
+            "ASTERION_OPENAI_COMPATIBLE_MODEL": "glm-5",
+            "ASTERION_OPENAI_COMPATIBLE_BASE_URL": "https://llm-api.healwrap.cn/v1/chat/completions",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            client = build_agent_client_from_env()
+        self.assertIsInstance(client, OpenAICompatibleAgentClient)
+        self.assertEqual(client._model_name, "glm-5")
+        self.assertEqual(client._base_url, "https://llm-api.healwrap.cn/v1/chat/completions")
 
     def test_load_env_file_sets_defaults_without_overriding_existing_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -171,6 +190,96 @@ class AgentRuntimeContractsTest(unittest.TestCase):
             )
         self.assertEqual(response.structured_output_json["ok"], True)
         self.assertTrue(run_mock.called)
+
+    def test_openai_compatible_client_retries_without_response_format_on_400(self) -> None:
+        class Response400Then200HttpClient:
+            def __init__(self) -> None:
+                self.payloads = []
+
+            def post(self, url, *, headers, json, timeout):
+                del url, headers, timeout
+                self.payloads.append(dict(json))
+
+                class Response:
+                    def __init__(self, status_code, payload):
+                        self.status_code = status_code
+                        self._payload = payload
+
+                    def raise_for_status(self):
+                        if self.status_code >= 400:
+                            raise RuntimeError(f"http {self.status_code}")
+
+                    def json(self):
+                        return self._payload
+
+                if len(self.payloads) == 1:
+                    return Response(400, {"error": {"message": "response_format unsupported"}})
+                return Response(200, {"choices": [{"message": {"content": "{\"verdict\":\"pass\"}"}}]})
+
+        http_client = Response400Then200HttpClient()
+        client = OpenAICompatibleAgentClient(
+            api_key="test-key",
+            model_name="glm-5",
+            base_url="https://llm-api.healwrap.cn/v1/chat/completions",
+            http_client=http_client,
+        )
+        response = client.invoke(
+            system_prompt="system",
+            user_prompt="user",
+            input_payload_json={"foo": "bar"},
+            metadata={"agent_type": "rule2spec"},
+        )
+        self.assertEqual(response.structured_output_json["verdict"], "pass")
+        self.assertIn("response_format", http_client.payloads[0])
+        self.assertNotIn("response_format", http_client.payloads[1])
+
+    def test_openai_compatible_client_retries_on_502(self) -> None:
+        class Response502Then200HttpClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def post(self, url, *, headers, json, timeout):
+                del url, headers, json, timeout
+                self.calls += 1
+
+                class Response:
+                    def __init__(self, status_code, payload):
+                        self.status_code = status_code
+                        self._payload = payload
+
+                    def raise_for_status(self):
+                        if self.status_code >= 400:
+                            raise RuntimeError(f"http {self.status_code}")
+
+                    def json(self):
+                        return self._payload
+
+                if self.calls == 1:
+                    return Response(502, {"error": {"message": "bad gateway"}})
+                return Response(200, {"choices": [{"message": {"content": "{\"verdict\":\"review\"}"}}]})
+
+        http_client = Response502Then200HttpClient()
+        client = OpenAICompatibleAgentClient(
+            api_key="test-key",
+            model_name="glm-5",
+            base_url="https://llm-api.healwrap.cn/v1/chat/completions",
+            http_client=http_client,
+        )
+        response = client.invoke(
+            system_prompt="system",
+            user_prompt="user",
+            input_payload_json={"foo": "bar"},
+            metadata={"agent_type": "rule2spec"},
+        )
+        self.assertEqual(response.structured_output_json["verdict"], "review")
+        self.assertEqual(http_client.calls, 2)
+
+    def test_parse_structured_output_accepts_markdown_fenced_json(self) -> None:
+        parsed = client_module._parse_structured_output(
+            "```json\n{\"ok\": true, \"message\": \"hi\"}\n```",
+            raw={},
+        )
+        self.assertEqual(parsed["ok"], True)
 
 
 @unittest.skipUnless(HAS_HTTPX, "httpx is required for provider adapter tests")

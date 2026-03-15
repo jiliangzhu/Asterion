@@ -54,8 +54,8 @@ def show() -> None:
     readiness = load_readiness_summary()
     status = load_system_runtime_status()
 
-    st.markdown("### 系统与 Readiness")
-    st.caption("system 页面现在只展示真实状态，不再显示硬编码“全部正常”。")
+    st.markdown("### System & Readiness")
+    st.caption("System 页面只保留 operator 真正关心的健康面：readiness、UI surfaces freshness 和最小运行时摘要。")
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -79,15 +79,23 @@ def show() -> None:
     rows = _build_component_rows(status, readiness)
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
-    st.markdown("#### File Paths")
-    path_rows = [
-        {"路径类型": "UI Lite DB", "路径": status["ui_lite_db_path"]},
-        {"路径类型": "UI Replica DB", "路径": status["ui_replica_db_path"]},
-        {"路径类型": "Readiness JSON", "路径": status["readiness_report_path"]},
-        {"路径类型": "Readiness Markdown", "路径": status["readiness_report_markdown_path"]},
-        {"路径类型": "Weather Smoke Report", "路径": status["weather_smoke_report_path"]},
+    st.markdown("#### Minimal Health Summary")
+    health_rows = [
+        {"组件": "Opportunity Surface", "值": status.get("opportunity_row_count"), "说明": "当前机会排序读面行数"},
+        {"组件": "Actionable Markets", "值": status.get("actionable_market_count"), "说明": "当前可优先 review 的市场数"},
+        {"组件": "Agent Work Rows", "值": status.get("agent_row_count"), "说明": "agent workbench 当前可见产出"},
     ]
-    st.dataframe(pd.DataFrame(path_rows), width="stretch", hide_index=True)
+    st.dataframe(pd.DataFrame(health_rows), width="stretch", hide_index=True)
+
+    with st.expander("File Paths", expanded=False):
+        path_rows = [
+            {"路径类型": "UI Lite DB", "路径": status["ui_lite_db_path"]},
+            {"路径类型": "UI Replica DB", "路径": status["ui_replica_db_path"]},
+            {"路径类型": "Readiness JSON", "路径": status["readiness_report_path"]},
+            {"路径类型": "Readiness Markdown", "路径": status["readiness_report_markdown_path"]},
+            {"路径类型": "Weather Smoke Report", "路径": status["weather_smoke_report_path"]},
+        ]
+        st.dataframe(pd.DataFrame(path_rows), width="stretch", hide_index=True)
 
     st.caption(
         "当前 UI 保持 controlled-live boundary：`GO` 只表示 ready for controlled live rollout decision，"

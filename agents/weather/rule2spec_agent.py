@@ -272,7 +272,13 @@ def parse_rule2spec_agent_output(payload: dict[str, Any], *, request: Rule2SpecA
     if "city" in raw_patch:
         raise ValueError("suggested_patch_json contains unsupported fields")
     suggested_patch_json = {key: value for key, value in raw_patch.items() if key in ALLOWED_RULE2SPEC_PATCH_FIELDS}
-    risk_flags = [str(item) for item in payload.get("risk_flags", [])]
+    raw_risk_flags = payload.get("risk_flags", [])
+    if raw_risk_flags is None:
+        risk_flags = []
+    elif isinstance(raw_risk_flags, list):
+        risk_flags = [str(item) for item in raw_risk_flags]
+    else:
+        risk_flags = [str(raw_risk_flags)]
     verdict = _normalize_verdict(payload["verdict"])
     summary = str(payload["summary"])
     confidence = float(payload["confidence"])
@@ -335,14 +341,22 @@ def _system_prompt() -> str:
     return (
         "You review deterministic weather market parsing results. "
         "Stay station-first. Never output city-first fields. "
-        "Return only JSON."
+        "Return only one JSON object. Do not use markdown. Do not use code fences. "
+        "If a field is unknown, return an empty list, empty object, or null-compatible value instead of prose."
     )
 
 
 def _user_prompt() -> str:
     return (
         "Review the deterministic Rule2Spec draft against current station mapping and current spec. "
-        "Return verdict, confidence, summary, risk_flags, suggested_patch_json, findings, and human_review_required."
+        "Return a single JSON object with exactly these keys: "
+        "verdict, confidence, summary, risk_flags, suggested_patch_json, findings, human_review_required. "
+        "Allowed verdict values: pass, review, block. "
+        "risk_flags must be a JSON array of strings. "
+        "suggested_patch_json must only contain: authoritative_source, bucket_max_value, bucket_min_value, inclusive_bounds, "
+        "location_name, metric, observation_window_local, rounding_rule, station_id, unit. "
+        "findings must be a JSON array. Each finding object should prefer: finding_code, severity(info|warn|error), entity_type, entity_id, field_name, summary, suggested_action. "
+        "If there are no findings, return []. If no patch is needed, return {}."
     )
 
 
@@ -368,15 +382,36 @@ def _parse_findings(raw: Any, *, default_entity_type: str, default_entity_id: st
             continue
         if not isinstance(item, dict):
             raise ValueError("finding entry must be an object")
+        finding_code = str(
+            item.get("finding_code")
+            or item.get("code")
+            or item.get("type")
+            or item.get("category")
+            or "model_finding"
+        )
+        severity = str(item.get("severity") or item.get("level") or "info").lower()
+        if severity == "warning":
+            severity = "warn"
+        field_name = item.get("field_name")
+        if field_name is None:
+            field_name = item.get("field") or item.get("path")
+        summary = item.get("summary")
+        if summary is None:
+            summary = item.get("message") or item.get("detail") or item.get("description") or item.get("finding")
+        if summary is None:
+            summary = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        suggested_action = item.get("suggested_action")
+        if suggested_action is None:
+            suggested_action = item.get("action") or item.get("recommendation")
         findings.append(
             AgentFinding(
-                finding_code=str(item["finding_code"]),
-                severity=str(item["severity"]).lower(),
+                finding_code=finding_code,
+                severity=severity,
                 entity_type=str(item.get("entity_type") or default_entity_type),
                 entity_id=str(item.get("entity_id") or default_entity_id),
-                field_name=str(item["field_name"]) if item.get("field_name") is not None else None,
-                summary=str(item["summary"]),
-                suggested_action=str(item["suggested_action"]) if item.get("suggested_action") is not None else None,
+                field_name=str(field_name) if field_name is not None else None,
+                summary=str(summary),
+                suggested_action=str(suggested_action) if suggested_action is not None else None,
             )
         )
     return findings

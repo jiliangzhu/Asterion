@@ -138,6 +138,23 @@ def _json_dump(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def _stage_status(*, success_count: int, total_count: int) -> str:
+    if total_count <= 0:
+        return "skipped"
+    if success_count <= 0:
+        return "degraded"
+    if success_count < total_count:
+        return "degraded"
+    return "ok"
+
+
+def _first_non_empty(values: list[str | None]) -> str | None:
+    for value in values:
+        if value:
+            return value
+    return None
+
+
 @contextlib.contextmanager
 def patched_env(updates: dict[str, str | None]):
     old = {key: os.environ.get(key) for key in updates}
@@ -275,67 +292,13 @@ def main() -> int:
         skip_agent=args.skip_agent,
     )
 
-    forecast_service = ForecastService(
-        adapter_router=AdapterRouter(
-            [
-                NWSAdapter(client=HttpJsonClient(timeout_seconds=10.0)),
-                OpenMeteoAdapter(client=HttpJsonClient(timeout_seconds=10.0)),
-            ]
-        ),
-        cache=InMemoryForecastCache(),
-    )
-    with reader_connection(db_path) as con:
-        forecast_result = run_weather_forecast_refresh(
-            con,
-            queue_cfg,
-            forecast_service=forecast_service,
-            source=TARGET_SOURCE_REQUESTED,
-            model_run=datetime.now(UTC).strftime("%Y-%m-%dT%H:%MZ"),
-            forecast_target_time=datetime.now(UTC),
-            market_ids=target_market_ids,
-            run_id="run_forecast_refresh",
-        )
-    drain_queue(queue_path=queue_path, db_path=db_path, allow_tables=allow_tables)
-
     per_market_specs: list[dict[str, Any]] = []
     per_market_forecasts: list[dict[str, Any]] = []
     per_market_pricing: list[dict[str, Any]] = []
     per_market_signals: list[dict[str, Any]] = []
-    fair_values = []
-    snapshots = []
     with reader_connection(db_path) as con:
         for target_market in target_markets:
-            market = load_weather_market(con, market_id=target_market.market_id)
             spec = load_weather_market_spec(con, market_id=target_market.market_id)
-            forecast_run_id = con.execute(
-                """
-                SELECT run_id
-                FROM weather.weather_forecast_runs
-                WHERE market_id = ?
-                ORDER BY created_at DESC, run_id DESC
-                LIMIT 1
-                """,
-                [target_market.market_id],
-            ).fetchone()[0]
-            forecast_run = load_forecast_run(con, run_id=forecast_run_id)
-            current_fair_values = build_binary_fair_values(market=market, spec=spec, forecast_run=forecast_run)
-            market_prices = extract_market_prices(market.raw_market)
-            current_snapshots = [
-                build_watch_only_snapshot(
-                    fair_value=item,
-                    reference_price=market_prices[item.outcome],
-                    threshold_bps=TARGET_THRESHOLD_BPS,
-                    pricing_context={
-                        "forecast_run_id": forecast_run.run_id,
-                        "source_requested": TARGET_SOURCE_REQUESTED,
-                        "source_used": forecast_run.source,
-                        "source_trace": forecast_run.source_trace,
-                    },
-                )
-                for item in current_fair_values
-            ]
-            fair_values.extend(current_fair_values)
-            snapshots.extend(current_snapshots)
             agent_market_report = agent_report["markets"].get(target_market.market_id, {})
             per_market_specs.append(
                 {
@@ -358,19 +321,85 @@ def main() -> int:
                     "resolution_summary": agent_market_report.get("resolution_summary"),
                 }
             )
+    forecast_service = ForecastService(
+        adapter_router=AdapterRouter(
+            [
+                NWSAdapter(client=HttpJsonClient(timeout_seconds=10.0)),
+                OpenMeteoAdapter(client=HttpJsonClient(timeout_seconds=10.0)),
+            ]
+        ),
+        cache=InMemoryForecastCache(),
+    )
+    model_run = datetime.now(UTC).strftime("%Y-%m-%dT%H:%MZ")
+    forecast_target_time = datetime.now(UTC)
+    forecast_success_market_ids: list[str] = []
+    forecast_error_by_market: dict[str, str] = {}
+    fair_values = []
+    snapshots = []
+
+    for target_market in target_markets:
+        try:
+            with reader_connection(db_path) as con:
+                forecast_result = run_weather_forecast_refresh(
+                    con,
+                    queue_cfg,
+                    forecast_service=forecast_service,
+                    source=TARGET_SOURCE_REQUESTED,
+                    model_run=model_run,
+                    forecast_target_time=forecast_target_time,
+                    market_ids=[target_market.market_id],
+                    run_id=f"run_forecast_refresh_{target_market.market_id}",
+                )
+            drain_queue(queue_path=queue_path, db_path=db_path, allow_tables=allow_tables)
+            with reader_connection(db_path) as con:
+                market = load_weather_market(con, market_id=target_market.market_id)
+                spec = load_weather_market_spec(con, market_id=target_market.market_id)
+                forecast_run_id = con.execute(
+                    """
+                    SELECT run_id
+                    FROM weather.weather_forecast_runs
+                    WHERE market_id = ?
+                    ORDER BY created_at DESC, run_id DESC
+                    LIMIT 1
+                    """,
+                    [target_market.market_id],
+                ).fetchone()[0]
+                forecast_run = load_forecast_run(con, run_id=forecast_run_id)
+            current_fair_values = build_binary_fair_values(market=market, spec=spec, forecast_run=forecast_run)
+            market_prices = extract_market_prices(market.raw_market)
+            current_snapshots = [
+                build_watch_only_snapshot(
+                    fair_value=item,
+                    reference_price=market_prices[item.outcome],
+                    threshold_bps=TARGET_THRESHOLD_BPS,
+                    pricing_context={
+                        "forecast_run_id": forecast_run.run_id,
+                        "source_requested": TARGET_SOURCE_REQUESTED,
+                        "source_used": forecast_run.source,
+                        "source_trace": forecast_run.source_trace,
+                    },
+                )
+                for item in current_fair_values
+            ]
+            forecast_success_market_ids.append(target_market.market_id)
+            fair_values.extend(current_fair_values)
+            snapshots.extend(current_snapshots)
             per_market_forecasts.append(
                 {
                     "market_id": target_market.market_id,
                     "question": target_market.title,
+                    "status": "ok",
                     "forecast_run_id": forecast_run.run_id,
                     "source_used": forecast_run.source,
                     "source_trace": forecast_run.source_trace,
+                    "forecast_item_count": forecast_result.item_count,
                 }
             )
             per_market_pricing.append(
                 {
                     "market_id": target_market.market_id,
                     "question": target_market.title,
+                    "status": "ok",
                     "market_prices": market_prices,
                     "fair_values": [
                         {
@@ -387,6 +416,7 @@ def main() -> int:
                 {
                     "market_id": target_market.market_id,
                     "question": target_market.title,
+                    "status": "ok",
                     "signals": [
                         {
                             "token_id": item.token_id,
@@ -403,16 +433,33 @@ def main() -> int:
                     ],
                 }
             )
+        except Exception as exc:  # noqa: BLE001
+            forecast_error_by_market[target_market.market_id] = str(exc)
 
-    enqueue_fair_value_upserts(queue_cfg, fair_values=fair_values, run_id="run_fair_values")
-    enqueue_watch_only_snapshot_upserts(queue_cfg, snapshots=snapshots, run_id="run_watch_only")
-    drain_queue(queue_path=queue_path, db_path=db_path, allow_tables=allow_tables)
+    if fair_values:
+        enqueue_fair_value_upserts(queue_cfg, fair_values=fair_values, run_id="run_fair_values")
+    if snapshots:
+        enqueue_watch_only_snapshot_upserts(queue_cfg, snapshots=snapshots, run_id="run_watch_only")
+    if fair_values or snapshots:
+        drain_queue(queue_path=queue_path, db_path=db_path, allow_tables=allow_tables)
 
     counts = collect_counts(db_path)
+    forecast_status = _stage_status(success_count=len(forecast_success_market_ids), total_count=len(target_markets))
+    chain_status = "ok" if forecast_status == "ok" else "degraded"
+    forecast_note = None
+    if forecast_error_by_market:
+        failed_market_count = len(forecast_error_by_market)
+        forecast_note = (
+            f"{failed_market_count}/{len(target_markets)} 个市场 forecast 拉取失败；"
+            "其余成功市场已继续生成 pricing/opportunity。"
+            if forecast_success_market_ids
+            else f"所有 {len(target_markets)} 个市场的 forecast 拉取都失败；当前仅保留 discovery/spec/agent 结果。"
+        )
     report = {
         "timestamp": datetime.now(UTC).isoformat(),
-        "chain_status": "ok",
+        "chain_status": chain_status,
         "report_scope": ["市场发现", "规则解析", "预测服务", "定价引擎", "机会发现"],
+        "note": forecast_note,
         "market_discovery": {
             "status": "ok",
             "input_mode": report_mode,
@@ -446,6 +493,8 @@ def main() -> int:
                     "resolution_status": next((item["resolution_status"] for item in per_market_specs if item["market_id"] == market.market_id), None),
                     "resolution_verdict": next((item["resolution_verdict"] for item in per_market_specs if item["market_id"] == market.market_id), None),
                     "resolution_summary": next((item["resolution_summary"] for item in per_market_specs if item["market_id"] == market.market_id), None),
+                    "forecast_status": "ok" if market.market_id in forecast_success_market_ids else "failure",
+                    "forecast_summary": forecast_error_by_market.get(market.market_id),
                 }
                 for market in target_markets
             ],
@@ -467,26 +516,29 @@ def main() -> int:
             "agent_direct_validation_only": False,
         },
         "forecast_service": {
-            "status": "ok",
+            "status": forecast_status,
             "source_requested": TARGET_SOURCE_REQUESTED,
-            "source_used": per_market_forecasts[0]["source_used"],
-            "source_trace": per_market_forecasts[0]["source_trace"],
+            "source_used": _first_non_empty([item.get("source_used") for item in per_market_forecasts]),
+            "source_trace": next((item.get("source_trace") for item in per_market_forecasts if item.get("source_trace")), []),
             "source_note": "当前代码会先请求 weather.com 语义，再按 spec fallback 到 NWS/OpenMeteo adapters。",
-            "forecast_item_count": forecast_result.item_count,
+            "forecast_item_count": sum(int(item.get("forecast_item_count") or 0) for item in per_market_forecasts),
             "market_count": len(per_market_forecasts),
+            "failed_market_count": len(forecast_error_by_market),
+            "error_by_market": forecast_error_by_market,
+            "note": forecast_note,
             "markets": per_market_forecasts,
         },
         "pricing_engine": {
-            "status": "ok",
+            "status": _stage_status(success_count=len(per_market_pricing), total_count=len(target_markets)),
             "market_count": len(per_market_pricing),
-            "market_prices": per_market_pricing[0]["market_prices"],
-            "fair_values": per_market_pricing[0]["fair_values"],
+            "market_prices": per_market_pricing[0]["market_prices"] if per_market_pricing else {},
+            "fair_values": per_market_pricing[0]["fair_values"] if per_market_pricing else [],
             "markets": per_market_pricing,
         },
         "opportunity_discovery": {
-            "status": "ok",
+            "status": _stage_status(success_count=len(per_market_signals), total_count=len(target_markets)),
             "signal_count": sum(len(item["signals"]) for item in per_market_signals),
-            "signals": per_market_signals[0]["signals"],
+            "signals": per_market_signals[0]["signals"] if per_market_signals else [],
             "markets": per_market_signals,
         },
         "db_counts": counts,

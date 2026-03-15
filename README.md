@@ -174,10 +174,10 @@ Weather smoke 当前默认行为：
 
 UI 当前重点页面：
 
-- `Home`：readiness、wallet/execution 概览、市场覆盖与最近 agent activity
-- `Markets`：所有 open recent markets 的详细分析
+- `Home`：决策首页，优先展示 readiness、最大 blocker、top opportunities 与最近 agent work
+- `Markets`：Opportunity Terminal，按 actionability + opportunity score 排序展示所有 open recent markets
 - `Execution`：paper execution + live-prereq 主视图
-- `Agents`：每个 agent 实际做了什么、产出了什么、是否需要人工复核
+- `Agents`：Agent Workbench，重点展示 work done、human review queue 与 runtime boundary
 - `System`：readiness、UI surfaces、最小 health 摘要
 
 ### 3. Weather MVP 范围
@@ -367,8 +367,8 @@ agents/                     # AI Agent
 ### Phase 4: Live Prerequisites
 - ✅ real data ingress / capability refresh / signer boundary
 - ✅ submitter dry-run / shadow path
-- ⏳ chain tx scaffold
-- ⏳ readiness / controlled rollout criteria
+- ✅ chain tx scaffold
+- ✅ readiness / controlled rollout criteria
 - 当前实施入口：[P4_Implementation_Plan.md](./docs/10-implementation/phase-plans/P4_Implementation_Plan.md)
 
 ---

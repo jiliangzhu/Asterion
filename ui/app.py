@@ -153,6 +153,17 @@ st.markdown(
             color: var(--muted);
             font-size: 0.92rem;
         }
+
+        div[data-testid="stDataFrame"] {
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            overflow: hidden;
+            background: rgba(251, 248, 242, 0.82);
+        }
+
+        div[data-testid="stAlert"] {
+            border-radius: 16px;
+        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -178,7 +189,7 @@ def _render_shell_header() -> None:
                 </div>
             </div>
             <div class="console-subcopy">
-                当前 UI 聚焦 operator workflow：真实天气市场链路、paper execution、live-prereq wallet / execution、readiness 与 controlled-live boundary。
+                当前 UI 聚焦 operator workflow：机会优先的 weather markets、paper execution、live-prereq wallet / execution、readiness 与 controlled-live boundary。
                 这里不承诺 unattended live，也不会暴露 raw signer / submitter payload。
             </div>
         </div>
@@ -188,8 +199,8 @@ def _render_shell_header() -> None:
 
 
 PAGES = {
-    "Home": ("总控台", home.show),
-    "Markets": ("市场链路", markets.show),
+    "Home": ("决策首页", home.show),
+    "Markets": ("机会终端", markets.show),
     "Execution": ("执行与 Live-Prereq", execution.show),
     "Agents": ("Agent Workbench", agents.show),
     "System": ("系统与 Readiness", system.show),

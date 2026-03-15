@@ -37,6 +37,12 @@ class RealWeatherChainSmokeTest(unittest.TestCase):
         self.assertFalse(args.skip_agent)
         self.assertFalse(args.with_agent)
 
+    def test_stage_status_supports_partial_and_empty_runs(self) -> None:
+        self.assertEqual(self.smoke._stage_status(success_count=3, total_count=3), "ok")
+        self.assertEqual(self.smoke._stage_status(success_count=1, total_count=3), "degraded")
+        self.assertEqual(self.smoke._stage_status(success_count=0, total_count=3), "degraded")
+        self.assertEqual(self.smoke._stage_status(success_count=0, total_count=0), "skipped")
+
     def test_station_catalog_supports_multiple_cities(self) -> None:
         catalog = self.smoke.load_weather_station_catalog()
         self.assertEqual(catalog["seattle"]["station_id"], "KSEA")

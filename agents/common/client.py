@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -158,7 +159,6 @@ class OpenAICompatibleAgentClient:
     ) -> AgentClientResponse:
         payload = {
             "model": self._model_name,
-            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {
@@ -167,6 +167,8 @@ class OpenAICompatibleAgentClient:
                 },
             ],
         }
+        if _supports_response_format():
+            payload["response_format"] = {"type": "json_object"}
         raw = self._post_payload(payload, timeout_seconds=timeout_seconds)
         text = _extract_openai_text(raw)
         return AgentClientResponse(
@@ -182,24 +184,36 @@ class OpenAICompatibleAgentClient:
             "content-type": "application/json",
             "authorization": f"Bearer {self._api_key}",
         }
-        try:
-            response = self._http_client.post(
-                self._base_url,
-                headers=headers,
-                json=payload,
-                timeout=timeout_seconds,
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception:
-            if not _should_use_curl_fallback(self._base_url):
-                raise
-            return _post_json_with_curl(
-                self._base_url,
-                headers=headers,
-                payload=payload,
-                timeout_seconds=timeout_seconds,
-            )
+        active_payload = dict(payload)
+        for attempt in range(_openai_compatible_retry_count()):
+            try:
+                response = self._http_client.post(
+                    self._base_url,
+                    headers=headers,
+                    json=active_payload,
+                    timeout=timeout_seconds,
+                )
+                if response.status_code == 400 and "response_format" in active_payload:
+                    active_payload = dict(active_payload)
+                    active_payload.pop("response_format", None)
+                    continue
+                if response.status_code in {502, 503, 504} and attempt + 1 < _openai_compatible_retry_count():
+                    time.sleep(min(1.5 * (attempt + 1), 3.0))
+                    continue
+                response.raise_for_status()
+                return response.json()
+            except Exception:
+                if attempt + 1 < _openai_compatible_retry_count():
+                    time.sleep(min(1.5 * (attempt + 1), 3.0))
+                    continue
+                if not _should_use_curl_fallback(self._base_url):
+                    raise
+                return _post_json_with_curl(
+                    self._base_url,
+                    headers=headers,
+                    payload=active_payload,
+                    timeout_seconds=timeout_seconds,
+                )
 
 
 def build_agent_client_from_env(http_client=None) -> AgentClient:
@@ -286,6 +300,19 @@ def _build_httpx_client():
     except ModuleNotFoundError as exc:  # pragma: no cover
         raise RuntimeError("Missing dependency: httpx. Install with: pip install httpx") from exc
     return httpx.Client(timeout=30.0)
+
+
+def _supports_response_format() -> bool:
+    raw = os.getenv("ASTERION_OPENAI_COMPATIBLE_DISABLE_RESPONSE_FORMAT", "").strip().lower()
+    return raw not in {"1", "true", "yes", "y"}
+
+
+def _openai_compatible_retry_count() -> int:
+    raw = os.getenv("ASTERION_OPENAI_COMPATIBLE_RETRIES", "").strip()
+    try:
+        return max(1, int(raw or "3"))
+    except ValueError:
+        return 3
 
 
 def _should_use_curl_fallback(base_url: str | None) -> bool:
@@ -375,6 +402,15 @@ def _parse_structured_output(text: str, raw: dict[str, Any]) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
+        cleaned = _extract_json_object_text(text)
+        if cleaned is not None:
+            try:
+                parsed = json.loads(cleaned)
+            except json.JSONDecodeError:
+                parsed = None
+            else:
+                if isinstance(parsed, dict):
+                    return parsed
         maybe_json = raw.get("output_json") if isinstance(raw, dict) else None
         if isinstance(maybe_json, dict):
             return maybe_json
@@ -382,3 +418,19 @@ def _parse_structured_output(text: str, raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("agent structured output must decode to an object")
     return parsed
+
+
+def _extract_json_object_text(text: str) -> str | None:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    return stripped[start : end + 1]

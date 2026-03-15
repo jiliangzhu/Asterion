@@ -371,6 +371,42 @@ class Rule2SpecAgentTest(unittest.TestCase):
         self.assertEqual(finding["finding_code"], "model_finding")
         self.assertEqual(finding["summary"], "station override confirmed")
 
+    def test_rule2spec_agent_accepts_finding_alias_fields(self) -> None:
+        request = Rule2SpecAgentRequest(
+            market=_weather_market(),
+            draft=_draft(),
+            current_spec=_weather_spec(),
+            station_metadata=_station_metadata(),
+            station_override_summary={"has_override": True},
+        )
+        client = FakeAgentClient(
+            responses={
+                "rule2spec": {
+                    "verdict": "review",
+                    "confidence": 0.72,
+                    "summary": "alias findings are tolerated",
+                    "risk_flags": "missing_station_mapping",
+                    "suggested_patch_json": {"station_id": "KNYC"},
+                    "findings": [
+                        {
+                            "code": "station_gap",
+                            "level": "warning",
+                            "field": "station_id",
+                            "message": "Station mapping should be explicit",
+                            "recommendation": "keep station-first patch",
+                        }
+                    ],
+                    "human_review_required": True,
+                }
+            }
+        )
+        artifacts = run_rule2spec_agent_review(client, request)
+        assert artifacts.output is not None
+        self.assertEqual(artifacts.invocation.status, AgentInvocationStatus.SUCCESS)
+        finding = artifacts.output.structured_output_json["findings"][0]
+        self.assertEqual(finding["finding_code"], "station_gap")
+        self.assertEqual(finding["summary"], "Station mapping should be explicit")
+
     def test_rule2spec_agent_filters_unknown_patch_fields(self) -> None:
         request = Rule2SpecAgentRequest(
             market=_weather_market(),

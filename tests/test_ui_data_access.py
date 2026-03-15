@@ -13,6 +13,8 @@ from ui.data_access import (
     build_ops_console_overview,
     load_agent_review_data,
     load_market_chain_analysis_data,
+    load_market_opportunity_data,
+    load_home_decision_snapshot,
     load_readiness_summary,
     load_system_runtime_status,
     load_ui_lite_snapshot,
@@ -56,6 +58,12 @@ class UiDataAccessTest(unittest.TestCase):
                 con.execute("CREATE SCHEMA ui")
                 con.execute("CREATE TABLE ui.execution_ticket_summary(ticket_id TEXT, wallet_id TEXT)")
                 con.execute("INSERT INTO ui.execution_ticket_summary VALUES ('tt_1', 'wallet_weather_1')")
+                con.execute(
+                    "CREATE TABLE ui.market_opportunity_summary(market_id TEXT, question TEXT, location_name TEXT, market_close_time TIMESTAMP, accepting_orders BOOLEAN, best_side TEXT, market_price DOUBLE, fair_value DOUBLE, edge_bps DOUBLE, liquidity_proxy DOUBLE, confidence_proxy DOUBLE, agent_review_status TEXT, live_prereq_status TEXT, opportunity_bucket TEXT, opportunity_score DOUBLE, actionability_status TEXT)"
+                )
+                con.execute(
+                    "INSERT INTO ui.market_opportunity_summary VALUES ('mkt_1','Seattle question','Seattle','2026-03-13 12:00:00',true,'BUY',0.41,0.67,1300,72,85,'passed','not_started','medium_edge',84.5,'actionable')"
+                )
                 con.execute("CREATE TABLE ui.phase_readiness_summary(gate_name TEXT, status TEXT)")
                 con.execute("INSERT INTO ui.phase_readiness_summary VALUES ('live_prereq_operator_surface', 'PASS')")
                 con.execute(
@@ -71,8 +79,34 @@ class UiDataAccessTest(unittest.TestCase):
                 snapshot = load_ui_lite_snapshot()
             self.assertTrue(snapshot["exists"])
             self.assertEqual(snapshot["table_row_counts"]["execution_ticket_summary"], 1)
+            self.assertEqual(snapshot["table_row_counts"]["market_opportunity_summary"], 1)
             self.assertEqual(snapshot["table_row_counts"]["live_prereq_wallet_summary"], 0)
             self.assertEqual(snapshot["table_row_counts"]["agent_review_summary"], 1)
+
+    def test_load_market_opportunity_data_prefers_ui_lite_and_sorts_by_actionability_then_score(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ui_lite.duckdb"
+            con = duckdb.connect(str(db_path))
+            try:
+                con.execute("CREATE SCHEMA ui")
+                con.execute(
+                    "CREATE TABLE ui.market_opportunity_summary(market_id TEXT, question TEXT, location_name TEXT, market_close_time TIMESTAMP, accepting_orders BOOLEAN, best_side TEXT, market_price DOUBLE, fair_value DOUBLE, edge_bps DOUBLE, liquidity_proxy DOUBLE, confidence_proxy DOUBLE, agent_review_status TEXT, live_prereq_status TEXT, opportunity_bucket TEXT, opportunity_score DOUBLE, actionability_status TEXT)"
+                )
+                con.execute(
+                    "INSERT INTO ui.market_opportunity_summary VALUES "
+                    "('mkt_review','Review market','Seattle','2026-03-13 12:00:00',true,'BUY',0.41,0.67,1400,70,60,'review_required','not_started','medium_edge',82.0,'review_required'),"
+                    "('mkt_actionable','Actionable market','Atlanta','2026-03-13 14:00:00',true,'BUY',0.38,0.74,1100,78,85,'passed','not_started','medium_edge',83.0,'actionable'),"
+                    "('mkt_no_trade','No trade market','Miami','2026-03-14 14:00:00',true,NULL,0.49,0.49,0,55,50,'no_agent_signal','not_started','negative_edge',19.0,'no_trade')"
+                )
+            finally:
+                con.close()
+
+            with patch.dict(os.environ, {"ASTERION_UI_LITE_DB_PATH": str(db_path)}, clear=False):
+                payload = load_market_opportunity_data()
+
+            self.assertEqual(payload["source"], "ui_lite")
+            self.assertEqual(payload["frame"].iloc[0]["market_id"], "mkt_actionable")
+            self.assertEqual(payload["frame"].iloc[1]["market_id"], "mkt_review")
 
     def test_load_agent_review_data_falls_back_to_smoke_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -191,6 +225,71 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(len(payload["market_rows"]), 1)
             self.assertEqual(payload["market_rows"][0]["spec"]["station_id"], "KSEA")
             self.assertEqual(payload["market_rows"][0]["forecast"]["source_used"], "nws")
+            self.assertEqual(payload["market_rows"][0]["actionability_status"], "review_required")
+            self.assertEqual(payload["market_opportunity_source"], "smoke_report")
+
+    def test_load_market_chain_analysis_data_keeps_discovered_rows_when_pricing_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "real_weather_chain_report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "chain_status": "degraded",
+                        "market_discovery": {
+                            "selected_markets": [
+                                {
+                                    "market_id": "mkt_nyc_1",
+                                    "question": "NYC question",
+                                    "location_name": "New York City",
+                                    "station_id": "KNYC",
+                                    "accepting_orders": True,
+                                    "rule2spec_status": "success",
+                                    "rule2spec_verdict": "review",
+                                    "rule2spec_summary": "rule2spec ok",
+                                    "forecast_status": "failure",
+                                    "forecast_summary": "forecast_fetch_failed:tls eof",
+                                }
+                            ]
+                        },
+                        "rule_parse": {
+                            "selected_specs": [
+                                {
+                                    "market_id": "mkt_nyc_1",
+                                    "location_name": "New York City",
+                                    "station_id": "KNYC",
+                                }
+                            ]
+                        },
+                        "forecast_service": {
+                            "status": "degraded",
+                            "markets": [],
+                        },
+                        "pricing_engine": {
+                            "status": "degraded",
+                            "markets": [],
+                        },
+                        "opportunity_discovery": {
+                            "status": "degraded",
+                            "markets": [],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                },
+                clear=False,
+            ):
+                payload = load_market_chain_analysis_data()
+
+            self.assertEqual(len(payload["market_rows"]), 1)
+            self.assertEqual(payload["market_rows"][0]["forecast_status"], "failure")
+            self.assertEqual(len(payload["market_opportunities"]), 1)
+            self.assertEqual(payload["market_opportunities"].iloc[0]["market_id"], "mkt_nyc_1")
 
     def test_console_overview_and_system_rows_handle_partial_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -225,6 +324,54 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(overview["metrics"]["weather_market_question"], "Will the highest temperature in Seattle be between 36-37°F on March 13?")
             self.assertEqual(overview["metrics"]["weather_market_count"], 0)
             self.assertEqual(len(system_rows), 6)
+
+    def test_load_home_decision_snapshot_surfaces_largest_blocker_and_recent_agent_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "readiness.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "target": "p4_live_prerequisites",
+                        "go_decision": "NO-GO",
+                        "decision_reason": "failed gates: signer_path_health; not ready for controlled live rollout decision",
+                        "evaluated_at": "2026-03-13T10:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ui_path = Path(tmpdir) / "ui_lite.duckdb"
+            con = duckdb.connect(str(ui_path))
+            try:
+                con.execute("CREATE SCHEMA ui")
+                con.execute("CREATE TABLE ui.phase_readiness_summary(gate_name TEXT, status TEXT)")
+                con.execute("INSERT INTO ui.phase_readiness_summary VALUES ('signer_path_health', 'FAIL')")
+                con.execute(
+                    "CREATE TABLE ui.market_opportunity_summary(market_id TEXT, question TEXT, location_name TEXT, market_close_time TIMESTAMP, accepting_orders BOOLEAN, best_side TEXT, market_price DOUBLE, fair_value DOUBLE, edge_bps DOUBLE, liquidity_proxy DOUBLE, confidence_proxy DOUBLE, agent_review_status TEXT, live_prereq_status TEXT, opportunity_bucket TEXT, opportunity_score DOUBLE, actionability_status TEXT)"
+                )
+                con.execute(
+                    "INSERT INTO ui.market_opportunity_summary VALUES ('mkt_1','Seattle question','Seattle','2026-03-13 12:00:00',true,'BUY',0.41,0.67,1300,72,85,'passed','not_started','medium_edge',84.5,'actionable')"
+                )
+                con.execute(
+                    "CREATE TABLE ui.agent_review_summary(agent_type TEXT, subject_type TEXT, subject_id TEXT, invocation_status TEXT, verdict TEXT, confidence DOUBLE, summary TEXT, human_review_required BOOLEAN, updated_at TIMESTAMP)"
+                )
+                con.execute(
+                    "INSERT INTO ui.agent_review_summary VALUES ('rule2spec','weather_market','mkt_1','success','review',0.9,'station-first looks good',true,'2026-03-13 10:00:00')"
+                )
+            finally:
+                con.close()
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(ui_path),
+                    "ASTERION_READINESS_REPORT_JSON_PATH": str(report_path),
+                },
+                clear=False,
+            ):
+                snapshot = load_home_decision_snapshot()
+
+            self.assertEqual(snapshot["largest_blocker"]["source"], "readiness")
+            self.assertEqual(snapshot["recent_agent_summary"]["agent_type"], "rule2spec")
 
 
 if __name__ == "__main__":

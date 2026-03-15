@@ -25,7 +25,7 @@ def show() -> None:
     daily_ops = payload["daily_ops"]
 
     st.markdown("### Execution & Live-Prereq")
-    st.caption("execution page 现在优先消费 `ui.execution_ticket_summary` 和 `ui.live_prereq_execution_summary`。")
+    st.caption("Execution 页面优先突出 attention queue，再下沉 run / ticket 明细，避免 operator 在长表里找问题。")
 
     top1, top2, top3, top4 = st.columns(4)
     with top1:
@@ -59,51 +59,87 @@ def show() -> None:
 
     filtered_tickets = _filter_frame(tickets, wallet=selected_wallet, market=selected_market, live_status=selected_live_status)
     filtered_live = _filter_frame(live_prereq, wallet=selected_wallet, market=selected_market, live_status=selected_live_status)
-
-    st.markdown("#### Ticket Summary")
-    if filtered_tickets.empty:
-        st.info("当前没有 execution ticket 数据，或 UI lite DB 尚未生成。")
+    if not filtered_tickets.empty:
+        operator_attention = (
+            filtered_tickets["operator_attention_required"] == True  # noqa: E712
+            if "operator_attention_required" in filtered_tickets.columns
+            else False
+        )
+        live_attention = (
+            filtered_tickets["live_prereq_attention_required"] == True  # noqa: E712
+            if "live_prereq_attention_required" in filtered_tickets.columns
+            else False
+        )
+        attention_tickets = filtered_tickets[operator_attention | live_attention] if ("operator_attention_required" in filtered_tickets.columns or "live_prereq_attention_required" in filtered_tickets.columns) else filtered_tickets.iloc[0:0]
     else:
-        preferred_columns = [
+        attention_tickets = filtered_tickets
+
+    st.markdown("#### Attention Queue")
+    if attention_tickets.empty and exceptions.empty:
+        st.success("当前没有 execution / live-prereq attention rows。")
+    else:
+        attention_columns = [
             column
             for column in [
                 "ticket_id",
                 "wallet_id",
                 "market_id",
-                "strategy_id",
                 "execution_result",
-                "order_status",
-                "reconciliation_status",
                 "external_reconciliation_status",
+                "live_prereq_execution_status",
                 "operator_attention_required",
-                "live_prereq_execution_status",
                 "live_prereq_attention_required",
             ]
-            if column in filtered_tickets.columns
+            if column in attention_tickets.columns
         ]
-        st.dataframe(filtered_tickets[preferred_columns], width="stretch", hide_index=True)
+        if attention_columns:
+            st.dataframe(attention_tickets[attention_columns].head(20), width="stretch", hide_index=True)
+        if not exceptions.empty:
+            st.dataframe(exceptions.head(12), width="stretch", hide_index=True)
 
-    st.markdown("#### Live-Prereq Execution Summary")
-    if filtered_live.empty:
-        st.info("当前没有进入 signer / submitter / external reconciliation 的 execution rows。")
-    else:
-        preferred_columns = [
-            column
-            for column in [
-                "ticket_id",
-                "wallet_id",
-                "order_id",
-                "latest_sign_attempt_status",
-                "latest_submit_mode",
-                "latest_submit_status",
-                "external_order_status",
-                "external_reconciliation_status",
-                "live_prereq_execution_status",
-                "live_prereq_attention_required",
+    details_left, details_right = st.columns([1.2, 1.05])
+    with details_left:
+        st.markdown("#### Ticket Summary")
+        if filtered_tickets.empty:
+            st.info("当前没有 execution ticket 数据，或 UI lite DB 尚未生成。")
+        else:
+            preferred_columns = [
+                column
+                for column in [
+                    "ticket_id",
+                    "wallet_id",
+                    "market_id",
+                    "strategy_id",
+                    "execution_result",
+                    "order_status",
+                    "reconciliation_status",
+                    "external_reconciliation_status",
+                    "live_prereq_execution_status",
+                ]
+                if column in filtered_tickets.columns
             ]
-            if column in filtered_live.columns
-        ]
-        st.dataframe(filtered_live[preferred_columns], width="stretch", hide_index=True)
+            st.dataframe(filtered_tickets[preferred_columns], width="stretch", hide_index=True)
+
+    with details_right:
+        st.markdown("#### Live-Prereq Execution")
+        if filtered_live.empty:
+            st.info("当前没有进入 signer / submitter / external reconciliation 的 execution rows。")
+        else:
+            preferred_columns = [
+                column
+                for column in [
+                    "ticket_id",
+                    "wallet_id",
+                    "order_id",
+                    "latest_sign_attempt_status",
+                    "latest_submit_status",
+                    "external_order_status",
+                    "external_reconciliation_status",
+                    "live_prereq_execution_status",
+                ]
+                if column in filtered_live.columns
+            ]
+            st.dataframe(filtered_live[preferred_columns], width="stretch", hide_index=True)
 
     lower_left, lower_right = st.columns([1.15, 1])
     with lower_left:
@@ -114,14 +150,8 @@ def show() -> None:
             st.dataframe(runs.head(12), width="stretch", hide_index=True)
 
     with lower_right:
-        st.markdown("#### Exception Summary")
-        if exceptions.empty:
-            st.success("当前 execution 没有异常行。")
+        st.markdown("#### Daily Ops Projection")
+        if daily_ops.empty:
+            st.info("当前没有 `ui.daily_ops_summary` 数据。")
         else:
-            st.dataframe(exceptions.head(12), width="stretch", hide_index=True)
-
-    st.markdown("#### Daily Ops Projection")
-    if daily_ops.empty:
-        st.info("当前没有 `ui.daily_ops_summary` 数据。")
-    else:
-        st.dataframe(daily_ops.head(10), width="stretch", hide_index=True)
+            st.dataframe(daily_ops.head(10), width="stretch", hide_index=True)

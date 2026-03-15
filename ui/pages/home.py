@@ -1,137 +1,137 @@
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
-from ui.data_access import build_ops_console_overview
+from ui.data_access import load_home_decision_snapshot
+
+
+def _format_metric_value(value: object) -> str:
+    if value is None or value == "" or pd.isna(value):
+        return "N/A"
+    if isinstance(value, float):
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    return str(value)
 
 
 def show() -> None:
-    overview = build_ops_console_overview()
+    overview = load_home_decision_snapshot()
     readiness = overview["readiness"]
     execution = overview["execution"]
     market_data = overview["market_data"]
     metrics = overview["metrics"]
     wallet_attention = overview["wallet_attention"]
+    top_opportunities = overview["top_opportunities"]
+    largest_blocker = overview["largest_blocker"]
+    recent_agent = overview["recent_agent_summary"]
     agent_data = overview["agent_data"]["frame"]
 
-    st.markdown("### 总控台")
-    st.caption("目标是在一屏内回答 readiness、最大 blocker 和当前天气链路是否健康。")
+    st.markdown("### Decision Console")
+    st.caption("首页现在优先回答 readiness、最大 blocker、当前最佳机会，以及最近 agent 实际产出。")
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("P4 Readiness", metrics["go_decision"], delta=readiness.get("target") or "p4_live_prerequisites")
-    with col2:
-        st.metric("失败 Gate", metrics["failed_gate_count"], delta="P4 live-prereq")
-    with col3:
-        st.metric("钱包 Ready", f'{metrics["wallet_ready_count"]}/{metrics["wallet_total_count"]}', delta="live-prereq wallets")
-    with col4:
-        st.metric("执行注意项", metrics["live_prereq_attention_count"], delta=f'{metrics["exception_count"]} exception rows')
+    top1, top2, top3, top4 = st.columns(4)
+    with top1:
+        st.metric("Readiness Decision", metrics["go_decision"], delta=readiness.get("target") or "p4_live_prerequisites")
+    with top2:
+        st.metric("Actionable Markets", metrics["actionable_market_count"], delta=f"open={metrics['weather_market_count']}")
+    with top3:
+        st.metric("Top Opportunity Score", _format_metric_value(metrics["top_opportunity_score"]), delta="opportunity-first")
+    with top4:
+        st.metric("Largest Current Blocker", largest_blocker["source"], delta=largest_blocker["summary"])
 
-    top_left, top_right = st.columns([1.5, 1.1])
-    with top_left:
-        st.markdown("#### Controlled Rollout Decision")
-        decision_reason = readiness.get("decision_reason") or "尚未生成 P4 readiness 报告。"
-        st.info(decision_reason)
+    row1_left, row1_right = st.columns([1.2, 1.05])
+    with row1_left:
+        st.markdown("#### Readiness Decision")
+        st.info(readiness.get("decision_reason") or "尚未生成 P4 readiness 报告。")
         failed_gate_names = readiness.get("failed_gate_names") or []
         if failed_gate_names:
             st.error("当前 blocker: " + " / ".join(failed_gate_names))
         else:
             st.success("当前没有 gate-level blocker。")
-        st.caption(f"来源: {readiness.get('report_path')}")
-
-    with top_right:
-        smoke_report = market_data.get("weather_smoke_report") or {}
-        discovery = smoke_report.get("market_discovery") or {}
-        chain_status = smoke_report.get("chain_status") or "unknown"
-        st.markdown("#### Real Weather Chain")
-        st.metric("链路状态", chain_status, delta=discovery.get("market_source") or "report")
-        st.write(discovery.get("question") or "当前没有命中的开盘近期天气市场。")
         st.caption(
-            " | ".join(
-                [
-                    f"selected={metrics['weather_market_count']}",
-                    f"horizon={discovery.get('selected_horizon_days') or 'n/a'}",
-                    f"source={discovery.get('market_source') or 'n/a'}",
-                    f"market_id={discovery.get('market_id') or 'n/a'}",
-                ]
-            )
+            "当前仓库状态是 `P4 closed / ready for controlled live rollout decision`，"
+            "但这不表示 unattended live。"
         )
-        if metrics["weather_locations"]:
-            st.caption("城市覆盖: " + ", ".join(metrics["weather_locations"][:8]))
 
-    lower_left, lower_right = st.columns([1.15, 1])
-    with lower_left:
-        st.markdown("#### 最新异常与执行状态")
-        exception_frame = execution["exceptions"]
-        if exception_frame.empty:
-            st.success("当前 `ui.execution_exception_summary` 没有记录异常。")
+    with row1_right:
+        st.markdown("#### Largest Current Blocker")
+        if largest_blocker["source"] == "clear":
+            st.success("No material blocker")
+        else:
+            st.warning(largest_blocker["summary"])
+        st.caption(f"来源: {largest_blocker['source']}")
+        st.metric("Liquidity-Ready", metrics["liquidity_ready_count"], delta=f"highest_edge={_format_metric_value(metrics['highest_edge_bps'])}bps")
+
+    row2_left, row2_right = st.columns([1.35, 1])
+    with row2_left:
+        st.markdown("#### Top Opportunities")
+        if top_opportunities.empty:
+            st.info("当前还没有进入机会排序的市场。")
         else:
             columns = [
                 column
                 for column in [
-                    "ticket_id",
-                    "execution_result",
-                    "latest_transition_to_status",
-                    "reconciliation_status",
-                    "external_reconciliation_status",
-                    "live_prereq_execution_status",
+                    "location_name",
+                    "question",
+                    "best_side",
+                    "edge_bps",
+                    "opportunity_score",
+                    "agent_review_status",
+                    "actionability_status",
                 ]
-                if column in exception_frame.columns
+                if column in top_opportunities.columns
             ]
-            st.dataframe(exception_frame[columns].head(8), width="stretch", hide_index=True)
+            st.dataframe(top_opportunities[columns].head(5), width="stretch", hide_index=True)
 
-    with lower_right:
-        st.markdown("#### Wallet Readiness")
-        if wallet_attention.empty:
-            st.success("当前 `can_trade=true` 钱包没有 live-prereq blocker。")
+    with row2_right:
+        st.markdown("#### Recent Agent Work")
+        st.metric("Agent Rows", metrics["agent_activity_count"], delta=f"review_required={metrics['agent_review_required_count']}")
+        if recent_agent.get("agent_type"):
+            st.write(f"最新 agent: `{recent_agent['agent_type']}`")
+            st.write(f"verdict: `{recent_agent.get('verdict') or 'n/a'}`")
+            st.caption(recent_agent.get("summary") or "最近一次 agent 产出暂无摘要。")
         else:
-            columns = [
-                column
-                for column in [
-                    "wallet_id",
-                    "wallet_readiness_status",
-                    "wallet_readiness_blockers_json",
-                    "latest_chain_tx_status",
-                ]
-                if column in wallet_attention.columns
-            ]
-            st.dataframe(wallet_attention[columns].head(6), width="stretch", hide_index=True)
+            st.info("当前没有 agent activity；运行 weather smoke 后会在这里显示最新产出。")
 
-    bottom_left, bottom_right = st.columns([1.1, 1])
-    with bottom_left:
+    row3_left, row3_right = st.columns([1.1, 1.1])
+    with row3_left:
         st.markdown("#### Market Coverage")
-        st.metric("Open Recent Markets", metrics["weather_market_count"], delta="当前可映射城市市场")
+        st.metric("Cities Covered", len(metrics["weather_locations"]), delta=f"source={(market_data.get('weather_smoke_report') or {}).get('market_discovery', {}).get('market_source') or market_data.get('market_opportunity_source')}")
         if metrics["weather_locations"]:
-            st.write("当前覆盖城市:")
             st.caption(" / ".join(metrics["weather_locations"][:12]))
         else:
             st.caption("当前没有命中的开盘近期天气市场。")
 
-    with bottom_right:
-        st.markdown("#### Recent Agent Activity")
-        st.metric("Agent Rows", metrics["agent_activity_count"], delta=f"review_required={metrics['agent_review_required_count']}")
-        if agent_data.empty:
-            st.info("当前没有 agent activity；若运行 weather smoke，将默认触发 rule2spec agent。")
+    with row3_right:
+        st.markdown("#### Wallet & Execution Attention")
+        execution_exceptions = execution["exceptions"]
+        if wallet_attention.empty and execution_exceptions.empty:
+            st.success("当前没有 wallet / execution attention rows。")
         else:
-            columns = [
-                column
-                for column in [
-                    "agent_type",
-                    "subject_id",
-                    "invocation_status",
-                    "verdict",
-                    "summary",
-                    "updated_at",
-                ]
-                if column in agent_data.columns
+            frames = []
+            if not wallet_attention.empty:
+                frames.append(
+                    wallet_attention[[column for column in ["wallet_id", "wallet_readiness_status", "latest_chain_tx_status"] if column in wallet_attention.columns]].head(4)
+                )
+            if not execution_exceptions.empty:
+                frames.append(
+                    execution_exceptions[[column for column in ["ticket_id", "live_prereq_execution_status", "external_reconciliation_status"] if column in execution_exceptions.columns]].head(4)
+                )
+            combined = pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+            st.dataframe(combined, width="stretch", hide_index=True)
+
+    if not agent_data.empty:
+        st.markdown("#### Recent Agent Activity")
+        columns = [
+            column
+            for column in [
+                "agent_type",
+                "subject_id",
+                "invocation_status",
+                "verdict",
+                "summary",
+                "updated_at",
             ]
-            st.dataframe(agent_data[columns].head(6), width="stretch", hide_index=True)
-
-    st.markdown("#### 快速入口")
-    st.info("使用左侧导航可快速切换到 Markets、Execution、Agents、System。")
-
-    st.markdown("#### 关键提示")
-    st.caption(
-        "当前仓库状态是 `P4 closed / ready for controlled live rollout decision`。"
-        "这不表示 unattended live，controlled live 仍必须保持 manual-only、default-off、approve_usdc only。"
-    )
+            if column in agent_data.columns
+        ]
+        st.dataframe(agent_data[columns].head(6), width="stretch", hide_index=True)
