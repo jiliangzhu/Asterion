@@ -70,6 +70,28 @@ class ControlledLiveCapabilityManifestTest(unittest.TestCase):
         self.assertEqual(manifest["manifest_status"], "blocked")
         self.assertTrue(any("missing_secret_env:ASTERION_CONTROLLED_LIVE_SECRET_PK_WALLET_WEATHER_1" == item for item in manifest["blockers"]))
 
+    def test_real_submitter_manifest_sets_constrained_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            policy_path = _write_policy(tmpdir)
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "false",
+                    "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
+                    "ASTERION_CONTROLLED_LIVE_SECRET_PK_WALLET_WEATHER_1": "0xabc",
+                },
+                clear=True,
+            ):
+                manifest = build_controlled_live_capability_manifest(
+                    policy_path=policy_path,
+                    signer_backend_kind="env_private_key_tx",
+                    chain_tx_backend_kind="real_broadcast",
+                    submitter_backend_kind="real_clob_submit",
+                )
+        self.assertEqual(manifest["manifest_status"], "valid")
+        self.assertEqual(manifest["submitter_backend_kind"], "real_clob_submit")
+        self.assertEqual(manifest["submitter_capability"], "constrained_real_submit")
+
 
 def _write_policy(tmpdir: str) -> str:
     path = Path(tmpdir) / "controlled_live_smoke.json"

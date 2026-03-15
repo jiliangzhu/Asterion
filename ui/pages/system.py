@@ -110,6 +110,7 @@ def show() -> None:
             f"default_off={boundary.get('default_off')} · "
             f"approve_usdc_only={boundary.get('approve_usdc_only')} · "
             f"shadow_submitter_only={boundary.get('shadow_submitter_only')} · "
+            f"constrained_real_submit_enabled={boundary.get('constrained_real_submit_enabled')} · "
             f"manifest_status={boundary.get('manifest_status')}"
         )
     st.markdown("#### Capability Boundary")
@@ -119,6 +120,7 @@ def show() -> None:
         {"字段": "default_off", "值": boundary.get("default_off")},
         {"字段": "approve_usdc_only", "值": boundary.get("approve_usdc_only")},
         {"字段": "shadow_submitter_only", "值": boundary.get("shadow_submitter_only")},
+        {"字段": "constrained_real_submit_enabled", "值": boundary.get("constrained_real_submit_enabled")},
     ]
     st.dataframe(pd.DataFrame(boundary_rows), width="stretch", hide_index=True)
 

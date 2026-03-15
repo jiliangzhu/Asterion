@@ -16,19 +16,20 @@ def _format_metric_value(value: object) -> str:
 
 def show() -> None:
     overview = load_home_decision_snapshot()
-    surface_status = overview["surface_status"]
-    readiness = overview["readiness"]
-    execution = overview["execution"]
-    market_data = overview["market_data"]
-    metrics = overview["metrics"]
-    wallet_attention = overview["wallet_attention"]
-    top_opportunities = overview["top_opportunities"]
-    largest_blocker = overview["largest_blocker"]
-    recent_agent = overview["recent_agent_summary"]
-    agent_data = overview["agent_data"]["frame"]
-    evidence = overview["readiness_evidence"]
-    predicted_vs_realized = overview["predicted_vs_realized_snapshot"]
-    degraded_inputs = overview["degraded_inputs"]
+    surface_status = overview.get("surface_status", {})
+    readiness = overview.get("readiness", {})
+    execution = overview.get("execution", {"exceptions": pd.DataFrame()})
+    market_data = overview.get("market_data", {})
+    metrics = overview.get("metrics", {})
+    wallet_attention = overview.get("wallet_attention", pd.DataFrame())
+    top_opportunities = overview.get("top_opportunities", pd.DataFrame())
+    largest_blocker = overview.get("largest_blocker", {"source": "unknown", "summary": "unknown"})
+    recent_agent = overview.get("recent_agent_summary", {})
+    agent_data = overview.get("agent_data", {}).get("frame", pd.DataFrame())
+    evidence = overview.get("readiness_evidence", {})
+    predicted_vs_realized = overview.get("predicted_vs_realized_snapshot", pd.DataFrame())
+    degraded_inputs = overview.get("degraded_inputs", [])
+    uncaptured_high_edge = overview.get("uncaptured_high_edge_markets", pd.DataFrame())
 
     st.markdown("### Decision Console")
     st.caption("首页优先回答 readiness、最大 blocker、当前最佳机会，以及已执行交易的 predicted-vs-realized 现实。")
@@ -43,11 +44,11 @@ def show() -> None:
 
     top1, top2, top3, top4 = st.columns(4)
     with top1:
-        st.metric("Readiness Decision", metrics["go_decision"], delta=readiness.get("target") or "p4_live_prerequisites")
+        st.metric("Readiness Decision", metrics.get("go_decision", "UNKNOWN"), delta=readiness.get("target") or "p4_live_prerequisites")
     with top2:
-        st.metric("Actionable Markets", metrics["actionable_market_count"], delta=f"open={metrics['weather_market_count']}")
+        st.metric("Actionable Markets", metrics.get("actionable_market_count", 0), delta=f"open={metrics.get('weather_market_count', 0)}")
     with top3:
-        st.metric("Top Opportunity Score", _format_metric_value(metrics["top_opportunity_score"]), delta="opportunity-first")
+        st.metric("Top Opportunity Score", _format_metric_value(metrics.get("top_opportunity_score")), delta="opportunity-first")
     with top4:
         st.metric("Largest Current Blocker", largest_blocker["source"], delta=largest_blocker["summary"])
 
@@ -72,7 +73,7 @@ def show() -> None:
         else:
             st.warning(largest_blocker["summary"])
         st.caption(f"来源: {largest_blocker['source']}")
-        st.metric("Liquidity-Ready", metrics["liquidity_ready_count"], delta=f"highest_edge={_format_metric_value(metrics['highest_edge_bps'])}bps")
+        st.metric("Liquidity-Ready", metrics.get("liquidity_ready_count", 0), delta=f"highest_edge={_format_metric_value(metrics.get('highest_edge_bps'))}bps")
 
     row2_left, row2_right = st.columns([1.35, 1])
     with row2_left:
@@ -102,9 +103,9 @@ def show() -> None:
 
     with row2_right:
         st.markdown("#### Predicted vs Realized Snapshot")
-        st.metric("Resolved Trades", metrics["resolved_trade_count"], delta=f"pending={metrics['pending_resolution_count']}")
-        st.write(f"avg predicted edge: `{_format_metric_value(metrics['avg_predicted_edge_bps'])} bps`")
-        st.write(f"avg realized pnl: `{_format_metric_value(metrics['avg_realized_pnl'])}`")
+        st.metric("Resolved Trades", metrics.get("resolved_trade_count", 0), delta=f"pending={metrics.get('pending_resolution_count', 0)}")
+        st.write(f"avg predicted edge: `{_format_metric_value(metrics.get('avg_predicted_edge_bps'))} bps`")
+        st.write(f"avg realized pnl: `{_format_metric_value(metrics.get('avg_realized_pnl'))}`")
         if predicted_vs_realized.empty:
             st.info("当前还没有 executed-only predicted-vs-realized rows。")
         else:
@@ -125,19 +126,30 @@ def show() -> None:
     row3_left, row3_right = st.columns([1.1, 1.1])
     with row3_left:
         st.markdown("#### Market Coverage")
-        st.metric("Cities Covered", len(metrics["weather_locations"]), delta=f"source={(market_data.get('weather_smoke_report') or {}).get('market_discovery', {}).get('market_source') or market_data.get('market_opportunity_source')}")
-        if metrics["weather_locations"]:
-            st.caption(" / ".join(metrics["weather_locations"][:12]))
+        weather_locations = metrics.get("weather_locations") or []
+        st.metric("Cities Covered", len(weather_locations), delta=f"source={(market_data.get('weather_smoke_report') or {}).get('market_discovery', {}).get('market_source') or market_data.get('market_opportunity_source')}")
+        if weather_locations:
+            st.caption(" / ".join(weather_locations[:12]))
         else:
             st.caption("当前没有命中的开盘近期天气市场。")
 
     with row3_right:
-        st.markdown("#### Degraded Inputs")
-        if degraded_inputs:
-            for item in degraded_inputs[:8]:
-                st.write(f"- `{item}`")
+        st.markdown("#### Edge Capture")
+        st.metric("Capture Ratio", _format_metric_value(metrics.get("execution_capture_ratio")), delta=f"uncaptured={metrics.get('uncaptured_high_edge_count', 0)}")
+        if uncaptured_high_edge.empty:
+            st.success("当前没有 uncaptured high-edge markets。")
         else:
-            st.success("当前没有 degraded input summary。")
+            columns = [
+                column
+                for column in [
+                    "market_id",
+                    "avg_executable_edge_bps",
+                    "execution_capture_ratio",
+                    "miss_reason_bucket",
+                ]
+                if column in uncaptured_high_edge.columns
+            ]
+            st.dataframe(uncaptured_high_edge[columns].head(5), width="stretch", hide_index=True)
 
     row4_left, row4_right = st.columns([1.1, 1.1])
     with row4_left:
@@ -168,8 +180,15 @@ def show() -> None:
         else:
             st.success(evidence.get("decision_reason") or "当前 evidence bundle 无 blocker。")
 
+    st.markdown("#### Degraded Inputs")
+    if degraded_inputs:
+        for item in degraded_inputs[:8]:
+            st.write(f"- `{item}`")
+    else:
+        st.success("当前没有 degraded input summary。")
+
     st.markdown("#### Recent Agent Work")
-    st.metric("Agent Rows", metrics["agent_activity_count"], delta=f"review_required={metrics['agent_review_required_count']}")
+    st.metric("Agent Rows", metrics.get("agent_activity_count", 0), delta=f"review_required={metrics.get('agent_review_required_count', 0)}")
     if recent_agent.get("agent_type"):
         st.write(f"最新 agent: `{recent_agent['agent_type']}`")
         st.write(f"verdict: `{recent_agent.get('verdict') or 'n/a'}`")

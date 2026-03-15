@@ -2,7 +2,7 @@
 
 **中文代号：星枢**
 
-> 一个建立在 AlphaDesk 底座之上的、面向 Polymarket 多领域事件市场的"研究、Agent、定价、执行、风控"统一平台
+> 一个源于 AlphaDesk 设计 lineage、但当前运行时代码已独立于 AlphaDesk 的 Polymarket 多领域事件市场统一平台
 
 **文档版本**: v1.2
 **创建日期**: 2026-03-07
@@ -68,10 +68,10 @@
 
 ### 1.1 核心定位
 
-**Asterion** 不是 AlphaDesk 的"天气分支"，而是一个**新的、面向多模块扩展的事件交易平台**。
+**Asterion** 不是 AlphaDesk 的"天气分支"，而是一个**新的、面向多模块扩展的事件交易平台**；当前运行时代码以本仓库为准，AlphaDesk 仅保留为历史来源、迁移上下文和设计祖先。
 
 **核心思路**:
-> **复用 AlphaDesk 的平台底座，重建 domain layer，先落地 Weather MVP，再扩到 Tech，最后接 Crypto。**
+> **继承 AlphaDesk 的设计 lineage 与可复用模块，重建 domain layer，先落地 Weather MVP，再扩到 Tech，最后接 Crypto。**
 
 ### 1.2 为什么不继续沿用 AlphaDesk
 

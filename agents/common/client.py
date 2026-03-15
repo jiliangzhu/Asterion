@@ -141,11 +141,19 @@ class OpenAICompatibleAgentClient:
         api_key: str,
         model_name: str,
         base_url: str | None = None,
+        supports_response_format: bool = True,
+        retry_count: int = 3,
+        enable_curl_fallback: bool | None = None,
         http_client=None,
     ) -> None:
         self._api_key = api_key
         self._model_name = model_name
         self._base_url = base_url or "https://api.openai.com/v1/chat/completions"
+        self._supports_response_format = supports_response_format
+        self._retry_count = max(1, retry_count)
+        self._enable_curl_fallback = (
+            enable_curl_fallback if enable_curl_fallback is not None else _default_curl_fallback_for_base_url(self._base_url)
+        )
         self._http_client = http_client or _build_httpx_client()
 
     def invoke(
@@ -167,7 +175,7 @@ class OpenAICompatibleAgentClient:
                 },
             ],
         }
-        if _supports_response_format():
+        if self._supports_response_format:
             payload["response_format"] = {"type": "json_object"}
         raw = self._post_payload(payload, timeout_seconds=timeout_seconds)
         text = _extract_openai_text(raw)
@@ -185,7 +193,7 @@ class OpenAICompatibleAgentClient:
             "authorization": f"Bearer {self._api_key}",
         }
         active_payload = dict(payload)
-        for attempt in range(_openai_compatible_retry_count()):
+        for attempt in range(self._retry_count):
             try:
                 response = self._http_client.post(
                     self._base_url,
@@ -197,22 +205,23 @@ class OpenAICompatibleAgentClient:
                     active_payload = dict(active_payload)
                     active_payload.pop("response_format", None)
                     continue
-                if response.status_code in {502, 503, 504} and attempt + 1 < _openai_compatible_retry_count():
+                if response.status_code in {502, 503, 504} and attempt + 1 < self._retry_count:
                     time.sleep(min(1.5 * (attempt + 1), 3.0))
                     continue
                 response.raise_for_status()
                 return response.json()
             except Exception:
-                if attempt + 1 < _openai_compatible_retry_count():
+                if attempt + 1 < self._retry_count:
                     time.sleep(min(1.5 * (attempt + 1), 3.0))
                     continue
-                if not _should_use_curl_fallback(self._base_url):
+                if not self._enable_curl_fallback:
                     raise
                 return _post_json_with_curl(
                     self._base_url,
                     headers=headers,
                     payload=active_payload,
                     timeout_seconds=timeout_seconds,
+                    retry_count=self._retry_count,
                 )
 
 
@@ -263,6 +272,9 @@ def build_agent_client_from_env(http_client=None) -> AgentClient:
             api_key=api_key,
             model_name=model_name,
             base_url=base_url,
+            supports_response_format=_supports_response_format(),
+            retry_count=_openai_compatible_retry_count(),
+            enable_curl_fallback=_should_use_curl_fallback(base_url),
             http_client=http_client,
         )
     if provider == "fake":
@@ -318,6 +330,10 @@ def _openai_compatible_retry_count() -> int:
 def _should_use_curl_fallback(base_url: str | None) -> bool:
     if os.getenv("ASTERION_OPENAI_COMPATIBLE_ENABLE_CURL_FALLBACK", "").strip().lower() in {"1", "true", "yes", "y"}:
         return True
+    return _default_curl_fallback_for_base_url(base_url)
+
+
+def _default_curl_fallback_for_base_url(base_url: str | None) -> bool:
     if not base_url:
         return False
     return "dashscope.aliyuncs.com" in base_url or "llm-api.healwrap.cn" in base_url
@@ -329,9 +345,10 @@ def _post_json_with_curl(
     headers: dict[str, str],
     payload: dict[str, Any],
     timeout_seconds: float | None,
+    retry_count: int | None = None,
 ) -> dict[str, Any]:
     timeout = max(1, int(timeout_seconds or 60))
-    max_attempts = max(1, _openai_compatible_retry_count())
+    max_attempts = max(1, retry_count if retry_count is not None else _openai_compatible_retry_count())
     last_error: Exception | None = None
     for attempt in range(max_attempts):
         try:

@@ -64,6 +64,7 @@ from .capability_refresh_v1 import (
 from .live_submitter_v1 import (
     DisabledSubmitterBackend,
     ExternalOrderObservationRecord,
+    RealClobSubmitterBackend,
     RUNTIME_EXTERNAL_FILL_OBSERVATION_COLUMNS,
     RUNTIME_EXTERNAL_ORDER_OBSERVATION_COLUMNS,
     ShadowSubmitterBackend,
@@ -94,6 +95,7 @@ __all__ = [
     "ChainAccountCapabilityState",
     "DisabledSubmitterBackend",
     "ExternalOrderObservationRecord",
+    "RealClobSubmitterBackend",
     "apply_fills_to_order",
     "account_capability_to_row",
     "bind_trade_ticket_handoff",

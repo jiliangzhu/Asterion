@@ -39,6 +39,9 @@ _REQUIRED_UI_TABLES = [
     "ui.phase_readiness_summary",
     "ui.readiness_evidence_summary",
     "ui.predicted_vs_realized_summary",
+    "ui.watch_only_vs_executed_summary",
+    "ui.market_research_summary",
+    "ui.calibration_health_summary",
 ]
 
 
@@ -1343,6 +1346,18 @@ def _build_ui_lite_contract(
             con,
             table_row_counts=table_row_counts,
         )
+        _create_watch_only_vs_executed_summary(
+            con,
+            table_row_counts=table_row_counts,
+        )
+        _create_market_research_summary(
+            con,
+            table_row_counts=table_row_counts,
+        )
+        _create_calibration_health_summary(
+            con,
+            table_row_counts=table_row_counts,
+        )
         _create_table_from_src(
             con,
             target="ui.daily_ops_summary",
@@ -1704,11 +1719,246 @@ def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, in
             }
         )
     frame = pd.DataFrame(rows)
+    for column in ["ticket_id", "run_id", "wallet_id", "strategy_id", "market_id", "order_id", "outcome", "forecast_freshness", "source_disagreement", "evaluation_status"]:
+        if column in frame.columns:
+            frame[column] = frame[column].astype("string")
     con.register("predicted_vs_realized_df", frame)
     con.execute("CREATE OR REPLACE TABLE ui.predicted_vs_realized_summary AS SELECT * FROM predicted_vs_realized_df")
     row = con.execute("SELECT COUNT(*) FROM ui.predicted_vs_realized_summary").fetchone()
     table_row_counts["ui.predicted_vs_realized_summary"] = int(row[0]) if row is not None else 0
     con.unregister("predicted_vs_realized_df")
+
+
+def _create_watch_only_vs_executed_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    opportunity = con.execute(
+        """
+        SELECT
+            market_id,
+            edge_bps AS avg_executable_edge_bps,
+            edge_bps_model AS avg_model_edge_bps,
+            actionability_status,
+            ranking_score
+        FROM ui.market_opportunity_summary
+        """
+    ).df()
+    executed = con.execute(
+        """
+        SELECT
+            market_id,
+            COUNT(DISTINCT ticket_id) AS executed_ticket_count,
+            AVG(realized_pnl) AS avg_realized_pnl
+        FROM ui.predicted_vs_realized_summary
+        GROUP BY market_id
+        """
+    ).df()
+    if "market_id" in opportunity.columns:
+        opportunity["market_id"] = opportunity["market_id"].astype("string")
+    if "market_id" in executed.columns:
+        executed["market_id"] = executed["market_id"].astype("string")
+    base = opportunity.merge(executed, on="market_id", how="left")
+    rows: list[dict[str, Any]] = []
+    for _, item in base.iterrows():
+        executed_ticket_count = int(item.get("executed_ticket_count") or 0)
+        opportunity_count = 1
+        if executed_ticket_count > 0:
+            miss_reason_bucket = "captured"
+        elif str(item.get("actionability_status") or "") == "blocked":
+            miss_reason_bucket = "blocked"
+        elif str(item.get("actionability_status") or "") == "review_required":
+            miss_reason_bucket = "review_required"
+        elif str(item.get("actionability_status") or "") == "no_trade":
+            miss_reason_bucket = "no_trade"
+        else:
+            miss_reason_bucket = "not_executed"
+        rows.append(
+            {
+                "market_id": item.get("market_id"),
+                "opportunity_count": opportunity_count,
+                "executed_ticket_count": executed_ticket_count,
+                "avg_model_edge_bps": _coerce_float(item.get("avg_model_edge_bps")),
+                "avg_executable_edge_bps": _coerce_float(item.get("avg_executable_edge_bps")),
+                "avg_realized_pnl": _coerce_float(item.get("avg_realized_pnl")),
+                "execution_capture_ratio": 1.0 if executed_ticket_count > 0 else 0.0,
+                "miss_reason_bucket": miss_reason_bucket,
+            }
+        )
+    frame = pd.DataFrame(
+        rows,
+        columns=[
+            "market_id",
+            "opportunity_count",
+            "executed_ticket_count",
+            "avg_model_edge_bps",
+            "avg_executable_edge_bps",
+            "avg_realized_pnl",
+            "execution_capture_ratio",
+            "miss_reason_bucket",
+        ],
+    )
+    if "market_id" in frame.columns:
+        frame["market_id"] = frame["market_id"].astype("string")
+    con.register("watch_only_vs_executed_df", frame)
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ui.watch_only_vs_executed_summary AS
+        SELECT * FROM watch_only_vs_executed_df
+        """
+    )
+    row = con.execute("SELECT COUNT(*) FROM ui.watch_only_vs_executed_summary").fetchone()
+    table_row_counts["ui.watch_only_vs_executed_summary"] = int(row[0]) if row is not None else 0
+    con.unregister("watch_only_vs_executed_df")
+
+
+def _create_market_research_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    opportunity = con.execute(
+        """
+        SELECT
+            market_id,
+            market_price AS latest_reference_price,
+            model_fair_value AS latest_model_fair_value,
+            COALESCE(execution_adjusted_fair_value, fair_value) AS latest_execution_adjusted_fair_value,
+            mapping_confidence AS latest_mapping_confidence,
+            source_freshness_status AS latest_source_freshness_status,
+            market_quality_status AS latest_market_quality_status,
+            actionability_status
+        FROM ui.market_opportunity_summary
+        """
+    ).df()
+    executed = con.execute(
+        """
+        SELECT
+            market_id,
+            COUNT(*) FILTER (WHERE evaluation_status = 'resolved') AS resolved_trade_count,
+            AVG(post_trade_error) AS avg_post_trade_error
+        FROM ui.predicted_vs_realized_summary
+        GROUP BY market_id
+        """
+    ).df()
+    if "market_id" in opportunity.columns:
+        opportunity["market_id"] = opportunity["market_id"].astype("string")
+    if "market_id" in executed.columns:
+        executed["market_id"] = executed["market_id"].astype("string")
+    base = opportunity.merge(executed, on="market_id", how="left")
+    rows: list[dict[str, Any]] = []
+    for _, item in base.iterrows():
+        resolved_trade_count = int(item.get("resolved_trade_count") or 0)
+        rows.append(
+            {
+                "market_id": item.get("market_id"),
+                "latest_reference_price": _coerce_float(item.get("latest_reference_price")),
+                "latest_model_fair_value": _coerce_float(item.get("latest_model_fair_value")),
+                "latest_execution_adjusted_fair_value": _coerce_float(item.get("latest_execution_adjusted_fair_value")),
+                "latest_mapping_confidence": _coerce_float(item.get("latest_mapping_confidence")),
+                "latest_source_freshness_status": item.get("latest_source_freshness_status"),
+                "latest_market_quality_status": item.get("latest_market_quality_status"),
+                "executed_evidence_status": "executed" if resolved_trade_count > 0 else "watch_only",
+                "resolved_trade_count": resolved_trade_count,
+                "avg_post_trade_error": _coerce_float(item.get("avg_post_trade_error")),
+            }
+        )
+    frame = pd.DataFrame(
+        rows,
+        columns=[
+            "market_id",
+            "latest_reference_price",
+            "latest_model_fair_value",
+            "latest_execution_adjusted_fair_value",
+            "latest_mapping_confidence",
+            "latest_source_freshness_status",
+            "latest_market_quality_status",
+            "executed_evidence_status",
+            "resolved_trade_count",
+            "avg_post_trade_error",
+        ],
+    )
+    if "market_id" in frame.columns:
+        frame["market_id"] = frame["market_id"].astype("string")
+    con.register("market_research_df", frame)
+    con.execute("CREATE OR REPLACE TABLE ui.market_research_summary AS SELECT * FROM market_research_df")
+    row = con.execute("SELECT COUNT(*) FROM ui.market_research_summary").fetchone()
+    table_row_counts["ui.market_research_summary"] = int(row[0]) if row is not None else 0
+    con.unregister("market_research_df")
+
+
+def _create_calibration_health_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    if not _table_exists(con, "src.weather.forecast_calibration_samples"):
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE ui.calibration_health_summary (
+                station_id TEXT,
+                source TEXT,
+                forecast_horizon_bucket TEXT,
+                season_bucket TEXT,
+                sample_count BIGINT,
+                mean_abs_residual DOUBLE,
+                p90_abs_residual DOUBLE,
+                calibration_health_status TEXT
+            )
+            """
+        )
+        table_row_counts["ui.calibration_health_summary"] = 0
+        return
+    base = con.execute(
+        """
+        SELECT
+            station_id,
+            source,
+            forecast_horizon_bucket,
+            season_bucket,
+            ABS(residual) AS abs_residual
+        FROM src.weather.forecast_calibration_samples
+        """
+    ).df()
+    if base.empty:
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE ui.calibration_health_summary (
+                station_id TEXT,
+                source TEXT,
+                forecast_horizon_bucket TEXT,
+                season_bucket TEXT,
+                sample_count BIGINT,
+                mean_abs_residual DOUBLE,
+                p90_abs_residual DOUBLE,
+                calibration_health_status TEXT
+            )
+            """
+        )
+        table_row_counts["ui.calibration_health_summary"] = 0
+        return
+    rows: list[dict[str, Any]] = []
+    grouped = base.groupby(["station_id", "source", "forecast_horizon_bucket", "season_bucket"], dropna=False)
+    for (station_id, source, horizon, season), frame in grouped:
+        series = pd.to_numeric(frame["abs_residual"], errors="coerce").dropna()
+        sample_count = int(len(series.index))
+        mean_abs_residual = float(series.mean()) if sample_count else None
+        p90_abs_residual = float(series.quantile(0.9)) if sample_count else None
+        if sample_count < 5:
+            status = "insufficient_samples"
+        elif (mean_abs_residual or 0.0) <= 1.5:
+            status = "healthy"
+        elif (mean_abs_residual or 0.0) <= 3.0:
+            status = "watch"
+        else:
+            status = "degraded"
+        rows.append(
+            {
+                "station_id": station_id,
+                "source": source,
+                "forecast_horizon_bucket": horizon,
+                "season_bucket": season,
+                "sample_count": sample_count,
+                "mean_abs_residual": mean_abs_residual,
+                "p90_abs_residual": p90_abs_residual,
+                "calibration_health_status": status,
+            }
+        )
+    frame = pd.DataFrame(rows)
+    con.register("calibration_health_df", frame)
+    con.execute("CREATE OR REPLACE TABLE ui.calibration_health_summary AS SELECT * FROM calibration_health_df")
+    row = con.execute("SELECT COUNT(*) FROM ui.calibration_health_summary").fetchone()
+    table_row_counts["ui.calibration_health_summary"] = int(row[0]) if row is not None else 0
+    con.unregister("calibration_health_df")
 
 
 def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int]) -> None:
@@ -2102,7 +2352,13 @@ def _opportunity_bucket(edge_bps: int) -> str:
 
 
 def _table_exists(con, table_name: str) -> bool:
-    schema, table = table_name.split(".", 1)
+    parts = table_name.split(".")
+    if len(parts) == 2:
+        schema, table = parts
+    elif len(parts) == 3:
+        _, schema, table = parts
+    else:
+        raise ValueError(f"Unsupported table name: {table_name}")
     row = con.execute(
         """
         SELECT COUNT(*)

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_DOWN
 from enum import Enum
+import importlib.util
 from typing import Any
 
 from asterion_core.contracts import ExternalFillObservation, ExternalFillObservationKind, stable_object_id
@@ -63,6 +64,7 @@ RUNTIME_EXTERNAL_FILL_OBSERVATION_COLUMNS = [
 class SubmitMode(str, Enum):
     DRY_RUN = "dry_run"
     SHADOW_SUBMIT = "shadow_submit"
+    LIVE_SUBMIT = "live_submit"
 
 
 class ShadowFillMode(str, Enum):
@@ -100,6 +102,8 @@ class SubmitOrderRequest:
             raise ValueError("signed_payload_json must be a non-empty object")
         if self.submit_mode is SubmitMode.DRY_RUN and self.shadow_fill_mode is not ShadowFillMode.NONE:
             raise ValueError("shadow_fill_mode requires submit_mode=shadow_submit")
+        if self.submit_mode is SubmitMode.LIVE_SUBMIT and self.shadow_fill_mode is not ShadowFillMode.NONE:
+            raise ValueError("shadow_fill_mode is not supported for submit_mode=live_submit")
 
 
 @dataclass(frozen=True)
@@ -203,6 +207,102 @@ class ShadowSubmitterBackend(SubmitterBackend):
             submit_payload_json=envelope,
             external_order_id=external_order_id,
             error="shadow_submit_rejected" if should_reject else None,
+            completed_at=_normalize_timestamp(request.timestamp),
+        )
+
+
+class _SubmitterHttpClient:
+    def __init__(self, *, timeout_seconds: float = 10.0) -> None:
+        if importlib.util.find_spec("httpx") is None:
+            raise RuntimeError("real_clob_submit requires installed dependency httpx")
+        import httpx
+
+        self._client = httpx.Client(timeout=timeout_seconds)
+
+    def post_json(self, url: str, *, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._client.post(
+            url,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "asterion-submitter/0.1",
+            },
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError("real submitter response must be a JSON object")
+        return body
+
+
+class RealClobSubmitterBackend(SubmitterBackend):
+    def __init__(self, *, api_base_url: str, client: Any | None = None) -> None:
+        normalized = str(api_base_url or "").strip()
+        if not normalized:
+            raise ValueError("real_clob_submit requires submitter_api_base_url")
+        self._api_base_url = normalized
+        self._client = client or _SubmitterHttpClient()
+
+    def submit(self, request: SubmitOrderRequest) -> SubmitOrderResult:
+        if request.submit_mode is not SubmitMode.LIVE_SUBMIT:
+            envelope = _build_submit_payload(
+                request,
+                backend_kind="real_clob_submit",
+                status="rejected",
+                external_order_id=None,
+                error="real_submitter_requires_submit_mode_live_submit",
+            )
+            return SubmitOrderResult(
+                request_id=request.request_id,
+                status="rejected",
+                payload_hash=hash_signer_payload(envelope),
+                submit_payload_json=envelope,
+                external_order_id=None,
+                error="real_submitter_requires_submit_mode_live_submit",
+                completed_at=_normalize_timestamp(request.timestamp),
+            )
+
+        try:
+            provider_payload = self._client.post_json(
+                self._api_base_url,
+                payload=_build_real_submit_request_payload(request),
+            )
+        except Exception as exc:  # noqa: BLE001
+            error = f"submitter_provider_error:{exc}"
+            envelope = _build_submit_payload(
+                request,
+                backend_kind="real_clob_submit",
+                status="rejected",
+                external_order_id=None,
+                error=error,
+                provider_response={"provider_error": str(exc)},
+            )
+            return SubmitOrderResult(
+                request_id=request.request_id,
+                status="rejected",
+                payload_hash=hash_signer_payload(envelope),
+                submit_payload_json=envelope,
+                external_order_id=None,
+                error=error,
+                completed_at=_normalize_timestamp(request.timestamp),
+            )
+
+        status, external_order_id, error = _normalize_real_submit_provider_response(provider_payload)
+        envelope = _build_submit_payload(
+            request,
+            backend_kind="real_clob_submit",
+            status=status,
+            external_order_id=external_order_id,
+            error=error,
+            provider_response=provider_payload,
+        )
+        return SubmitOrderResult(
+            request_id=request.request_id,
+            status=status,
+            payload_hash=hash_signer_payload(envelope),
+            submit_payload_json=envelope,
+            external_order_id=external_order_id,
+            error=error,
             completed_at=_normalize_timestamp(request.timestamp),
         )
 
@@ -357,6 +457,7 @@ def build_external_order_observation(
     observation_kind = {
         "dry_run": "dry_run_preview",
         "shadow_submit": "shadow_submit_ack" if attempt.status == "accepted" else "shadow_submit_reject",
+        "live_submit": "live_submit_ack" if attempt.status == "accepted" else "live_submit_reject",
     }.get(attempt.attempt_mode)
     if observation_kind is None:
         raise ValueError(f"unsupported submit attempt mode: {attempt.attempt_mode}")
@@ -590,6 +691,7 @@ def _build_submit_payload(
     status: str,
     external_order_id: str | None,
     error: str | None,
+    provider_response: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "exchange": request.exchange,
@@ -606,8 +708,39 @@ def _build_submit_payload(
         "status": status,
         "external_order_id": external_order_id,
         "error": error,
+        "provider_response": provider_response or {},
         "signed_payload": request.signed_payload_json,
     }
+
+
+def _build_real_submit_request_payload(request: SubmitOrderRequest) -> dict[str, Any]:
+    return {
+        "request_id": request.request_id,
+        "source_attempt_id": request.source_attempt_id,
+        "ticket_id": request.ticket_id,
+        "order_id": request.order_id,
+        "wallet_id": request.wallet_id,
+        "execution_context_id": request.execution_context_id,
+        "canonical_order_hash": request.canonical_order_hash,
+        "exchange": request.exchange,
+        "signed_payload": dict(request.signed_payload_json),
+    }
+
+
+def _normalize_real_submit_provider_response(payload: dict[str, Any]) -> tuple[str, str | None, str | None]:
+    raw_status = str(payload.get("status") or payload.get("result") or "").strip().lower()
+    error = str(payload.get("error") or payload.get("message") or "").strip() or None
+    external_order_id = payload.get("external_order_id") or payload.get("order_id")
+    normalized_external_order_id = str(external_order_id) if external_order_id is not None else None
+    if raw_status in {"accepted", "ok", "success", "submitted"}:
+        return "accepted", normalized_external_order_id, None
+    if raw_status in {"previewed", "preview"}:
+        return "previewed", normalized_external_order_id, None
+    if raw_status in {"rejected", "error", "failed"}:
+        return "rejected", normalized_external_order_id, error or "submitter_provider_rejected"
+    if normalized_external_order_id and error is None:
+        return "accepted", normalized_external_order_id, None
+    return "rejected", normalized_external_order_id, error or "submitter_provider_invalid_response"
 
 
 def _extract_external_order_id(payload: dict[str, Any]) -> str | None:

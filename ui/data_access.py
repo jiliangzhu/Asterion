@@ -43,30 +43,10 @@ UI_TABLES = {
     "readiness_evidence_summary": "ui.readiness_evidence_summary",
     "agent_review_summary": "ui.agent_review_summary",
     "predicted_vs_realized_summary": "ui.predicted_vs_realized_summary",
+    "watch_only_vs_executed_summary": "ui.watch_only_vs_executed_summary",
+    "market_research_summary": "ui.market_research_summary",
+    "calibration_health_summary": "ui.calibration_health_summary",
 }
-
-
-def _maybe_load_project_dotenv() -> None:
-    path = ROOT / ".env"
-    if not path.exists():
-        return
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if not key:
-            continue
-        os.environ.setdefault(key, value)
-
-
-_maybe_load_project_dotenv()
 
 
 def _safe_read_json(path: Path) -> dict[str, Any] | None:
@@ -920,6 +900,7 @@ def load_readiness_summary() -> dict[str, Any]:
             "default_off": bool(manifest.get("default_off")),
             "approve_usdc_only": manifest.get("allowed_tx_kinds") == ["approve_usdc"],
             "shadow_submitter_only": manifest.get("submitter_capability") == "shadow_only",
+            "constrained_real_submit_enabled": manifest.get("submitter_capability") == "constrained_real_submit",
             "manifest_status": manifest.get("manifest_status"),
         }
     if manifest and not capability_manifest_status:
@@ -1023,6 +1004,9 @@ def load_execution_console_data() -> dict[str, pd.DataFrame]:
     journal = _sort_desc(snapshot["tables"]["paper_run_journal_summary"], "latest_event_at")
     daily_ops = _sort_desc(snapshot["tables"]["daily_ops_summary"], "latest_event_at")
     predicted_vs_realized = _sort_desc(snapshot["tables"]["predicted_vs_realized_summary"], "latest_fill_at", "latest_resolution_at")
+    watch_only_vs_executed = _sort_desc(snapshot["tables"]["watch_only_vs_executed_summary"], "execution_capture_ratio", "avg_executable_edge_bps")
+    market_research = _sort_desc(snapshot["tables"]["market_research_summary"], "resolved_trade_count", "avg_post_trade_error")
+    calibration_health = _sort_desc(snapshot["tables"]["calibration_health_summary"], "sample_count", "mean_abs_residual")
     return {
         "tickets": tickets,
         "runs": runs,
@@ -1031,6 +1015,9 @@ def load_execution_console_data() -> dict[str, pd.DataFrame]:
         "journal": journal,
         "daily_ops": daily_ops,
         "predicted_vs_realized": predicted_vs_realized,
+        "watch_only_vs_executed": watch_only_vs_executed,
+        "market_research": market_research,
+        "calibration_health": calibration_health,
     }
 
 
@@ -1098,6 +1085,7 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
     market_payload = load_market_watch_data()
     opportunity_payload = load_market_opportunity_data()
     predicted_vs_realized_payload = load_predicted_vs_realized_data()
+    execution_payload = load_execution_console_data()
     report = market_payload["weather_smoke_report"] or {}
     discovery = report.get("market_discovery") or {}
     selected_markets = discovery.get("selected_markets") or []
@@ -1151,6 +1139,8 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
     details_by_market = {str(item.get("market_id")): item for item in detail_rows if item.get("market_id") is not None}
     opportunities = opportunity_payload["frame"]
     predicted_vs_realized = predicted_vs_realized_payload["frame"]
+    watch_only_vs_executed = execution_payload["watch_only_vs_executed"]
+    market_research = execution_payload["market_research"]
     execution_summary_by_market: dict[str, dict[str, Any]] = {}
     if not predicted_vs_realized.empty and "market_id" in predicted_vs_realized.columns:
         for market_id, frame in predicted_vs_realized.groupby("market_id", dropna=False):
@@ -1171,6 +1161,14 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
                 "latest_fill_at": latest.get("latest_fill_at"),
                 "latest_resolution_at": latest.get("latest_resolution_at"),
             }
+    watch_only_vs_executed_by_market: dict[str, dict[str, Any]] = {}
+    if not watch_only_vs_executed.empty and "market_id" in watch_only_vs_executed.columns:
+        for _, row in watch_only_vs_executed.iterrows():
+            watch_only_vs_executed_by_market[str(row.get("market_id"))] = row.to_dict()
+    research_by_market: dict[str, dict[str, Any]] = {}
+    if not market_research.empty and "market_id" in market_research.columns:
+        for _, row in market_research.iterrows():
+            research_by_market[str(row.get("market_id"))] = row.to_dict()
     rows: list[dict[str, Any]] = []
     if not opportunities.empty:
         for _, row in opportunities.iterrows():
@@ -1195,6 +1193,8 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
                     "resolution_verdict": details.get("resolution_verdict"),
                     "resolution_summary": details.get("resolution_summary"),
                     "executed_evidence": execution_summary_by_market.get(market_id) or {"has_executed_evidence": False},
+                    "watch_only_vs_executed": watch_only_vs_executed_by_market.get(market_id) or {},
+                    "market_research": research_by_market.get(market_id) or {},
                 }
             )
             rows.append(payload)
@@ -1203,6 +1203,8 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
             {
                 **item,
                 "executed_evidence": execution_summary_by_market.get(str(item.get("market_id"))) or {"has_executed_evidence": False},
+                "watch_only_vs_executed": watch_only_vs_executed_by_market.get(str(item.get("market_id"))) or {},
+                "market_research": research_by_market.get(str(item.get("market_id"))) or {},
             }
             for item in detail_rows
         ]
@@ -1211,6 +1213,8 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
         "market_opportunities": opportunities,
         "market_opportunity_source": opportunity_payload["source"],
         "predicted_vs_realized": predicted_vs_realized,
+        "watch_only_vs_executed": watch_only_vs_executed,
+        "market_research": market_research,
         "weather_smoke_report": report,
         "market_rows": rows,
     }
@@ -1523,6 +1527,8 @@ def build_ops_console_overview() -> dict[str, Any]:
     market_analysis = load_market_chain_analysis_data()
     agent_data = load_agent_review_data()
     predicted_vs_realized = load_predicted_vs_realized_data()["frame"]
+    watch_only_vs_executed = execution["watch_only_vs_executed"]
+    calibration_health = execution["calibration_health"]
 
     live_execution = execution["live_prereq"]
     exceptions = execution["exceptions"]
@@ -1544,6 +1550,12 @@ def build_ops_console_overview() -> dict[str, Any]:
         if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty)
         else predicted_vs_realized.iloc[0:0]
     )
+    uncaptured_high_edge = watch_only_vs_executed.iloc[0:0]
+    if not watch_only_vs_executed.empty:
+        uncaptured_high_edge = watch_only_vs_executed[
+            (pd.to_numeric(watch_only_vs_executed["avg_executable_edge_bps"], errors="coerce").fillna(0) > 0)
+            & (pd.to_numeric(watch_only_vs_executed["execution_capture_ratio"], errors="coerce").fillna(0) <= 0)
+        ]
     degraded_inputs: list[str] = []
     if evidence.get("stale_dependencies"):
         degraded_inputs.extend([f"stale:{item}" for item in evidence.get("stale_dependencies") or []])
@@ -1580,6 +1592,9 @@ def build_ops_console_overview() -> dict[str, Any]:
         "agent_data": agent_data,
         "readiness_evidence": evidence,
         "predicted_vs_realized": predicted_vs_realized,
+        "watch_only_vs_executed_summary": watch_only_vs_executed,
+        "calibration_health_summary": calibration_health,
+        "uncaptured_high_edge_markets": uncaptured_high_edge,
         "surface_status": load_operator_surface_status(),
         "top_opportunities": top_opportunities,
         "degraded_inputs": degraded_inputs,
@@ -1606,6 +1621,8 @@ def build_ops_console_overview() -> dict[str, Any]:
             "pending_resolution_count": int((predicted_vs_realized["evaluation_status"] == "pending_resolution").sum()) if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0,
             "avg_predicted_edge_bps": float(pd.to_numeric(predicted_vs_realized["predicted_edge_bps"], errors="coerce").dropna().mean()) if ("predicted_edge_bps" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0.0,
             "avg_realized_pnl": float(pd.to_numeric(resolved_rows["realized_pnl"], errors="coerce").dropna().mean()) if ("realized_pnl" in resolved_rows.columns and not resolved_rows.empty) else 0.0,
+            "execution_capture_ratio": float(pd.to_numeric(watch_only_vs_executed["execution_capture_ratio"], errors="coerce").dropna().mean()) if ("execution_capture_ratio" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0,
+            "uncaptured_high_edge_count": int(len(uncaptured_high_edge.index)),
         },
         "wallet_attention": wallet_attention,
     }

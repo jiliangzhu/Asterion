@@ -291,6 +291,7 @@ class SubmitterSmokeRequest:
     requester: str
     submit_mode: SubmitMode
     shadow_fill_mode: ShadowFillMode = ShadowFillMode.NONE
+    approval_token: str | None = None
 
     def __post_init__(self) -> None:
         if not self.attempt_ids:
@@ -299,6 +300,10 @@ class SubmitterSmokeRequest:
             raise ValueError("requester is required")
         if self.submit_mode is SubmitMode.DRY_RUN and self.shadow_fill_mode is not ShadowFillMode.NONE:
             raise ValueError("shadow_fill_mode requires submit_mode=shadow_submit")
+        if self.submit_mode is SubmitMode.LIVE_SUBMIT and self.shadow_fill_mode is not ShadowFillMode.NONE:
+            raise ValueError("shadow_fill_mode is not supported for submit_mode=live_submit")
+        if self.submit_mode is SubmitMode.LIVE_SUBMIT and not str(self.approval_token or "").strip():
+            raise ValueError("approval_token is required for submit_mode=live_submit")
 
 
 @dataclass(frozen=True)
@@ -692,6 +697,9 @@ def run_weather_submitter_smoke_job(
     *,
     submitter_service: SubmitterServiceShell,
     params_json: dict[str, Any],
+    controlled_live_capability_manifest_path: str | None = None,
+    readiness_report_json_path: str | None = None,
+    ui_lite_db_path: str | None = None,
     run_id: str | None = None,
     observed_at: datetime | None = None,
 ) -> ColdPathHandlerResult:
@@ -714,6 +722,65 @@ def run_weather_submitter_smoke_job(
     preview_count = 0
     accepted_count = 0
     rejected_count = 0
+
+    def _blocked(reason: str, *, metadata_extra: dict[str, Any] | None = None) -> ColdPathHandlerResult:
+        metadata = {
+            "request_ids": request_ids,
+            "attempt_ids": list(normalized_request.attempt_ids),
+            "wallet_id": wallet_id,
+            "submit_mode": normalized_request.submit_mode.value,
+            "shadow_fill_mode": normalized_request.shadow_fill_mode.value,
+            "submit_count": len(submit_attempts),
+            "accepted_count": accepted_count,
+            "rejected_count": rejected_count,
+            "preview_count": preview_count,
+            "external_fill_count": len(fill_observations),
+            "payload_hashes": payload_hashes,
+            "observation_ids": observation_ids,
+            "status": "blocked",
+            "reason": reason,
+        }
+        if metadata_extra:
+            metadata.update(metadata_extra)
+        return ColdPathHandlerResult(
+            job_name="weather_submitter_smoke",
+            run_id=request_id,
+            task_ids=task_ids,
+            item_count=len(submit_attempts),
+            metadata=metadata,
+        )
+
+    if normalized_request.submit_mode is SubmitMode.LIVE_SUBMIT:
+        if not controlled_live_capability_manifest_path or not readiness_report_json_path or not ui_lite_db_path:
+            return _blocked("missing_live_submit_boundary_inputs")
+        manifest = load_controlled_live_capability_manifest(controlled_live_capability_manifest_path)
+        if manifest is None:
+            return _blocked("missing_controlled_live_capability_manifest")
+        manifest_status = str(manifest.get("manifest_status") or "").strip()
+        if manifest_status != "valid":
+            return _blocked("invalid_controlled_live_capability_manifest", metadata_extra={"manifest_status": manifest_status or "missing"})
+        if str(manifest.get("controlled_live_mode") or "") != "manual_only":
+            return _blocked("controlled_live_mode_not_manual_only")
+        if str(manifest.get("submitter_backend_kind") or "") != "real_clob_submit":
+            return _blocked("submitter_backend_not_real_clob_submit")
+        if str(manifest.get("signer_backend_kind") or "") != "env_private_key_tx":
+            return _blocked("signer_backend_not_env_private_key_tx")
+        if str(manifest.get("chain_tx_backend_kind") or "") != "real_broadcast":
+            return _blocked("chain_tx_backend_not_real_broadcast")
+        allowed_wallet_ids = {str(item) for item in list(manifest.get("allowed_wallet_ids") or [])}
+        if wallet_id not in allowed_wallet_ids:
+            return _blocked("wallet_not_allowlisted")
+        expected_token = str(os.getenv("ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN") or "").strip()
+        if not expected_token or normalized_request.approval_token != expected_token:
+            return _blocked("approval_token_mismatch")
+        readiness_report = _load_readiness_report_or_none(readiness_report_json_path)
+        if readiness_report is None or readiness_report.target.value != "p4_live_prerequisites":
+            return _blocked("missing_p4_readiness_report")
+        if readiness_report.go_decision != "GO":
+            return _blocked("p4_live_prereq_not_go")
+        wallet_readiness_status = _load_live_prereq_wallet_status(ui_lite_db_path, wallet_id=wallet_id)
+        if wallet_readiness_status != "ready":
+            return _blocked("wallet_not_ready", metadata_extra={"wallet_readiness_status": wallet_readiness_status})
 
     for sign_attempt in sign_attempts:
         submit_request = build_submit_order_request_from_sign_attempt(
@@ -794,6 +861,7 @@ def run_weather_submitter_smoke_job(
             "wallet_id": wallet_id,
             "submit_mode": normalized_request.submit_mode.value,
             "shadow_fill_mode": normalized_request.shadow_fill_mode.value,
+            "approval_token_provided": normalized_request.submit_mode is SubmitMode.LIVE_SUBMIT,
             "submit_count": len(submit_attempts),
             "accepted_count": accepted_count,
             "rejected_count": rejected_count,
@@ -2567,6 +2635,7 @@ def _normalize_submitter_smoke_request(params_json: dict[str, Any]) -> Submitter
         requester=str(params_json.get("requester") or ""),
         submit_mode=SubmitMode(raw_mode),
         shadow_fill_mode=ShadowFillMode(raw_shadow_fill_mode),
+        approval_token=str(params_json.get("approval_token") or "").strip() or None,
     )
 
 
@@ -2648,7 +2717,7 @@ def _load_shadow_submit_attempts_for_external_reconciliation(con) -> list[Submit
             created_at
         FROM runtime.submit_attempts
         WHERE attempt_kind = 'submit_order'
-          AND attempt_mode = 'shadow_submit'
+          AND attempt_mode IN ('shadow_submit', 'live_submit')
         ORDER BY created_at ASC, attempt_id ASC
         """
     ).fetchall()

@@ -233,6 +233,23 @@ class AgentRuntimeContractsTest(unittest.TestCase):
         self.assertIn("response_format", http_client.payloads[0])
         self.assertNotIn("response_format", http_client.payloads[1])
 
+    def test_build_agent_client_from_env_freezes_compatible_runtime_flags(self) -> None:
+        env = {
+            "ASTERION_AGENT_PROVIDER": "openai_compatible",
+            "ASTERION_OPENAI_COMPATIBLE_API_KEY": "test-key",
+            "ASTERION_OPENAI_COMPATIBLE_MODEL": "glm-5",
+            "ASTERION_OPENAI_COMPATIBLE_BASE_URL": "https://llm-api.healwrap.cn/v1/chat/completions",
+            "ASTERION_OPENAI_COMPATIBLE_DISABLE_RESPONSE_FORMAT": "1",
+            "ASTERION_OPENAI_COMPATIBLE_RETRIES": "5",
+            "ASTERION_OPENAI_COMPATIBLE_ENABLE_CURL_FALLBACK": "1",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            client = build_agent_client_from_env()
+        self.assertIsInstance(client, OpenAICompatibleAgentClient)
+        self.assertEqual(client._supports_response_format, False)
+        self.assertEqual(client._retry_count, 5)
+        self.assertEqual(client._enable_curl_fallback, True)
+
     def test_openai_compatible_client_retries_on_502(self) -> None:
         class Response502Then200HttpClient:
             def __init__(self) -> None:

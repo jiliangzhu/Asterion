@@ -19,12 +19,14 @@ def _filter_frame(frame, *, wallet: str, market: str, live_status: str):
 
 def show() -> None:
     payload = load_execution_console_data()
-    tickets = payload["tickets"]
-    runs = payload["runs"]
-    exceptions = payload["exceptions"]
-    live_prereq = payload["live_prereq"]
-    daily_ops = payload["daily_ops"]
-    predicted_vs_realized = payload["predicted_vs_realized"]
+    tickets = payload.get("tickets", pd.DataFrame())
+    runs = payload.get("runs", pd.DataFrame())
+    exceptions = payload.get("exceptions", pd.DataFrame())
+    live_prereq = payload.get("live_prereq", pd.DataFrame())
+    daily_ops = payload.get("daily_ops", pd.DataFrame())
+    predicted_vs_realized = payload.get("predicted_vs_realized", pd.DataFrame())
+    watch_only_vs_executed = payload.get("watch_only_vs_executed", pd.DataFrame())
+    calibration_health = payload.get("calibration_health", pd.DataFrame())
 
     st.markdown("### Execution Reality")
     st.caption("Execution 页面现在优先展示 executed-only predicted-vs-realized 闭环，再下沉 live-prereq 和 ticket attention。")
@@ -43,6 +45,21 @@ def show() -> None:
         resolved_frame = predicted_vs_realized[predicted_vs_realized["evaluation_status"] == "resolved"] if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else predicted_vs_realized.iloc[0:0]
         avg_realized_pnl = float(pd.to_numeric(resolved_frame["realized_pnl"], errors="coerce").dropna().mean()) if ("realized_pnl" in resolved_frame.columns and not resolved_frame.empty) else 0.0
         st.metric("Avg Realized PnL", f"{avg_realized_pnl:.4f}", delta="resolved only")
+
+    st.markdown("#### Cohort Summary")
+    cohort_left, cohort_mid, cohort_right = st.columns(3)
+    with cohort_left:
+        capture_ratio = float(pd.to_numeric(watch_only_vs_executed["execution_capture_ratio"], errors="coerce").dropna().mean()) if ("execution_capture_ratio" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
+        st.metric("Capture Ratio", f"{capture_ratio:.2f}", delta="watch-only vs executed")
+    with cohort_mid:
+        uncaptured = watch_only_vs_executed[
+            (pd.to_numeric(watch_only_vs_executed["avg_executable_edge_bps"], errors="coerce").fillna(0) > 0)
+            & (pd.to_numeric(watch_only_vs_executed["execution_capture_ratio"], errors="coerce").fillna(0) <= 0)
+        ] if not watch_only_vs_executed.empty else watch_only_vs_executed
+        st.metric("Uncaptured High-Edge", int(len(uncaptured.index)), delta="markets")
+    with cohort_right:
+        healthy = calibration_health[calibration_health["calibration_health_status"] == "healthy"] if ("calibration_health_status" in calibration_health.columns and not calibration_health.empty) else calibration_health.iloc[0:0]
+        st.metric("Healthy Calibration Buckets", int(len(healthy.index)), delta=f"samples={int(calibration_health['sample_count'].sum()) if ('sample_count' in calibration_health.columns and not calibration_health.empty) else 0}")
 
     filters = st.columns(4)
     wallet_values = ["全部"]
@@ -214,8 +231,25 @@ def show() -> None:
             st.dataframe(runs.head(12), width="stretch", hide_index=True)
 
     with lower_right:
-        st.markdown("#### Daily Ops Projection")
-        if daily_ops.empty:
-            st.info("当前没有 `ui.daily_ops_summary` 数据。")
+        st.markdown("#### Watch-Only vs Executed")
+        if watch_only_vs_executed.empty:
+            st.info("当前没有 `ui.watch_only_vs_executed_summary` 数据。")
         else:
-            st.dataframe(daily_ops.head(10), width="stretch", hide_index=True)
+            preferred_columns = [
+                column
+                for column in [
+                    "market_id",
+                    "avg_executable_edge_bps",
+                    "executed_ticket_count",
+                    "execution_capture_ratio",
+                    "miss_reason_bucket",
+                ]
+                if column in watch_only_vs_executed.columns
+            ]
+            st.dataframe(watch_only_vs_executed[preferred_columns].head(10), width="stretch", hide_index=True)
+
+    st.markdown("#### Daily Ops Projection")
+    if daily_ops.empty:
+        st.info("当前没有 `ui.daily_ops_summary` 数据。")
+    else:
+        st.dataframe(daily_ops.head(10), width="stretch", hide_index=True)

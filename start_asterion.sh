@@ -47,12 +47,34 @@ validate_runtime_prereqs() {
     require_path "$VENV_PATH" "虚拟环境"
 }
 
-load_project_env() {
+load_runtime_env() {
     if [ -f "$PROJECT_DIR/.env" ]; then
         set -a
         # shellcheck disable=SC1091
         source "$PROJECT_DIR/.env"
         set +a
+    fi
+}
+
+clear_ui_excluded_env() {
+    local keys
+    keys=$(env | cut -d= -f1 | grep -E '^(ASTERION_|QWEN_|OPENAI_API_KEY$|ALIBABA_API_KEY$)' || true)
+    if [ -z "$keys" ]; then
+        return
+    fi
+    while IFS= read -r key; do
+        if [ -n "$key" ]; then
+            unset "$key"
+        fi
+    done <<< "$keys"
+}
+
+load_ui_env() {
+    clear_ui_excluded_env
+    local exported
+    exported=$(PYTHONPATH="$PROJECT_DIR${PYTHONPATH:+:$PYTHONPATH}" "$VENV_PATH/bin/python" -m ui.runtime_env --export --env-path "$PROJECT_DIR/.env")
+    if [ -n "$exported" ]; then
+        eval "$exported"
     fi
 }
 
@@ -81,11 +103,18 @@ show_help() {
 }
 
 # 检查并激活虚拟环境
-activate_venv() {
+activate_runtime_venv() {
     validate_runtime_prereqs
     source "$VENV_PATH/bin/activate"
-    load_project_env
+    load_runtime_env
     echo -e "${GREEN}✓ 虚拟环境已激活${NC}"
+}
+
+activate_ui_venv() {
+    validate_runtime_prereqs
+    source "$VENV_PATH/bin/activate"
+    load_ui_env
+    echo -e "${GREEN}✓ UI 虚拟环境已激活${NC}"
 }
 
 # 首次安装依赖
@@ -134,7 +163,7 @@ setup() {
 # 启动 Operator Console
 start_web() {
     echo -e "${BLUE}🌐 启动 Asterion Operator Console...${NC}"
-    activate_venv
+    activate_ui_venv
 
     cd "$PROJECT_DIR"
 
@@ -157,6 +186,7 @@ start_web() {
 refresh_operator_console_surfaces() {
     echo -e "${BLUE}🧭 刷新 readiness / UI lite 读面...${NC}"
     validate_runtime_prereqs
+    activate_ui_venv
     cd "$PROJECT_DIR"
     mkdir -p "$DATA_DIR/ui" "$DATA_DIR/meta" "$LOG_DIR"
 
@@ -177,7 +207,7 @@ refresh_operator_console_surfaces() {
 # 启动真实天气数据链（后台持续运行）
 start_data() {
     echo -e "${BLUE}📊 启动真实天气数据链...${NC}"
-    activate_venv
+    activate_runtime_venv
 
     cd "$PROJECT_DIR"
 
@@ -214,7 +244,7 @@ start_data() {
 # 只读检查 Paper 交易路径
 inspect_paper() {
     echo -e "${BLUE}🔎 检查 Paper execution 路径...${NC}"
-    activate_venv
+    activate_runtime_venv
 
     cd "$PROJECT_DIR"
 

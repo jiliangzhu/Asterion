@@ -2,15 +2,15 @@
 
 **版本**: v1.2
 **更新日期**: 2026-03-15
-**状态**: post-P4 remediation active (`P4-01` / `P4-12` scaffolds landed; closeout pending objective verification)
+**状态**: post-P4 remediation active (`Phase 0` / `Phase 4` accepted; closeout pending objective verification)
 
 ---
 
 ## 📖 项目简介
 
-**Asterion（星枢）** 是一个建立在 AlphaDesk 底座之上的、面向 Polymarket 多领域事件市场的"研究、Agent、定价、执行、风控"统一平台。
+**Asterion（星枢）** 是一个源于 AlphaDesk 设计 lineage、但当前运行时代码已完全以本仓库为准的 Polymarket 多领域事件市场统一平台。
 
-**核心定位**: 不是 AlphaDesk 的"天气分支"，而是一个面向多模块扩展的事件交易平台。
+**核心定位**: 不是 AlphaDesk 的"天气分支"，也不再依赖 AlphaDesk runtime，而是一个面向多模块扩展的独立事件交易平台。
 
 ---
 
@@ -175,11 +175,17 @@ cd /Users/jayzhu/web3/Asterion
 当前 Operator Console 与 controlled-live boundary：
 
 - UI auth 已启用；未配置 `ASTERION_UI_USERNAME` / `ASTERION_UI_PASSWORD_HASH` 时默认拒绝访问
+- `./start_asterion.sh --web` 与 operator surface refresh 现在只注入最小只读 UI 环境，不再继承完整 `.env`
 - controlled-live secrets 只认独立 env 前缀：
   - `ASTERION_CONTROLLED_LIVE_SECRET_ARMED`
   - `ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN`
   - `ASTERION_CONTROLLED_LIVE_SECRET_PK_<WALLET_ID_UPPER_SNAKE>`
 - `GO` 只表示 rollout decision readiness；真正的 capability boundary 以 `data/meta/controlled_live_capability_manifest.json` 为真相源
+- submitter backend 当前支持：
+  - `disabled`
+  - `shadow_stub`
+  - `real_clob_submit`
+- `real_clob_submit` 只代表 constrained real submit backend 已存在；仍必须满足 `manual-only + allowlist + readiness GO + approval token + auditable`
 
 Weather smoke 当前默认行为：
 
@@ -194,7 +200,7 @@ UI 当前重点页面：
 
 - `Home`：Decision Center，优先展示 readiness decision、top opportunities、最大 blocker、degraded inputs 与 predicted-vs-realized 摘要
 - `Markets`：Opportunity Terminal，按 actionability + ranking score 排序展示所有 open recent markets，并补充 pricing decomposition、input integrity 与 execution reality
-- `Execution`：Execution Reality，默认展示 executed-only predicted-vs-realized 明细，并保留 live-prereq attention 视图
+- `Execution`：Execution Reality，默认展示 executed-only predicted-vs-realized 明细，并补充 `watch-only vs executed` capture、market research 与 calibration health cohort 摘要
 - `Agents`：Exception Review，重点展示 human review queue、latest agent exceptions 与 runtime boundary
 - `System`：Readiness Evidence，优先展示 evidence bundle、capability boundary、dependency freshness 与 blockers/warnings
 
@@ -280,7 +286,7 @@ agents/                     # AI Agent
 - `runtime.external_fill_observations`、`weather_external_execution_reconciliation` 与 external-aware `trading.reconciliation_results` 已在 `P4-08` 落地，用于 shadow external execution reconciliation
 - `ui.live_prereq_execution_summary`、`ui.live_prereq_wallet_summary` 与扩展后的 `ui.execution_*` 已在 `P4-09` 落地，用于 operator live-prereq read model
 - `evaluate_p4_live_prereq_readiness(...)` 与 `weather_live_prereq_readiness` 已在 `P4-10` 落地，用于 minimum ops hardening、hourly P4 readiness report 以及 `ui.phase_readiness_summary`
-- `weather_controlled_live_smoke`、`config/controlled_live_smoke.json` 与 controlled-live runbook 已在 `P4-11` 落地，用于 `approve_usdc` 的最小真实 side-effect 边界；当前 post-P4 remediation 已补上 capability manifest、独立 secret env 前缀与 app-level UI auth gate，默认仍是 `default-off + manual-only + auditable`
+- `weather_controlled_live_smoke`、`config/controlled_live_smoke.json` 与 controlled-live runbook 已在 `P4-11` 落地，用于 `approve_usdc` 的最小真实 side-effect 边界；当前 post-P4 remediation 已补上 capability manifest、独立 secret env 前缀、app-level UI auth gate、UI 最小环境注入，以及 `real_clob_submit` constrained backend，默认仍是 `default-off + manual-only + auditable`
 - `P4_Closeout_Checklist.md`、`P4_Controlled_Rollout_Decision_Runbook.md` 与 `P4` closeout doc tests 已在 `P4-12` 落地，用于保留 historical closeout / rollout decision 审查入口；当前开发口径已切换到 post-P4 remediation
 - `weather_chain_tx_smoke` 已成为 `P4-07` 的 canonical chain-tx manual entry；当前只开放 `approve_usdc`
 - `weather_signer_audit_smoke`、`weather_order_signing_smoke`、`weather_submitter_smoke` 与 `weather_external_execution_reconciliation` 已成为 `P4` signer / order-signing / submitter / reconciliation 的 canonical entry

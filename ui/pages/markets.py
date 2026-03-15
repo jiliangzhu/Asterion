@@ -374,6 +374,8 @@ def show() -> None:
 
         st.markdown("#### Execution Reality")
         executed_evidence = selected_market.get("executed_evidence") or {}
+        watch_only_vs_executed = selected_market.get("watch_only_vs_executed") or {}
+        market_research = selected_market.get("market_research") or {}
         if not executed_evidence.get("has_executed_evidence"):
             st.info("no executed evidence yet")
         else:
@@ -395,6 +397,20 @@ def show() -> None:
                 width="stretch",
                 hide_index=True,
             )
+        st.dataframe(
+            _detail_frame(
+                [
+                    {"字段": "Executed Evidence Status", "值": market_research.get("executed_evidence_status")},
+                    {"字段": "Execution Capture Ratio", "值": watch_only_vs_executed.get("execution_capture_ratio")},
+                    {"字段": "Executed Ticket Count", "值": watch_only_vs_executed.get("executed_ticket_count")},
+                    {"字段": "Miss Reason", "值": watch_only_vs_executed.get("miss_reason_bucket")},
+                    {"字段": "Resolved Trade Count", "值": market_research.get("resolved_trade_count")},
+                    {"字段": "Avg Post-Trade Error", "值": market_research.get("avg_post_trade_error")},
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
 
         st.markdown("#### Execution Readiness")
         st.dataframe(

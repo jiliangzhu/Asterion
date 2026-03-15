@@ -161,3 +161,4 @@ repo 配置：
 
 - `GO` 只表示 rollout decision readiness
 - 不表示 capability unrestricted
+- `real_clob_submit` constrained backend 已存在，但它不属于本 runbook 的执行范围；本 runbook 仍只覆盖 `approve_usdc` chain-tx smoke

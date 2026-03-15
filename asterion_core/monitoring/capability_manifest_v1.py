@@ -53,9 +53,14 @@ def build_controlled_live_capability_manifest(
     if chain_tx_backend_kind != "real_broadcast":
         blockers.append(f"chain_tx_backend_kind_mismatch:{chain_tx_backend_kind}")
         manifest_status = "invalid"
-    if submitter_backend_kind not in {"disabled", "shadow_stub"}:
+    if submitter_backend_kind not in {"disabled", "shadow_stub", "real_clob_submit"}:
         blockers.append(f"submitter_backend_kind_mismatch:{submitter_backend_kind}")
         manifest_status = "invalid"
+    submitter_capability = {
+        "disabled": "disabled",
+        "shadow_stub": "shadow_only",
+        "real_clob_submit": "constrained_real_submit",
+    }.get(submitter_backend_kind, "unknown")
 
     if manifest_status == "valid":
         missing_env = [name for name in required_env_vars if not str(os.getenv(name) or "").strip()]
@@ -69,7 +74,8 @@ def build_controlled_live_capability_manifest(
         "manifest_status": manifest_status,
         "controlled_live_mode": "manual_only",
         "default_off": True,
-        "submitter_capability": "shadow_only",
+        "submitter_backend_kind": submitter_backend_kind,
+        "submitter_capability": submitter_capability,
         "signer_backend_kind": signer_backend_kind,
         "chain_tx_backend_kind": chain_tx_backend_kind,
         "allowed_wallet_ids": allowed_wallet_ids,
@@ -113,5 +119,6 @@ def build_capability_boundary_summary(manifest: dict[str, Any] | None) -> dict[s
         "default_off": bool(payload.get("default_off")),
         "approve_usdc_only": payload.get("allowed_tx_kinds") == ["approve_usdc"],
         "shadow_submitter_only": payload.get("submitter_capability") == "shadow_only",
+        "constrained_real_submit_enabled": payload.get("submitter_capability") == "constrained_real_submit",
         "manifest_status": payload.get("manifest_status") or "missing",
     }

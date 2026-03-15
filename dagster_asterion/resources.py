@@ -22,6 +22,7 @@ from asterion_core.monitoring import (
 )
 from asterion_core.execution import (
     DisabledSubmitterBackend,
+    RealClobSubmitterBackend,
     SafeDefaultChainAccountCapabilityReader,
     ShadowSubmitterBackend,
     SubmitterServiceShell,
@@ -276,6 +277,10 @@ class SubmitterRuntimeResource:
             return SubmitterServiceShell(DisabledSubmitterBackend())
         if self.settings.submitter_backend_kind == "shadow_stub":
             return SubmitterServiceShell(ShadowSubmitterBackend())
+        if self.settings.submitter_backend_kind == "real_clob_submit":
+            return SubmitterServiceShell(
+                RealClobSubmitterBackend(api_base_url=self.settings.submitter_api_base_url or "")
+            )
         raise ValueError(f"unsupported submitter_backend_kind={self.settings.submitter_backend_kind!r}")
 
 

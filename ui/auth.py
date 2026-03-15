@@ -4,34 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import os
-from pathlib import Path
 
 import streamlit as st
-
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def _maybe_load_project_dotenv() -> None:
-    path = ROOT / ".env"
-    if not path.exists():
-        return
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key:
-            os.environ.setdefault(key, value)
-
-
-_maybe_load_project_dotenv()
 
 
 def _expected_username() -> str:

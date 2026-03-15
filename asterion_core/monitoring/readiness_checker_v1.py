@@ -204,6 +204,7 @@ class ReadinessReport:
                     f"- `default_off`: {self.capability_boundary_summary.get('default_off')}",
                     f"- `approve_usdc_only`: {self.capability_boundary_summary.get('approve_usdc_only')}",
                     f"- `shadow_submitter_only`: {self.capability_boundary_summary.get('shadow_submitter_only')}",
+                    f"- `constrained_real_submit_enabled`: {self.capability_boundary_summary.get('constrained_real_submit_enabled')}",
                     f"- `manifest_status`: {self.capability_boundary_summary.get('manifest_status')}",
                     "",
                 ]
