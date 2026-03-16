@@ -36,6 +36,10 @@ def build_weather_opportunity_assessment(
     price_staleness_ms: int = 0,
     source_freshness_status: str = "fresh",
     spread_bps: int | None = None,
+    calibration_health_status: str | None = None,
+    sample_count: int | None = None,
+    calibration_multiplier: float | None = None,
+    calibration_reason_codes: list[str] | None = None,
     source_context: dict[str, Any] | None = None,
 ) -> OpportunityAssessment:
     normalized_fees_bps = max(0, int(fees_bps or 0))
@@ -78,17 +82,53 @@ def build_weather_opportunity_assessment(
     )
 
     edge_bps_model = int(round((normalized_model_fair_value - normalized_reference_price) * 10_000))
-    execution_adjusted_fair_value = normalized_model_fair_value - (
-        (normalized_fees_bps + slippage_bps + liquidity_penalty_bps) / 10_000.0
+    model_side = derive_opportunity_side(edge_bps_model)
+    execution_adjusted_fair_value, edge_bps_executable = _execution_adjusted_edge(
+        reference_price=normalized_reference_price,
+        model_fair_value=normalized_model_fair_value,
+        total_cost_bps=normalized_fees_bps + slippage_bps + liquidity_penalty_bps,
+        model_side=model_side,
     )
-    execution_adjusted_fair_value = max(0.0, min(1.0, execution_adjusted_fair_value))
-    edge_bps_executable = int(round((execution_adjusted_fair_value - normalized_reference_price) * 10_000))
     opportunity_side = derive_opportunity_side(edge_bps_executable)
     effective_edge_bps = abs(edge_bps_executable)
-
-    expected_value_score = round(effective_edge_bps * fill_probability, 4)
-    expected_pnl_score = round(expected_value_score * depth_proxy, 4)
+    normalized_calibration_health_status = _normalize_calibration_health_status(
+        calibration_health_status or source_context_value(source_context, "calibration_health_status")
+    )
+    normalized_sample_count = max(
+        0,
+        int(sample_count if sample_count is not None else source_context_value(source_context, "sample_count") or 0),
+    )
+    calibration_multiplier_value = _calibration_multiplier(
+        calibration_health_status=normalized_calibration_health_status,
+        explicit_multiplier=calibration_multiplier if calibration_multiplier is not None else source_context_value(source_context, "calibration_multiplier"),
+    )
+    freshness_multiplier = _freshness_multiplier(source_freshness_status)
+    mapping_multiplier = _mapping_multiplier(float(mapping_confidence))
+    market_quality_multiplier = _market_quality_multiplier(market_quality.market_quality_status)
+    uncertainty_multiplier = round(
+        _clamp_multiplier(
+            calibration_multiplier_value * freshness_multiplier * mapping_multiplier * market_quality_multiplier
+        ),
+        4,
+    )
+    base_expected_value_score = round(effective_edge_bps * fill_probability, 4)
+    base_expected_pnl_score = round(base_expected_value_score * depth_proxy, 4)
+    expected_value_score = round(base_expected_value_score * uncertainty_multiplier, 4)
+    expected_pnl_score = round(base_expected_pnl_score * uncertainty_multiplier, 4)
     ranking_score = round(expected_pnl_score + ops_readiness_score, 4)
+    uncertainty_penalty_bps = max(
+        0,
+        effective_edge_bps - int(round(effective_edge_bps * uncertainty_multiplier)),
+    )
+    ranking_penalty_reasons = _ranking_penalty_reasons(
+        calibration_health_status=normalized_calibration_health_status,
+        calibration_reason_codes=calibration_reason_codes
+        if calibration_reason_codes is not None
+        else _source_context_reason_codes(source_context, "calibration_reason_codes"),
+        freshness_status=source_freshness_status,
+        mapping_confidence=float(mapping_confidence),
+        market_quality=market_quality,
+    )
     actionability_status = _actionability_status(
         edge_bps_executable=edge_bps_executable,
         threshold_bps=normalized_threshold_bps,
@@ -102,7 +142,8 @@ def build_weather_opportunity_assessment(
         f"model_edge_bps={edge_bps_model}, executable_edge_bps={edge_bps_executable}, "
         f"fees_bps={normalized_fees_bps}, slippage_bps={slippage_bps}, "
         f"liquidity_penalty_bps={liquidity_penalty_bps}, fill_probability={fill_probability:.2f}, "
-        f"market_quality_status={market_quality.market_quality_status}"
+        f"market_quality_status={market_quality.market_quality_status}, model_side={model_side}, "
+        f"uncertainty_multiplier={uncertainty_multiplier:.2f}"
     )
     context = {
         "accepting_orders": bool(accepting_orders),
@@ -115,6 +156,17 @@ def build_weather_opportunity_assessment(
         "edge_bps_model": edge_bps_model,
         "enable_order_book": bool(enable_order_book),
         "execution_adjusted_fair_value": execution_adjusted_fair_value,
+        "calibration_health_status": normalized_calibration_health_status,
+        "sample_count": normalized_sample_count,
+        "calibration_multiplier": calibration_multiplier_value,
+        "freshness_multiplier": freshness_multiplier,
+        "mapping_multiplier": mapping_multiplier,
+        "market_quality_multiplier": market_quality_multiplier,
+        "uncertainty_multiplier": uncertainty_multiplier,
+        "uncertainty_penalty_bps": uncertainty_penalty_bps,
+        "ranking_penalty_reasons": ranking_penalty_reasons,
+        "base_expected_value_score": base_expected_value_score,
+        "base_expected_pnl_score": base_expected_pnl_score,
         "expected_pnl_score": expected_pnl_score,
         "expected_value_score": expected_value_score,
         "fees_bps": normalized_fees_bps,
@@ -125,6 +177,7 @@ def build_weather_opportunity_assessment(
         "market_quality_reason_codes": list(market_quality.market_quality_reason_codes),
         "market_quality_status": market_quality.market_quality_status,
         "mapping_confidence": max(0.0, min(1.0, float(mapping_confidence))),
+        "model_side": model_side,
         "model_fair_value": normalized_model_fair_value,
         "ops_readiness_score": ops_readiness_score,
         "price_staleness_ms": max(0, int(price_staleness_ms)),
@@ -137,6 +190,24 @@ def build_weather_opportunity_assessment(
     }
     if source_context:
         context.update(source_context)
+    context.update(
+        {
+            "actionability_status": actionability_status,
+            "best_side": opportunity_side,
+            "calibration_health_status": normalized_calibration_health_status,
+            "sample_count": normalized_sample_count,
+            "calibration_multiplier": calibration_multiplier_value,
+            "freshness_multiplier": freshness_multiplier,
+            "mapping_multiplier": mapping_multiplier,
+            "market_quality_multiplier": market_quality_multiplier,
+            "uncertainty_multiplier": uncertainty_multiplier,
+            "uncertainty_penalty_bps": uncertainty_penalty_bps,
+            "ranking_penalty_reasons": ranking_penalty_reasons,
+            "expected_pnl_score": expected_pnl_score,
+            "expected_value_score": expected_value_score,
+            "ranking_score": ranking_score,
+        }
+    )
 
     assessment_id = stable_object_id(
         "opp",
@@ -154,6 +225,8 @@ def build_weather_opportunity_assessment(
             "mapping_confidence": round(float(mapping_confidence), 4),
             "source_freshness_status": source_freshness_status,
             "price_staleness_ms": max(0, int(price_staleness_ms)),
+            "calibration_health_status": normalized_calibration_health_status,
+            "sample_count": normalized_sample_count,
         },
     )
     return OpportunityAssessment(
@@ -172,6 +245,11 @@ def build_weather_opportunity_assessment(
         edge_bps_model=edge_bps_model,
         edge_bps_executable=edge_bps_executable,
         confidence_score=normalized_confidence_score,
+        calibration_health_status=normalized_calibration_health_status,
+        sample_count=normalized_sample_count,
+        uncertainty_multiplier=uncertainty_multiplier,
+        uncertainty_penalty_bps=uncertainty_penalty_bps,
+        ranking_penalty_reasons=ranking_penalty_reasons,
         ops_readiness_score=ops_readiness_score,
         expected_value_score=expected_value_score,
         expected_pnl_score=expected_pnl_score,
@@ -353,6 +431,24 @@ def _ops_readiness_score(live_prereq_status: str) -> float:
     return 0.0
 
 
+def _execution_adjusted_edge(
+    *,
+    reference_price: float,
+    model_fair_value: float,
+    total_cost_bps: int,
+    model_side: str | None,
+) -> tuple[float, int]:
+    normalized_cost = max(0, int(total_cost_bps)) / 10_000.0
+    if model_side == "BUY":
+        execution_adjusted_fair_value = max(0.0, min(1.0, model_fair_value - normalized_cost))
+        return execution_adjusted_fair_value, max(int(round((execution_adjusted_fair_value - reference_price) * 10_000)), 0)
+    if model_side == "SELL":
+        execution_adjusted_fair_value = max(0.0, min(1.0, model_fair_value + normalized_cost))
+        return execution_adjusted_fair_value, min(int(round((execution_adjusted_fair_value - reference_price) * 10_000)), 0)
+    execution_adjusted_fair_value = max(0.0, min(1.0, model_fair_value))
+    return execution_adjusted_fair_value, 0
+
+
 def _actionability_status(
     *,
     edge_bps_executable: int,
@@ -363,10 +459,10 @@ def _actionability_status(
     agent_review_status: str,
     market_quality_status: str,
 ) -> str:
-    if opportunity_side is None or abs(int(edge_bps_executable)) <= max(0, int(threshold_bps)):
-        return "no_trade"
     if not accepting_orders or live_prereq_status == "attention_required" or market_quality_status == "blocked":
         return "blocked"
+    if opportunity_side is None or abs(int(edge_bps_executable)) <= max(0, int(threshold_bps)):
+        return "no_trade"
     if agent_review_status != "passed" or market_quality_status == "review_required":
         return "review_required"
     return "actionable"
@@ -384,6 +480,121 @@ def _normalize_datetime(value: datetime | None) -> datetime | None:
     if value.tzinfo is not None:
         return value.astimezone(UTC).replace(tzinfo=None)
     return value
+
+
+def source_context_value(source_context: dict[str, Any] | None, key: str) -> Any:
+    if not source_context:
+        return None
+    return source_context.get(key)
+
+
+def _source_context_reason_codes(source_context: dict[str, Any] | None, key: str) -> list[str] | None:
+    value = source_context_value(source_context, key)
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    return None
+
+
+def _normalize_calibration_health_status(value: Any) -> str:
+    normalized = str(value or "lookup_missing").strip().lower()
+    if normalized in {"healthy", "watch", "degraded", "insufficient_samples", "limited_samples", "lookup_missing"}:
+        return normalized
+    return "lookup_missing"
+
+
+def _calibration_multiplier(*, calibration_health_status: str, explicit_multiplier: Any) -> float:
+    if explicit_multiplier is not None:
+        try:
+            return _clamp_multiplier(float(explicit_multiplier))
+        except (TypeError, ValueError):
+            pass
+    mapping = {
+        "healthy": 1.0,
+        "watch": 0.85,
+        "degraded": 0.60,
+        "limited_samples": 0.75,
+        "insufficient_samples": 0.55,
+        "lookup_missing": 0.50,
+    }
+    return mapping.get(calibration_health_status, 0.50)
+
+
+def _freshness_multiplier(source_freshness_status: str) -> float:
+    return {
+        "fresh": 1.0,
+        "stale": 0.85,
+        "degraded": 0.65,
+        "missing": 0.45,
+    }.get(str(source_freshness_status), 0.65)
+
+
+def _mapping_multiplier(mapping_confidence: float) -> float:
+    if mapping_confidence >= 0.90:
+        return 1.0
+    if mapping_confidence >= 0.75:
+        return 0.90
+    if mapping_confidence >= 0.50:
+        return 0.70
+    return 0.50
+
+
+def _market_quality_multiplier(market_quality_status: str) -> float:
+    return {
+        "pass": 1.0,
+        "review_required": 0.80,
+        "blocked": 0.0,
+    }.get(market_quality_status, 0.80)
+
+
+def _clamp_multiplier(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _ranking_penalty_reasons(
+    *,
+    calibration_health_status: str,
+    calibration_reason_codes: list[str] | None,
+    freshness_status: str,
+    mapping_confidence: float,
+    market_quality: MarketQualityAssessment,
+) -> list[str]:
+    reasons: list[str] = []
+    if calibration_reason_codes:
+        reasons.extend(str(code) for code in calibration_reason_codes if str(code))
+    elif calibration_health_status == "lookup_missing":
+        reasons.append("calibration_lookup_missing")
+    elif calibration_health_status == "insufficient_samples":
+        reasons.append("calibration_insufficient_samples")
+    elif calibration_health_status == "limited_samples":
+        reasons.append("calibration_limited_samples")
+    elif calibration_health_status == "watch":
+        reasons.append("calibration_watch")
+    elif calibration_health_status == "degraded":
+        reasons.append("calibration_degraded")
+
+    if freshness_status == "stale":
+        reasons.append("freshness_stale")
+    elif freshness_status == "degraded":
+        reasons.append("freshness_degraded")
+    elif freshness_status == "missing":
+        reasons.append("freshness_missing")
+
+    if mapping_confidence < 0.50:
+        reasons.append("mapping_confidence_low")
+    elif mapping_confidence < 0.75:
+        reasons.append("mapping_confidence_reduced")
+    elif mapping_confidence < 0.90:
+        reasons.append("mapping_confidence_watch")
+
+    reasons.extend(str(code) for code in market_quality.market_quality_reason_codes if str(code))
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for code in reasons:
+        if code in seen:
+            continue
+        seen.add(code)
+        deduped.append(code)
+    return deduped
 
 
 __all__ = [

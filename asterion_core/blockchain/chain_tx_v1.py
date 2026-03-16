@@ -15,6 +15,7 @@ from web3 import Web3
 from asterion_core.blockchain.wallet_state_v1 import PolygonChainRegistry
 from asterion_core.contracts import AccountTradingCapability, stable_object_id
 from asterion_core.journal import build_journal_event, enqueue_journal_event_upserts
+from asterion_core.live_side_effect_guard_v1 import LiveSideEffectGuard, validate_live_side_effect_guard
 from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.utils import safe_json_dumps
 from asterion_core.storage.write_queue import WriteQueueConfig
@@ -372,6 +373,7 @@ class ChainTxServiceShell:
         request: ChainTxRequest,
         *,
         signed_payload_json: dict[str, Any],
+        live_guard: LiveSideEffectGuard | None = None,
         queue_cfg: WriteQueueConfig,
         run_id: str | None = None,
     ) -> _ChainTxInvocationResult:
@@ -410,6 +412,17 @@ class ChainTxServiceShell:
             )
         elif request.tx_mode is ChainTxMode.DRY_RUN:
             response = _build_dry_run_preview(request, signed_payload_json=signed_payload_json)
+        elif request.tx_mode is ChainTxMode.CONTROLLED_LIVE:
+            guard_error = validate_live_side_effect_guard(expected_mode="controlled_live", guard=live_guard)
+            if guard_error:
+                response = _build_rejected_result(
+                    request,
+                    signed_payload_json=signed_payload_json,
+                    backend_kind="chain_tx_shell",
+                    error=guard_error,
+                )
+            else:
+                response = self._backend.broadcast(request, signed_payload_json=signed_payload_json)
         else:
             response = self._backend.broadcast(request, signed_payload_json=signed_payload_json)
         final_event = {

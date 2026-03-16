@@ -410,6 +410,13 @@ def main() -> int:
                 forecast_created_at=forecast_created_at_row[0] if forecast_created_at_row else forecast_target_time,
                 snapshot_created_at=datetime.now(UTC).replace(tzinfo=None),
             )
+            calibration_summary = DuckDBForecastStdDevProvider(db_path).resolve_confidence_summary(
+                station_id=forecast_run.station_id,
+                source=forecast_run.source,
+                observation_date=forecast_run.observation_date,
+                forecast_target_time=forecast_run.forecast_target_time,
+                metric=forecast_run.metric,
+            )
             current_fair_values = build_binary_fair_values(market=market, spec=spec, forecast_run=forecast_run)
             market_prices = extract_market_prices(market.raw_market)
             current_snapshots = [
@@ -420,6 +427,10 @@ def main() -> int:
                     accepting_orders=bool(market.accepting_orders),
                     enable_order_book=market.enable_order_book,
                     pricing_context={
+                        "calibration_health_status": None if calibration_summary is None else calibration_summary.calibration_health_status,
+                        "sample_count": 0 if calibration_summary is None else calibration_summary.sample_count,
+                        "calibration_multiplier": None if calibration_summary is None else calibration_summary.calibration_confidence_multiplier,
+                        "calibration_reason_codes": [] if calibration_summary is None else list(calibration_summary.reason_codes),
                         "forecast_run_id": forecast_run.run_id,
                         "mapping_confidence": station_mapping.mapping_confidence,
                         "mapping_method": station_mapping.mapping_method,

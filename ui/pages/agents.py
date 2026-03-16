@@ -34,7 +34,7 @@ def show() -> None:
     human_review_queue = review_frame[review_frame["human_review_required"] == True] if ("human_review_required" in review_frame.columns and not review_frame.empty) else review_frame.iloc[0:0]  # noqa: E712
 
     st.markdown("### Exception Review")
-    st.caption("Agent 页面现在只承担 review / exception / human queue，不参与主排序，也不参与 readiness 判定。")
+    st.caption("Agent 页面现在只承担 exception review / human queue；它不参与主排序、不参与 readiness 判定，也不会进入 execution path。")
 
     top1, top2, top3 = st.columns(3)
     with top1:
@@ -91,6 +91,7 @@ def show() -> None:
         st.dataframe(exception_frame[columns].head(20), width="stretch", hide_index=True)
 
     st.markdown("#### Agent Work by Type")
+    st.caption("这些统计只描述 review activity，不代表 agent 成为 execution driver。")
     grouped = _build_agent_type_rows(review_frame)
     if grouped.empty:
         st.info("当前还没有可聚合的 agent work。")
@@ -110,11 +111,12 @@ def show() -> None:
 
     st.markdown("#### Runtime Boundary")
     st.info(
-        "Agents 只在执行路径之外提供规则解析、数据质量审查、结算分析与复核建议。"
+        "Agents 只在执行路径之外提供 exception review、规则解析、数据质量审查、结算分析与复核建议。"
         "它们不会直接下单、撤单、改写 canonical execution tables，也不会进入机会主排序或 readiness gate。"
     )
 
     with st.expander("Runtime Configuration", expanded=False):
+        st.caption("这里展示的是 runtime visibility，不是 operator 决策主面。")
         env_rows = [
             {"键": "QWEN_MODEL", "值": os.getenv("QWEN_MODEL", "") or "未配置"},
             {"键": "QWEN_API_KEY", "值": "已配置" if os.getenv("QWEN_API_KEY") else "未配置"},

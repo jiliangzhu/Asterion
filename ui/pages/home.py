@@ -32,7 +32,7 @@ def show() -> None:
     uncaptured_high_edge = overview.get("uncaptured_high_edge_markets", pd.DataFrame())
 
     st.markdown("### Decision Console")
-    st.caption("首页优先回答 readiness、最大 blocker、当前最佳机会，以及已执行交易的 predicted-vs-realized 现实。")
+    st.caption("首页优先回答 readiness decision、最大 blocker、当前最佳机会，以及 execution-path evidence；agent 产出只作为 exception-review evidence，不作为主排序输入。")
 
     degraded_surfaces = [
         f"{name}: {payload['label']}"
@@ -63,7 +63,7 @@ def show() -> None:
             st.success("当前没有 gate-level blocker。")
         st.caption(
             "当前仓库状态是 `post-P4 remediation active / closeout pending objective verification`，"
-            "这不表示 unattended live。"
+            "当前系统定位是 `operator console + constrained execution infra`，这不表示 unattended live。"
         )
 
     with row1_right:
@@ -135,7 +135,10 @@ def show() -> None:
 
     with row3_right:
         st.markdown("#### Edge Capture")
-        st.metric("Capture Ratio", _format_metric_value(metrics.get("execution_capture_ratio")), delta=f"uncaptured={metrics.get('uncaptured_high_edge_count', 0)}")
+        st.write(f"submission: `{_format_metric_value(metrics.get('submission_capture_ratio'))}`")
+        st.write(f"fill: `{_format_metric_value(metrics.get('fill_capture_ratio'))}`")
+        st.write(f"resolution: `{_format_metric_value(metrics.get('resolution_capture_ratio'))}`")
+        st.caption(f"uncaptured={metrics.get('uncaptured_high_edge_count', 0)}")
         if uncaptured_high_edge.empty:
             st.success("当前没有 uncaptured high-edge markets。")
         else:
@@ -144,8 +147,11 @@ def show() -> None:
                 for column in [
                     "market_id",
                     "avg_executable_edge_bps",
-                    "execution_capture_ratio",
+                    "submission_capture_ratio",
+                    "fill_capture_ratio",
+                    "resolution_capture_ratio",
                     "miss_reason_bucket",
+                    "distortion_reason_bucket",
                 ]
                 if column in uncaptured_high_edge.columns
             ]
@@ -189,6 +195,7 @@ def show() -> None:
 
     st.markdown("#### Recent Agent Work")
     st.metric("Agent Rows", metrics.get("agent_activity_count", 0), delta=f"review_required={metrics.get('agent_review_required_count', 0)}")
+    st.caption("这里展示的是 exception-review evidence，不是 execution driver，也不进入 readiness gate。")
     if recent_agent.get("agent_type"):
         st.write(f"最新 agent: `{recent_agent['agent_type']}`")
         st.write(f"verdict: `{recent_agent.get('verdict') or 'n/a'}`")

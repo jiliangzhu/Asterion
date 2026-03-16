@@ -1,8 +1,8 @@
 # Asterion（星枢）项目
 
-**版本**: v1.2
-**更新日期**: 2026-03-15
-**状态**: post-P4 remediation active (`Phase 0` / `Phase 4` accepted; closeout pending objective verification)
+**版本**: v1.3
+**更新日期**: 2026-03-16
+**状态**: post-P4 remediation active (`Phase 0` / `Phase 9` accepted; closeout pending objective verification)
 
 ---
 
@@ -10,7 +10,11 @@
 
 **Asterion（星枢）** 是一个源于 AlphaDesk 设计 lineage、但当前运行时代码已完全以本仓库为准的 Polymarket 多领域事件市场统一平台。
 
-**核心定位**: 不是 AlphaDesk 的"天气分支"，也不再依赖 AlphaDesk runtime，而是一个面向多模块扩展的独立事件交易平台。
+**核心定位**: 不是 AlphaDesk 的"天气分支"，也不再依赖 AlphaDesk runtime，而是一个 `operator console + constrained execution infra` 形态的独立事件交易平台。
+
+当前 canonical 实施入口始终是 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)；当前系统状态固定表达为 `post-P4 remediation active / closeout pending objective verification`，不表示 unattended live，也不表示 unrestricted live。
+
+当前 `runtime / UI / paper candidate` 已统一按 penalty-aware `ranking_score` 排序；`edge_bps_executable` 继续保留 raw executable edge 语义。Execution science 读面也已升级到 capture / miss / distortion 视角。
 
 ---
 
@@ -87,7 +91,7 @@ Asterion/
 7. 阅读 [P4_Closeout_Checklist.md](./docs/10-implementation/checklists/P4_Closeout_Checklist.md)
    - 这是 `P4` 是否已关闭、是否达到 `controlled live rollout decision` 条件的 closeout 审查入口
 8. 阅读 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
-   - 这是 post-P4 remediation 的 canonical 实施入口；后续修复不只聚焦治理与边界，也包括以 `forecast calibration -> executable edge -> EV ranking -> predicted vs realized` 为主线的交易能力增强路线
+   - 这是 post-P4 remediation 的 canonical 实施入口；后续修复不只聚焦治理与边界，也包括以 `forecast calibration -> executable edge -> EV ranking -> predicted vs realized` 为主线的交易能力增强路线；Current Reassessment 后续剩余问题也统一收口在其中的 `Phase 5+ Remediation Roadmap`
 9. 阅读 [P4_Controlled_Rollout_Decision_Runbook.md](./docs/10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
    - 这是 `P4` closeout 后的 rollout decision operator runbook
 10. 阅读 [P4_Real_Weather_Chain_Smoke_Runbook.md](./docs/10-implementation/runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md)
@@ -185,7 +189,9 @@ cd /Users/jayzhu/web3/Asterion
   - `disabled`
   - `shadow_stub`
   - `real_clob_submit`
+- `real_clob_submit` 与 `controlled live chain-tx` 都要求显式 `ASTERION_CONTROLLED_LIVE_SECRET_ARMED=true`；direct service 调用缺少 arming guard 时会在 shell 层直接拒绝
 - `real_clob_submit` 只代表 constrained real submit backend 已存在；仍必须满足 `manual-only + allowlist + readiness GO + approval token + auditable`
+- `real_clob_submit` 的 live path 现在要求 shell 提交 `boundary inputs`，并由 backend 校验 approved attestation；live submit 的 allow/block 决策会落到 `runtime.live_boundary_attestations`
 
 Weather smoke 当前默认行为：
 
@@ -200,8 +206,8 @@ UI 当前重点页面：
 
 - `Home`：Decision Center，优先展示 readiness decision、top opportunities、最大 blocker、degraded inputs 与 predicted-vs-realized 摘要
 - `Markets`：Opportunity Terminal，按 actionability + ranking score 排序展示所有 open recent markets，并补充 pricing decomposition、input integrity 与 execution reality
-- `Execution`：Execution Reality，默认展示 executed-only predicted-vs-realized 明细，并补充 `watch-only vs executed` capture、market research 与 calibration health cohort 摘要
-- `Agents`：Exception Review，重点展示 human review queue、latest agent exceptions 与 runtime boundary
+- `Execution`：Execution Reality，默认展示 execution science / execution-path evidence，并补充 `watch-only vs executed` capture、execution science cohort、market research 与 calibration health 摘要
+- `Agents`：Exception Review，重点展示 human review queue、latest agent exceptions 与 runtime boundary；它不参与主排序，也不参与 readiness gate
 - `System`：Readiness Evidence，优先展示 evidence bundle、capability boundary、dependency freshness 与 blockers/warnings
 
 ### 3. Weather MVP 范围

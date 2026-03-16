@@ -7,7 +7,7 @@ from typing import Any
 from asterion_core.clients.shared import build_url
 from asterion_core.contracts import ForecastRequest
 
-from .calibration import ForecastStdDevProvider
+from .calibration import CalibrationConfidenceSummary, ForecastStdDevProvider
 from .service import ForecastDistribution
 
 # Historical forecast error standard deviations (in Fahrenheit)
@@ -54,9 +54,23 @@ def _forecast_std_dev(request: ForecastRequest) -> float:
     return FORECAST_STD_DEV_7DAY
 
 
-def _resolve_std_dev(request: ForecastRequest, provider: ForecastStdDevProvider | None) -> float:
+@dataclass(frozen=True)
+class StdDevResolutionSummary:
+    resolved_std_dev: float
+    lookup_hit: bool
+    sample_count: int
+    calibration_health_status: str
+
+
+def resolve_std_dev_summary(request: ForecastRequest, provider: ForecastStdDevProvider | None) -> StdDevResolutionSummary:
+    fallback = StdDevResolutionSummary(
+        resolved_std_dev=_forecast_std_dev(request),
+        lookup_hit=False,
+        sample_count=0,
+        calibration_health_status="lookup_missing",
+    )
     if provider is None:
-        return _forecast_std_dev(request)
+        return fallback
     resolved = provider.resolve_std_dev(
         station_id=request.station_id,
         source=request.source,
@@ -64,9 +78,34 @@ def _resolve_std_dev(request: ForecastRequest, provider: ForecastStdDevProvider 
         forecast_target_time=request.forecast_target_time,
         metric=request.metric,
     )
+    summary: CalibrationConfidenceSummary | None = None
+    if hasattr(provider, "resolve_confidence_summary"):
+        maybe_summary = provider.resolve_confidence_summary(
+            station_id=request.station_id,
+            source=request.source,
+            observation_date=request.observation_date,
+            forecast_target_time=request.forecast_target_time,
+            metric=request.metric,
+        )
+        if isinstance(maybe_summary, CalibrationConfidenceSummary):
+            summary = maybe_summary
     if resolved is None or float(resolved) <= 0.0:
-        return _forecast_std_dev(request)
-    return float(resolved)
+        return fallback if summary is None else StdDevResolutionSummary(
+            resolved_std_dev=fallback.resolved_std_dev,
+            lookup_hit=False,
+            sample_count=summary.sample_count,
+            calibration_health_status=summary.calibration_health_status,
+        )
+    return StdDevResolutionSummary(
+        resolved_std_dev=float(resolved),
+        lookup_hit=True,
+        sample_count=0 if summary is None else int(summary.sample_count),
+        calibration_health_status="healthy" if summary is None else str(summary.calibration_health_status),
+    )
+
+
+def _resolve_std_dev(request: ForecastRequest, provider: ForecastStdDevProvider | None) -> float:
+    return resolve_std_dev_summary(request, provider).resolved_std_dev
 
 
 @dataclass(frozen=True)

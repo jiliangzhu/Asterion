@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import duckdb
 
+from asterion_core.contracts import build_submitter_boundary_attestation
 from asterion_core.execution import RealClobSubmitterBackend, SubmitMode, SubmitterServiceShell
 from asterion_core.monitoring import (
     ReadinessGateResult,
@@ -41,11 +42,16 @@ class _BrokenClient:
         raise RuntimeError("network_down")
 
 
+class _ExplodingClient:
+    def post_json(self, url: str, *, payload: dict[str, object]) -> dict[str, object]:
+        raise AssertionError("provider client should not be called")
+
+
 class RealClobSubmitterBackendTest(unittest.TestCase):
     def test_real_backend_accepts_live_submit(self) -> None:
         backend = RealClobSubmitterBackend(api_base_url="https://submit.invalid/orders", client=_AcceptedClient())
         request = _build_live_submit_request()
-        result = backend.submit(request)
+        result = backend.submit(request, boundary_attestation=_approved_attestation(backend, request))
         self.assertEqual(result.status, "accepted")
         self.assertEqual(result.external_order_id, "ext_live_1")
         self.assertEqual(result.submit_payload_json["backend_kind"], "real_clob_submit")
@@ -53,7 +59,7 @@ class RealClobSubmitterBackendTest(unittest.TestCase):
     def test_real_backend_rejects_provider_error_without_raising(self) -> None:
         backend = RealClobSubmitterBackend(api_base_url="https://submit.invalid/orders", client=_BrokenClient())
         request = _build_live_submit_request()
-        result = backend.submit(request)
+        result = backend.submit(request, boundary_attestation=_approved_attestation(backend, request))
         self.assertEqual(result.status, "rejected")
         self.assertIn("submitter_provider_error:", result.error or "")
 
@@ -64,39 +70,103 @@ class RealClobSubmitterBackendTest(unittest.TestCase):
         self.assertEqual(result.status, "rejected")
         self.assertEqual(result.error, "real_submitter_requires_submit_mode_live_submit")
 
+    def test_real_backend_rejects_missing_attestation(self) -> None:
+        backend = RealClobSubmitterBackend(api_base_url="https://submit.invalid/orders", client=_AcceptedClient())
+        request = _build_live_submit_request()
+        result = backend.submit(request)
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.error, "submitter_boundary_attestation_missing")
+
+    def test_real_backend_rejects_non_approved_attestation(self) -> None:
+        backend = RealClobSubmitterBackend(api_base_url="https://submit.invalid/orders", client=_AcceptedClient())
+        request = _build_live_submit_request()
+        result = backend.submit(
+            request,
+            boundary_attestation=build_submitter_boundary_attestation(
+                request_id=request.request_id,
+                wallet_id=request.wallet_id,
+                submit_mode=request.submit_mode.value,
+                target_backend_kind="real_clob_submit",
+                submitter_endpoint_fingerprint=backend.endpoint_fingerprint(),
+                manifest_payload=None,
+                readiness_report_payload=None,
+                reason_codes=["manifest_missing"],
+                created_at=request.timestamp,
+            ),
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.error, "submitter_boundary_attestation_not_approved")
+
+    def test_real_backend_rejects_endpoint_fingerprint_mismatch(self) -> None:
+        backend = RealClobSubmitterBackend(api_base_url="https://submit.invalid/orders", client=_AcceptedClient())
+        request = _build_live_submit_request()
+        result = backend.submit(
+            request,
+            boundary_attestation=build_submitter_boundary_attestation(
+                request_id=request.request_id,
+                wallet_id=request.wallet_id,
+                submit_mode=request.submit_mode.value,
+                target_backend_kind="real_clob_submit",
+                submitter_endpoint_fingerprint="wrong",
+                manifest_payload={"manifest_status": "valid"},
+                readiness_report_payload={"go_decision": "GO"},
+                reason_codes=[],
+                created_at=request.timestamp,
+            ),
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.error, "submitter_endpoint_fingerprint_mismatch")
+
 
 class LiveSubmitterSmokeHandlerTest(unittest.TestCase):
-    def test_live_submit_blocks_without_manifest(self) -> None:
+    def test_live_submit_without_manifest_is_rejected_and_attested(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             env = _seed_submitter_env(tmpdir)
             try:
-                result = run_weather_submitter_smoke_job(
-                    env["con"],
-                    env["queue_cfg"],
-                    submitter_service=SubmitterServiceShell(
-                        RealClobSubmitterBackend(
-                            api_base_url="https://submit.invalid/orders",
-                            client=_AcceptedClient(),
-                        )
-                    ),
-                    controlled_live_capability_manifest_path=str(Path(tmpdir) / "missing_manifest.json"),
-                    readiness_report_json_path=env["readiness_path"],
-                    ui_lite_db_path=env["ui_lite_db_path"],
-                    params_json={
-                        "attempt_ids": ["sign_1"],
-                        "requester": "operator",
-                        "submit_mode": "live_submit",
-                        "approval_token": "live-token",
+                with patch.dict(
+                    os.environ,
+                    {
+                        "ASTERION_WRITERD_ALLOWED_TABLES": "runtime.journal_events,runtime.submit_attempts,runtime.external_order_observations,runtime.live_boundary_attestations",
                     },
-                    run_id="run_live_submit_blocked",
-                    observed_at=datetime(2026, 3, 15, 10, 0, tzinfo=UTC),
-                )
+                    clear=False,
+                ):
+                    result = run_weather_submitter_smoke_job(
+                        env["con"],
+                        env["queue_cfg"],
+                        submitter_service=SubmitterServiceShell(
+                            RealClobSubmitterBackend(
+                                api_base_url="https://submit.invalid/orders",
+                                client=_AcceptedClient(),
+                            )
+                        ),
+                        controlled_live_capability_manifest_path=str(Path(tmpdir) / "missing_manifest.json"),
+                        readiness_report_json_path=env["readiness_path"],
+                        ui_lite_db_path=env["ui_lite_db_path"],
+                        params_json={
+                            "attempt_ids": ["sign_1"],
+                            "requester": "operator",
+                            "submit_mode": "live_submit",
+                            "approval_token": "live-token",
+                        },
+                        run_id="run_live_submit_blocked",
+                        observed_at=datetime(2026, 3, 15, 10, 0, tzinfo=UTC),
+                    )
+                    while process_one(queue_path=env["queue_cfg"].path, db_path=env["db_path"], ddl_path=None, apply_schema=False):
+                        pass
             finally:
                 env["con"].close()
-            self.assertEqual(result.metadata["status"], "blocked")
-            self.assertEqual(result.metadata["reason"], "missing_controlled_live_capability_manifest")
+            self.assertEqual(result.metadata["rejected_count"], 1)
+            con = connect_duckdb(DuckDBConfig(db_path=env["db_path"], ddl_path=None))
+            try:
+                row = con.execute(
+                    "SELECT attestation_status, reason_codes_json FROM runtime.live_boundary_attestations"
+                ).fetchone()
+            finally:
+                con.close()
+            self.assertEqual(row[0], "blocked")
+            self.assertIn("manifest_missing", row[1])
 
-    def test_live_submit_persists_submit_attempts_and_external_observations(self) -> None:
+    def test_live_submit_persists_submit_attempts_external_observations_and_attestation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             env = _seed_submitter_env(tmpdir, manifest_submitter_backend_kind="real_clob_submit")
             try:
@@ -106,7 +176,7 @@ class LiveSubmitterSmokeHandlerTest(unittest.TestCase):
                         "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "true",
                         "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
                         "ASTERION_CONTROLLED_LIVE_SECRET_PK_WALLET_WEATHER_1": "0xabc",
-                        "ASTERION_WRITERD_ALLOWED_TABLES": "runtime.journal_events,runtime.submit_attempts,runtime.external_order_observations",
+                        "ASTERION_WRITERD_ALLOWED_TABLES": "runtime.journal_events,runtime.submit_attempts,runtime.external_order_observations,runtime.live_boundary_attestations",
                     },
                     clear=False,
                 ):
@@ -145,10 +215,68 @@ class LiveSubmitterSmokeHandlerTest(unittest.TestCase):
                 observation_row = con.execute(
                     "SELECT observation_kind, external_status FROM runtime.external_order_observations"
                 ).fetchone()
+                attestation_row = con.execute(
+                    "SELECT attestation_status FROM runtime.live_boundary_attestations"
+                ).fetchone()
             finally:
                 con.close()
             self.assertEqual(attempt_row, ("live_submit", "accepted"))
             self.assertEqual(observation_row, ("live_submit_ack", "accepted"))
+            self.assertEqual(attestation_row, ("approved",))
+
+    def test_live_submit_not_armed_is_rejected_before_provider_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = _seed_submitter_env(tmpdir, manifest_submitter_backend_kind="real_clob_submit")
+            try:
+                with patch.dict(
+                    os.environ,
+                    {
+                        "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "false",
+                        "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
+                        "ASTERION_CONTROLLED_LIVE_SECRET_PK_WALLET_WEATHER_1": "0xabc",
+                        "ASTERION_WRITERD_ALLOWED_TABLES": "runtime.journal_events,runtime.submit_attempts,runtime.external_order_observations,runtime.live_boundary_attestations",
+                    },
+                    clear=False,
+                ):
+                    result = run_weather_submitter_smoke_job(
+                        env["con"],
+                        env["queue_cfg"],
+                        submitter_service=SubmitterServiceShell(
+                            RealClobSubmitterBackend(
+                                api_base_url="https://submit.invalid/orders",
+                                client=_ExplodingClient(),
+                            )
+                        ),
+                        controlled_live_capability_manifest_path=env["manifest_path"],
+                        readiness_report_json_path=env["readiness_path"],
+                        ui_lite_db_path=env["ui_lite_db_path"],
+                        params_json={
+                            "attempt_ids": ["sign_1"],
+                            "requester": "operator",
+                            "submit_mode": "live_submit",
+                            "approval_token": "live-token",
+                        },
+                        run_id="run_live_submit_not_armed",
+                        observed_at=datetime(2026, 3, 15, 10, 0, tzinfo=UTC),
+                    )
+                    while process_one(queue_path=env["queue_cfg"].path, db_path=env["db_path"], ddl_path=None, apply_schema=False):
+                        pass
+            finally:
+                env["con"].close()
+            self.assertEqual(result.metadata["rejected_count"], 1)
+            con = connect_duckdb(DuckDBConfig(db_path=env["db_path"], ddl_path=None))
+            try:
+                attempt = con.execute(
+                    "SELECT status, error FROM runtime.submit_attempts WHERE attempt_kind = 'submit_order'"
+                ).fetchone()
+                attestation = con.execute(
+                    "SELECT attestation_status, reason_codes_json FROM runtime.live_boundary_attestations"
+                ).fetchone()
+            finally:
+                con.close()
+            self.assertEqual(attempt, ("rejected", "live_submit_not_armed"))
+            self.assertEqual(attestation[0], "blocked")
+            self.assertIn("live_submit_not_armed", attestation[1])
 
 
 def _build_live_submit_request(*, submit_mode: SubmitMode = SubmitMode.LIVE_SUBMIT):
@@ -160,6 +288,20 @@ def _build_live_submit_request(*, submit_mode: SubmitMode = SubmitMode.LIVE_SUBM
         request_id="subreq_live_1",
         timestamp=datetime(2026, 3, 15, 10, 0, tzinfo=UTC),
         submit_mode=submit_mode,
+    )
+
+
+def _approved_attestation(backend: RealClobSubmitterBackend, request):
+    return build_submitter_boundary_attestation(
+        request_id=request.request_id,
+        wallet_id=request.wallet_id,
+        submit_mode=request.submit_mode.value,
+        target_backend_kind=backend.backend_kind(),
+        submitter_endpoint_fingerprint=backend.endpoint_fingerprint(),
+        manifest_payload={"manifest_status": "valid"},
+        readiness_report_payload={"go_decision": "GO"},
+        reason_codes=[],
+        created_at=request.timestamp,
     )
 
 

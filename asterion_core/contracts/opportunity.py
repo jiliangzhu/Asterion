@@ -51,6 +51,11 @@ class OpportunityAssessment:
     edge_bps_model: int
     edge_bps_executable: int
     confidence_score: float
+    calibration_health_status: str
+    sample_count: int
+    uncertainty_multiplier: float
+    uncertainty_penalty_bps: int
+    ranking_penalty_reasons: list[str]
     ops_readiness_score: float
     expected_value_score: float
     expected_pnl_score: float
@@ -77,6 +82,16 @@ class OpportunityAssessment:
             raise ValueError("depth_proxy must be non-negative")
         if float(self.confidence_score) < 0.0:
             raise ValueError("confidence_score must be non-negative")
+        if not self.calibration_health_status:
+            raise ValueError("calibration_health_status is required")
+        if int(self.sample_count) < 0:
+            raise ValueError("sample_count must be non-negative")
+        if not (0.0 <= float(self.uncertainty_multiplier) <= 1.0):
+            raise ValueError("uncertainty_multiplier must be between 0 and 1")
+        if int(self.uncertainty_penalty_bps) < 0:
+            raise ValueError("uncertainty_penalty_bps must be non-negative")
+        if not isinstance(self.ranking_penalty_reasons, list):
+            raise ValueError("ranking_penalty_reasons must be a list")
         if float(self.ops_readiness_score) < 0.0:
             raise ValueError("ops_readiness_score must be non-negative")
         if float(self.expected_value_score) < 0.0:

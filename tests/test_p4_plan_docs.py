@@ -69,6 +69,7 @@ class P4PlanDocsTest(unittest.TestCase):
             ROOT / "README.md": "post-P4 remediation active",
             ROOT / "docs" / "00-overview" / "DEVELOPMENT_ROADMAP.md": "post-P4 remediation",
             ROOT / "docs" / "00-overview" / "Asterion_Project_Plan.md": "closeout pending objective verification",
+            ROOT / "docs" / "10-implementation" / "phase-plans" / "Post_P4_Remediation_Implementation_Plan.md": "Phase 9: Operator Surface and Truth-Source Cleanup",
         }
         missing: list[str] = []
         for path, needle in expected.items():
@@ -77,6 +78,8 @@ class P4PlanDocsTest(unittest.TestCase):
                 missing.append(f"{path}:{needle}")
             if "P4 closed" in text:
                 missing.append(f"{path}:P4 closed")
+            if "ready for unattended live" in text and "不表示 `ready for unattended live`" not in text:
+                missing.append(f"{path}:ready for unattended live")
         self.assertEqual(missing, [])
 
     def test_p4_docs_reference_controlled_live_smoke_runbook(self) -> None:

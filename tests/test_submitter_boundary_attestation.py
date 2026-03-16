@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import unittest
+from datetime import UTC, datetime
+
+from asterion_core.contracts import SubmitterBoundaryInputs, evaluate_submitter_boundary
+
+
+def _inputs(**overrides) -> SubmitterBoundaryInputs:
+    payload = {
+        "request_id": "subreq_live_1",
+        "wallet_id": "wallet_weather_1",
+        "source_attempt_id": "sign_1",
+        "ticket_id": "tt_1",
+        "execution_context_id": "ectx_1",
+        "submit_mode": "live_submit",
+        "submitter_backend_kind": "real_clob_submit",
+        "signer_backend_kind": "env_private_key_tx",
+        "chain_tx_backend_kind": "real_broadcast",
+        "submitter_endpoint_fingerprint": "fingerprint_1",
+        "manifest_payload": {
+            "manifest_status": "valid",
+            "controlled_live_mode": "manual_only",
+            "allowed_wallet_ids": ["wallet_weather_1"],
+        },
+        "manifest_path": "data/meta/controlled_live_capability_manifest.json",
+        "readiness_report_payload": {
+            "go_decision": "GO",
+            "decision_reason": "ready for controlled live rollout decision",
+        },
+        "wallet_readiness_status": "ready",
+        "approval_token_matches": True,
+        "armed": True,
+        "evaluated_at": datetime(2026, 3, 16, 10, 0, tzinfo=UTC),
+    }
+    payload.update(overrides)
+    return SubmitterBoundaryInputs(**payload)
+
+
+class SubmitterBoundaryAttestationTest(unittest.TestCase):
+    def test_approved_path(self) -> None:
+        attestation = evaluate_submitter_boundary(_inputs())
+        self.assertEqual(attestation.attestation_status, "approved")
+        self.assertEqual(attestation.reason_codes, [])
+
+    def test_manifest_missing(self) -> None:
+        attestation = evaluate_submitter_boundary(_inputs(manifest_payload=None))
+        self.assertEqual(attestation.attestation_status, "blocked")
+        self.assertIn("manifest_missing", attestation.reason_codes)
+
+    def test_manifest_invalid(self) -> None:
+        attestation = evaluate_submitter_boundary(_inputs(manifest_payload={"manifest_status": "invalid"}))
+        self.assertEqual(attestation.attestation_status, "blocked")
+        self.assertIn("manifest_invalid", attestation.reason_codes)
+
+    def test_backend_kind_mismatch(self) -> None:
+        attestation = evaluate_submitter_boundary(_inputs(submitter_backend_kind="shadow_stub"))
+        self.assertEqual(attestation.attestation_status, "blocked")
+        self.assertIn("submitter_backend_not_real_clob_submit", attestation.reason_codes)
+
+    def test_approval_token_mismatch(self) -> None:
+        attestation = evaluate_submitter_boundary(_inputs(approval_token_matches=False))
+        self.assertEqual(attestation.attestation_status, "blocked")
+        self.assertIn("approval_token_mismatch", attestation.reason_codes)
+
+    def test_readiness_not_go(self) -> None:
+        attestation = evaluate_submitter_boundary(_inputs(readiness_report_payload={"go_decision": "NO_GO"}))
+        self.assertEqual(attestation.attestation_status, "blocked")
+        self.assertIn("p4_live_prereq_not_go", attestation.reason_codes)
+
+    def test_wallet_not_ready(self) -> None:
+        attestation = evaluate_submitter_boundary(_inputs(wallet_readiness_status="allowance_action_required"))
+        self.assertEqual(attestation.attestation_status, "blocked")
+        self.assertIn("wallet_not_ready", attestation.reason_codes)
+
+    def test_endpoint_fingerprint_missing(self) -> None:
+        attestation = evaluate_submitter_boundary(_inputs(submitter_endpoint_fingerprint=None))
+        self.assertEqual(attestation.attestation_status, "blocked")
+        self.assertIn("submitter_endpoint_fingerprint_mismatch", attestation.reason_codes)
+
+
+if __name__ == "__main__":
+    unittest.main()

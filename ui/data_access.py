@@ -44,6 +44,7 @@ UI_TABLES = {
     "agent_review_summary": "ui.agent_review_summary",
     "predicted_vs_realized_summary": "ui.predicted_vs_realized_summary",
     "watch_only_vs_executed_summary": "ui.watch_only_vs_executed_summary",
+    "execution_science_summary": "ui.execution_science_summary",
     "market_research_summary": "ui.market_research_summary",
     "calibration_health_summary": "ui.calibration_health_summary",
 }
@@ -623,6 +624,10 @@ def _build_opportunity_row(
     source_freshness_status: str = "missing",
     price_staleness_ms: int = 0,
     spread_bps: int | None = None,
+    calibration_health_status: str = "lookup_missing",
+    sample_count: int = 0,
+    calibration_multiplier: float | None = None,
+    calibration_reason_codes: list[str] | None = None,
 ) -> dict[str, Any]:
     assessment = build_weather_opportunity_assessment(
         market_id=market_id,
@@ -640,7 +645,15 @@ def _build_opportunity_row(
         price_staleness_ms=price_staleness_ms,
         source_freshness_status=source_freshness_status,
         spread_bps=spread_bps,
+        calibration_health_status=calibration_health_status,
+        sample_count=sample_count,
+        calibration_multiplier=calibration_multiplier,
+        calibration_reason_codes=calibration_reason_codes,
         source_context={
+            "calibration_health_status": calibration_health_status,
+            "sample_count": sample_count,
+            "calibration_multiplier": calibration_multiplier,
+            "calibration_reason_codes": calibration_reason_codes,
             "latest_run_source": latest_run_source,
             "latest_forecast_target_time": latest_forecast_target_time,
             "mapping_confidence": mapping_confidence,
@@ -673,6 +686,11 @@ def _build_opportunity_row(
         "slippage_bps": assessment.slippage_bps,
         "fill_probability": assessment.fill_probability,
         "depth_proxy": assessment.depth_proxy,
+        "calibration_health_status": assessment.calibration_health_status,
+        "sample_count": assessment.sample_count,
+        "uncertainty_multiplier": assessment.uncertainty_multiplier,
+        "uncertainty_penalty_bps": assessment.uncertainty_penalty_bps,
+        "ranking_penalty_reasons": assessment.ranking_penalty_reasons,
         "mapping_confidence": assessment.assessment_context_json.get("mapping_confidence"),
         "source_freshness_status": assessment.assessment_context_json.get("source_freshness_status"),
         "price_staleness_ms": assessment.assessment_context_json.get("price_staleness_ms"),
@@ -724,6 +742,7 @@ def _derive_market_opportunities_from_report(report: dict[str, Any] | None) -> p
                 signals,
                 key=lambda signal: (
                     0 if _ensure_text(signal.get("decision")) == "TAKE" else 1,
+                    -float(signal.get("ranking_score") or 0.0),
                     -float(signal.get("edge_bps") or 0.0),
                 ),
             )[0]
@@ -769,6 +788,7 @@ def _derive_market_opportunities_from_report(report: dict[str, Any] | None) -> p
                     derived_signals,
                     key=lambda signal: (
                         0 if _ensure_text(signal.get("decision")) == "TAKE" else 1,
+                        -float(signal.get("ranking_score") or 0.0),
                         -float(signal.get("edge_bps") or 0.0),
                     ),
                 )[0]
@@ -802,6 +822,13 @@ def _derive_market_opportunities_from_report(report: dict[str, Any] | None) -> p
                     "slippage_bps": None,
                     "fill_probability": None,
                     "depth_proxy": None,
+                    "calibration_health_status": _ensure_text((best_signal or {}).get("calibration_health_status")) or "lookup_missing",
+                    "sample_count": int(_coerce_float((best_signal or {}).get("sample_count")) or 0),
+                    "uncertainty_multiplier": 0.0,
+                    "uncertainty_penalty_bps": 0,
+                    "ranking_penalty_reasons": (best_signal or {}).get("calibration_reason_codes")
+                    if isinstance((best_signal or {}).get("calibration_reason_codes"), list)
+                    else [],
                     "mapping_confidence": _coerce_float((best_signal or {}).get("mapping_confidence")) or 1.0,
                     "source_freshness_status": _ensure_text((best_signal or {}).get("source_freshness_status")) or "missing",
                     "price_staleness_ms": int(_coerce_float((best_signal or {}).get("price_staleness_ms")) or 0),
@@ -851,6 +878,12 @@ def _derive_market_opportunities_from_report(report: dict[str, Any] | None) -> p
                 source_freshness_status=_ensure_text((best_signal or {}).get("source_freshness_status")) or "missing",
                 price_staleness_ms=int(_coerce_float((best_signal or {}).get("price_staleness_ms")) or 0),
                 spread_bps=int(_coerce_float((best_signal or {}).get("spread_bps")) or 0) or None,
+                calibration_health_status=_ensure_text((best_signal or {}).get("calibration_health_status")) or "lookup_missing",
+                sample_count=int(_coerce_float((best_signal or {}).get("sample_count")) or 0),
+                calibration_multiplier=_coerce_float((best_signal or {}).get("calibration_multiplier")),
+                calibration_reason_codes=(best_signal or {}).get("calibration_reason_codes")
+                if isinstance((best_signal or {}).get("calibration_reason_codes"), list)
+                else None,
             )
         )
     return _sort_market_opportunities(pd.DataFrame(rows))
@@ -1004,8 +1037,9 @@ def load_execution_console_data() -> dict[str, pd.DataFrame]:
     journal = _sort_desc(snapshot["tables"]["paper_run_journal_summary"], "latest_event_at")
     daily_ops = _sort_desc(snapshot["tables"]["daily_ops_summary"], "latest_event_at")
     predicted_vs_realized = _sort_desc(snapshot["tables"]["predicted_vs_realized_summary"], "latest_fill_at", "latest_resolution_at")
-    watch_only_vs_executed = _sort_desc(snapshot["tables"]["watch_only_vs_executed_summary"], "execution_capture_ratio", "avg_executable_edge_bps")
-    market_research = _sort_desc(snapshot["tables"]["market_research_summary"], "resolved_trade_count", "avg_post_trade_error")
+    watch_only_vs_executed = _sort_desc(snapshot["tables"]["watch_only_vs_executed_summary"], "fill_capture_ratio", "avg_executable_edge_bps")
+    execution_science = _sort_desc(snapshot["tables"]["execution_science_summary"], "resolution_capture_ratio", "fill_capture_ratio", "submission_capture_ratio")
+    market_research = _sort_desc(snapshot["tables"]["market_research_summary"], "resolution_capture_ratio", "avg_post_trade_error")
     calibration_health = _sort_desc(snapshot["tables"]["calibration_health_summary"], "sample_count", "mean_abs_residual")
     return {
         "tickets": tickets,
@@ -1016,6 +1050,7 @@ def load_execution_console_data() -> dict[str, pd.DataFrame]:
         "daily_ops": daily_ops,
         "predicted_vs_realized": predicted_vs_realized,
         "watch_only_vs_executed": watch_only_vs_executed,
+        "execution_science": execution_science,
         "market_research": market_research,
         "calibration_health": calibration_health,
     }
@@ -1158,6 +1193,12 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
                 "post_trade_error": latest.get("post_trade_error"),
                 "source_disagreement": latest.get("source_disagreement"),
                 "evaluation_status": latest.get("evaluation_status"),
+                "execution_lifecycle_stage": latest.get("execution_lifecycle_stage"),
+                "fill_ratio": latest.get("fill_ratio"),
+                "adverse_fill_slippage_bps": latest.get("adverse_fill_slippage_bps"),
+                "resolution_lag_hours": latest.get("resolution_lag_hours"),
+                "miss_reason_bucket": latest.get("miss_reason_bucket"),
+                "distortion_reason_codes_json": latest.get("distortion_reason_codes_json"),
                 "latest_fill_at": latest.get("latest_fill_at"),
                 "latest_resolution_at": latest.get("latest_resolution_at"),
             }
@@ -1528,6 +1569,7 @@ def build_ops_console_overview() -> dict[str, Any]:
     agent_data = load_agent_review_data()
     predicted_vs_realized = load_predicted_vs_realized_data()["frame"]
     watch_only_vs_executed = execution["watch_only_vs_executed"]
+    execution_science = execution["execution_science"]
     calibration_health = execution["calibration_health"]
 
     live_execution = execution["live_prereq"]
@@ -1554,8 +1596,15 @@ def build_ops_console_overview() -> dict[str, Any]:
     if not watch_only_vs_executed.empty:
         uncaptured_high_edge = watch_only_vs_executed[
             (pd.to_numeric(watch_only_vs_executed["avg_executable_edge_bps"], errors="coerce").fillna(0) > 0)
-            & (pd.to_numeric(watch_only_vs_executed["execution_capture_ratio"], errors="coerce").fillna(0) <= 0)
+            & (pd.to_numeric(watch_only_vs_executed["submission_capture_ratio"], errors="coerce").fillna(0) <= 0)
         ]
+    total_opportunities = float(pd.to_numeric(watch_only_vs_executed["opportunity_count"], errors="coerce").fillna(0).sum()) if ("opportunity_count" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
+    total_submitted = float(pd.to_numeric(watch_only_vs_executed["submitted_ticket_count"], errors="coerce").fillna(0).sum()) if ("submitted_ticket_count" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
+    total_filled = float(pd.to_numeric(watch_only_vs_executed["filled_ticket_count"], errors="coerce").fillna(0).sum()) if ("filled_ticket_count" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
+    total_resolved = float(pd.to_numeric(watch_only_vs_executed["resolved_ticket_count"], errors="coerce").fillna(0).sum()) if ("resolved_ticket_count" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
+    submission_capture_ratio = (total_submitted / total_opportunities) if total_opportunities > 0 else 0.0
+    fill_capture_ratio = (total_filled / total_opportunities) if total_opportunities > 0 else 0.0
+    resolution_capture_ratio = (total_resolved / total_opportunities) if total_opportunities > 0 else 0.0
     degraded_inputs: list[str] = []
     if evidence.get("stale_dependencies"):
         degraded_inputs.extend([f"stale:{item}" for item in evidence.get("stale_dependencies") or []])
@@ -1593,6 +1642,7 @@ def build_ops_console_overview() -> dict[str, Any]:
         "readiness_evidence": evidence,
         "predicted_vs_realized": predicted_vs_realized,
         "watch_only_vs_executed_summary": watch_only_vs_executed,
+        "execution_science_summary": execution_science,
         "calibration_health_summary": calibration_health,
         "uncaptured_high_edge_markets": uncaptured_high_edge,
         "surface_status": load_operator_surface_status(),
@@ -1621,7 +1671,10 @@ def build_ops_console_overview() -> dict[str, Any]:
             "pending_resolution_count": int((predicted_vs_realized["evaluation_status"] == "pending_resolution").sum()) if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0,
             "avg_predicted_edge_bps": float(pd.to_numeric(predicted_vs_realized["predicted_edge_bps"], errors="coerce").dropna().mean()) if ("predicted_edge_bps" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0.0,
             "avg_realized_pnl": float(pd.to_numeric(resolved_rows["realized_pnl"], errors="coerce").dropna().mean()) if ("realized_pnl" in resolved_rows.columns and not resolved_rows.empty) else 0.0,
-            "execution_capture_ratio": float(pd.to_numeric(watch_only_vs_executed["execution_capture_ratio"], errors="coerce").dropna().mean()) if ("execution_capture_ratio" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0,
+            "submission_capture_ratio": submission_capture_ratio,
+            "fill_capture_ratio": fill_capture_ratio,
+            "resolution_capture_ratio": resolution_capture_ratio,
+            "execution_capture_ratio": fill_capture_ratio,
             "uncaptured_high_edge_count": int(len(uncaptured_high_edge.index)),
         },
         "wallet_attention": wallet_attention,

@@ -9,6 +9,8 @@
 **更新日期**: 2026-03-12
 **状态**: 详细设计完成，`P0` 到 `P4` scaffold 已落地；当前 active 状态为 `post-P4 remediation`（closeout pending objective verification）
 
+> 当前系统的统一定位是 `operator console + constrained execution infra`。当前 canonical 实施入口是 [Post_P4_Remediation_Implementation_Plan.md](../10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)；这不表示 unattended live，也不表示 unrestricted live。
+
 ---
 
 ## 文档说明

@@ -86,6 +86,8 @@ from asterion_core.storage.write_queue import WriteQueueConfig
 from asterion_core.storage.writerd import process_one
 from asterion_core.ui import build_ui_lite_db_once
 from dagster_asterion.handlers import run_weather_paper_execution_job
+from domains.weather.opportunity import build_weather_opportunity_assessment
+from domains.weather.pricing.engine import build_watch_only_snapshot
 
 HAS_DUCKDB = importlib.util.find_spec("duckdb") is not None
 
@@ -190,6 +192,131 @@ class StrategyEngineTest(unittest.TestCase):
         self.assertEqual([item.strategy_id for item in decisions_a[:2]], ["weather_fast", "weather_fast"])
         self.assertEqual([item.watch_snapshot_id for item in decisions_a[:2]], ["snap_early", "snap_late"])
         self.assertTrue(all(item.watch_snapshot_id != "snap_hold" for item in decisions_a))
+
+    def test_strategy_engine_orders_side_aware_sell_snapshot_by_absolute_executable_edge(self) -> None:
+        ctx = StrategyContext(
+            data_snapshot_id="snap_weather_1",
+            universe_snapshot_id="uni_weather_1",
+            asof_ts_ms=1_710_000_000_000,
+            dq_level="PASS",
+            quote_snapshot_refs=[],
+        )
+        sell_assessment = build_weather_opportunity_assessment(
+            market_id="mkt_weather_sell",
+            token_id="tok_sell",
+            outcome="NO",
+            reference_price=0.70,
+            model_fair_value=0.50,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+            confidence_score=82.0,
+        )
+        buy_assessment = build_weather_opportunity_assessment(
+            market_id="mkt_weather_buy",
+            token_id="tok_buy",
+            outcome="YES",
+            reference_price=0.40,
+            model_fair_value=0.48,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+            confidence_score=82.0,
+        )
+        sell_snapshot = dataclasses.replace(
+            build_watch_only_snapshot(
+                assessment=sell_assessment,
+                reference_price=0.70,
+                threshold_bps=500,
+                pricing_context={"run_id": "frun_sell", "condition_id": "cond_sell"},
+            ),
+            snapshot_id="snap_sell",
+            fair_value_id="fval_sell",
+            run_id="frun_sell",
+            market_id="mkt_weather_sell",
+            condition_id="cond_sell",
+        )
+        buy_snapshot = dataclasses.replace(
+            build_watch_only_snapshot(
+                assessment=buy_assessment,
+                reference_price=0.40,
+                threshold_bps=500,
+                pricing_context={"run_id": "frun_buy", "condition_id": "cond_buy"},
+            ),
+            snapshot_id="snap_buy",
+            fair_value_id="fval_buy",
+            run_id="frun_buy",
+            market_id="mkt_weather_buy",
+            condition_id="cond_buy",
+        )
+        self.assertEqual(sell_snapshot.side, "SELL")
+        self.assertLess(sell_snapshot.edge_bps, 0)
+        self.assertGreater(abs(sell_snapshot.edge_bps), abs(buy_snapshot.edge_bps))
+
+        _, decisions = run_strategy_engine(
+            ctx=ctx,
+            snapshots=[buy_snapshot, sell_snapshot],
+            strategies=[
+                StrategyRegistration(
+                    strategy_id="weather_primary",
+                    strategy_version="v1",
+                    priority=1,
+                    route_action=RouteAction.FAK,
+                    size=Decimal("10"),
+                )
+            ],
+        )
+        self.assertEqual([item.watch_snapshot_id for item in decisions], ["snap_sell", "snap_buy"])
+        self.assertEqual(decisions[0].side, "sell")
+        self.assertEqual(decisions[0].edge_bps, sell_snapshot.edge_bps)
+
+    def test_strategy_engine_prefers_penalty_aware_ranking_score_over_raw_edge(self) -> None:
+        ctx = StrategyContext(
+            data_snapshot_id="snap_weather_1",
+            universe_snapshot_id="uni_weather_1",
+            asof_ts_ms=1_710_000_000_000,
+            dq_level="PASS",
+            quote_snapshot_refs=[],
+        )
+        higher_raw_edge = _watch_snapshot(
+            snapshot_id="snap_high_edge",
+            token_id="tok_high",
+            outcome="YES",
+            side="BUY",
+            edge_bps=1500,
+            signal_ts_ms=100,
+        )
+        lower_raw_edge_higher_rank = _watch_snapshot(
+            snapshot_id="snap_high_rank",
+            token_id="tok_rank",
+            outcome="NO",
+            side="SELL",
+            edge_bps=-900,
+            signal_ts_ms=200,
+        )
+        higher_raw_edge.pricing_context["ranking_score"] = 55.0
+        lower_raw_edge_higher_rank.pricing_context["ranking_score"] = 90.0
+
+        _, decisions = run_strategy_engine(
+            ctx=ctx,
+            snapshots=[higher_raw_edge, lower_raw_edge_higher_rank],
+            strategies=[
+                StrategyRegistration(
+                    strategy_id="weather_primary",
+                    strategy_version="v1",
+                    priority=1,
+                    route_action=RouteAction.FAK,
+                    size=Decimal("10"),
+                )
+            ],
+        )
+        self.assertEqual([item.watch_snapshot_id for item in decisions], ["snap_high_rank", "snap_high_edge"])
 
 
 class TicketAndOrderHandoffTest(unittest.TestCase):

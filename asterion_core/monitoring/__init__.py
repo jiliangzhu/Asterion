@@ -29,6 +29,11 @@ from .health_monitor_v1 import (
     collect_system_health,
     collect_ws_health,
 )
+from .live_side_effect_guard_v1 import (
+    LiveSideEffectGuard,
+    build_live_side_effect_guard,
+    validate_live_side_effect_guard,
+)
 from .readiness_checker_v1 import (
     DEFAULT_READINESS_REPORT_JSON_PATH,
     DEFAULT_READINESS_REPORT_MARKDOWN_PATH,
@@ -61,6 +66,7 @@ __all__ = [
     "DEFAULT_READINESS_EVIDENCE_JSON_PATH",
     "ExternalExecutionHealthSnapshot",
     "LivePrereqHealthSnapshot",
+    "LiveSideEffectGuard",
     "QueueHealthSnapshot",
     "QuoteHealthSnapshot",
     "ReadinessConfig",
@@ -74,6 +80,7 @@ __all__ = [
     "WSHealthSnapshot",
     "build_capability_boundary_summary",
     "build_controlled_live_capability_manifest",
+    "build_live_side_effect_guard",
     "build_readiness_evidence_bundle",
     "collect_chain_tx_health",
     "collect_degrade_status",
@@ -89,6 +96,7 @@ __all__ = [
     "evaluate_p4_live_prereq_readiness",
     "load_controlled_live_capability_manifest",
     "load_readiness_evidence_bundle",
+    "validate_live_side_effect_guard",
     "write_controlled_live_capability_manifest",
     "write_readiness_evidence_bundle",
     "write_readiness_report",

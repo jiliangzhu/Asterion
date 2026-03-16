@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from asterion_core.contracts import SubmitterBoundaryInputs
 from asterion_core.execution import (
     DisabledSubmitterBackend,
     ShadowSubmitterBackend,
@@ -19,6 +20,7 @@ from asterion_core.execution import (
     external_fill_observation_to_row,
     external_order_observation_to_row,
 )
+from asterion_core.monitoring import build_live_side_effect_guard
 from asterion_core.signer import SubmitAttemptRecord
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.db_migrate import MigrationConfig, apply_migrations
@@ -69,6 +71,32 @@ def _signed_attempt() -> SubmitAttemptRecord:
 
 
 class SubmitterShellUnitTest(unittest.TestCase):
+    class _ExplodingBackend:
+        def backend_kind(self) -> str:
+            return "real_clob_submit"
+
+        def endpoint_fingerprint(self) -> str | None:
+            return "submitter-fingerprint"
+
+        def submit(self, request, *, boundary_attestation=None):  # noqa: ANN001
+            raise AssertionError("backend should not be called")
+
+    class _RecordingBackend:
+        def __init__(self) -> None:
+            self.called = False
+            self.last_attestation = None
+
+        def backend_kind(self) -> str:
+            return "real_clob_submit"
+
+        def endpoint_fingerprint(self) -> str | None:
+            return "submitter-fingerprint"
+
+        def submit(self, request, *, boundary_attestation=None):  # noqa: ANN001
+            self.called = True
+            self.last_attestation = boundary_attestation
+            return ShadowSubmitterBackend().submit(request)
+
     def test_build_submit_order_request_from_sign_attempt(self) -> None:
         request = build_submit_order_request_from_sign_attempt(
             _signed_attempt(),
@@ -183,6 +211,110 @@ class SubmitterShellUnitTest(unittest.TestCase):
     def test_submitter_shell_has_no_arbitrary_submit_api(self) -> None:
         self.assertFalse(hasattr(SubmitterServiceShell(), "submit_message"))
 
+    def test_live_submit_without_guard_is_rejected_before_backend(self) -> None:
+        request = build_submit_order_request_from_sign_attempt(
+            _signed_attempt(),
+            requester="operator",
+            request_id="subreq_live_1",
+            timestamp=datetime(2026, 3, 12, 10, 5, tzinfo=timezone.utc),
+            submit_mode=SubmitMode.LIVE_SUBMIT,
+        )
+        shell = SubmitterServiceShell(self._ExplodingBackend())
+        with (
+            patch("asterion_core.execution.live_submitter_v1.enqueue_journal_event_upserts", return_value="task_journal"),
+            patch(
+                "asterion_core.execution.live_submitter_v1.enqueue_live_boundary_attestation_upserts",
+                return_value="task_attestation",
+            ),
+        ):
+            invocation = shell.submit_order(
+                request,
+                queue_cfg=WriteQueueConfig(path=":memory:"),
+                run_id="run_submit_live",
+            )
+        self.assertEqual(invocation.response.status, "rejected")
+        self.assertEqual(invocation.response.error, "boundary_inputs_missing")
+
+    def test_live_submit_with_not_armed_guard_is_rejected_before_backend(self) -> None:
+        request = build_submit_order_request_from_sign_attempt(
+            _signed_attempt(),
+            requester="operator",
+            request_id="subreq_live_2",
+            timestamp=datetime(2026, 3, 12, 10, 5, tzinfo=timezone.utc),
+            submit_mode=SubmitMode.LIVE_SUBMIT,
+        )
+        shell = SubmitterServiceShell(self._ExplodingBackend())
+        with (
+            patch("asterion_core.execution.live_submitter_v1.enqueue_journal_event_upserts", return_value="task_journal"),
+            patch(
+                "asterion_core.execution.live_submitter_v1.enqueue_live_boundary_attestation_upserts",
+                return_value="task_attestation",
+            ),
+        ):
+            invocation = shell.submit_order(
+                request,
+                live_guard=build_live_side_effect_guard(mode="live_submit", armed=False),
+                boundary_inputs=_live_boundary_inputs(request_id=request.request_id),
+                queue_cfg=WriteQueueConfig(path=":memory:"),
+                run_id="run_submit_live",
+            )
+        self.assertEqual(invocation.response.status, "rejected")
+        self.assertEqual(invocation.response.error, "live_submit_not_armed")
+
+    def test_live_submit_without_boundary_inputs_is_rejected_before_backend(self) -> None:
+        request = build_submit_order_request_from_sign_attempt(
+            _signed_attempt(),
+            requester="operator",
+            request_id="subreq_live_3",
+            timestamp=datetime(2026, 3, 12, 10, 5, tzinfo=timezone.utc),
+            submit_mode=SubmitMode.LIVE_SUBMIT,
+        )
+        shell = SubmitterServiceShell(self._ExplodingBackend())
+        with (
+            patch("asterion_core.execution.live_submitter_v1.enqueue_journal_event_upserts", return_value="task_journal"),
+            patch(
+                "asterion_core.execution.live_submitter_v1.enqueue_live_boundary_attestation_upserts",
+                return_value="task_attestation",
+            ),
+        ):
+            invocation = shell.submit_order(
+                request,
+                live_guard=build_live_side_effect_guard(mode="live_submit", armed=True),
+                queue_cfg=WriteQueueConfig(path=":memory:"),
+                run_id="run_submit_live",
+            )
+        self.assertEqual(invocation.response.status, "rejected")
+        self.assertEqual(invocation.response.error, "boundary_inputs_missing")
+
+    def test_live_submit_with_approved_attestation_calls_backend(self) -> None:
+        request = build_submit_order_request_from_sign_attempt(
+            _signed_attempt(),
+            requester="operator",
+            request_id="subreq_live_4",
+            timestamp=datetime(2026, 3, 12, 10, 5, tzinfo=timezone.utc),
+            submit_mode=SubmitMode.LIVE_SUBMIT,
+        )
+        backend = self._RecordingBackend()
+        shell = SubmitterServiceShell(backend)
+        with (
+            patch("asterion_core.execution.live_submitter_v1.enqueue_journal_event_upserts", return_value="task_journal"),
+            patch(
+                "asterion_core.execution.live_submitter_v1.enqueue_live_boundary_attestation_upserts",
+                return_value="task_attestation",
+            ),
+        ):
+            invocation = shell.submit_order(
+                request,
+                live_guard=build_live_side_effect_guard(mode="live_submit", armed=True),
+                boundary_inputs=_live_boundary_inputs(request_id=request.request_id),
+                queue_cfg=WriteQueueConfig(path=":memory:"),
+                run_id="run_submit_live",
+            )
+        self.assertEqual(invocation.response.status, "accepted")
+        self.assertTrue(backend.called)
+        self.assertIsNotNone(backend.last_attestation)
+        self.assertEqual(backend.last_attestation.attestation_status, "approved")
+
 
 class SubmitterShellDuckDBTest(unittest.TestCase):
     def test_submitter_shell_persists_only_journal_from_shell(self) -> None:
@@ -215,7 +347,7 @@ class SubmitterShellDuckDBTest(unittest.TestCase):
                 "os.environ",
                 {
                     "ASTERION_DB_PATH": db_path,
-                    "ASTERION_WRITERD_ALLOWED_TABLES": "runtime.journal_events,runtime.submit_attempts,runtime.external_order_observations",
+                    "ASTERION_WRITERD_ALLOWED_TABLES": "runtime.journal_events,runtime.submit_attempts,runtime.external_order_observations,runtime.live_boundary_attestations",
                 },
                 clear=False,
             ):
@@ -230,8 +362,96 @@ class SubmitterShellDuckDBTest(unittest.TestCase):
                 )
                 self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.submit_attempts").fetchone()[0], 0)
                 self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.external_order_observations").fetchone()[0], 0)
+                self.assertEqual(con.execute("SELECT COUNT(*) FROM runtime.live_boundary_attestations").fetchone()[0], 0)
             finally:
                 con.close()
+
+    def test_live_submit_persists_boundary_attestation(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        migrations_dir = root / "sql" / "migrations"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "asterion.duckdb")
+            queue_path = str(Path(tmpdir) / "write_queue.sqlite")
+            with patch.dict(
+                "os.environ",
+                {
+                    "ASTERION_STRICT_SINGLE_WRITER": "1",
+                    "ASTERION_DB_ROLE": "writer",
+                    "WRITERD": "1",
+                },
+                clear=False,
+            ):
+                apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=str(migrations_dir)))
+
+            queue_cfg = WriteQueueConfig(path=queue_path)
+            request = build_submit_order_request_from_sign_attempt(
+                _signed_attempt(),
+                requester="operator",
+                request_id="subreq_live_duckdb_1",
+                timestamp=datetime(2026, 3, 12, 10, 5, tzinfo=timezone.utc),
+                submit_mode=SubmitMode.LIVE_SUBMIT,
+            )
+            shell = SubmitterServiceShell(ShadowSubmitterBackend())
+            with patch.dict(
+                "os.environ",
+                {
+                    "ASTERION_DB_PATH": db_path,
+                    "ASTERION_WRITERD_ALLOWED_TABLES": "runtime.journal_events,runtime.live_boundary_attestations",
+                },
+                clear=False,
+            ):
+                shell.submit_order(
+                    request,
+                    live_guard=build_live_side_effect_guard(mode="live_submit", armed=True),
+                    boundary_inputs=_live_boundary_inputs(
+                        request_id=request.request_id,
+                        submitter_backend_kind="shadow_stub",
+                    ),
+                    queue_cfg=queue_cfg,
+                    run_id="run_submit_live",
+                )
+                while process_one(queue_path=queue_path, db_path=db_path, ddl_path=None, apply_schema=False):
+                    pass
+            con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+            try:
+                row = con.execute(
+                    "SELECT attestation_status, reason_codes_json FROM runtime.live_boundary_attestations"
+                ).fetchone()
+            finally:
+                con.close()
+            self.assertEqual(row[0], "blocked")
+            self.assertIn("submitter_backend_not_real_clob_submit", row[1])
+
+
+def _live_boundary_inputs(
+    *,
+    request_id: str,
+    submitter_backend_kind: str = "real_clob_submit",
+    wallet_id: str = "wallet_weather_1",
+) -> SubmitterBoundaryInputs:
+    return SubmitterBoundaryInputs(
+        request_id=request_id,
+        wallet_id=wallet_id,
+        source_attempt_id="satt_sign_1",
+        ticket_id="tt_1",
+        execution_context_id="ectx_1",
+        submit_mode="live_submit",
+        submitter_backend_kind=submitter_backend_kind,
+        signer_backend_kind="env_private_key_tx",
+        chain_tx_backend_kind="real_broadcast",
+        submitter_endpoint_fingerprint="submitter-fingerprint",
+        manifest_payload={
+            "manifest_status": "valid",
+            "controlled_live_mode": "manual_only",
+            "allowed_wallet_ids": [wallet_id],
+        },
+        manifest_path="data/meta/controlled_live_capability_manifest.json",
+        readiness_report_payload={"go_decision": "GO"},
+        wallet_readiness_status="ready",
+        approval_token_matches=True,
+        armed=True,
+        evaluated_at=datetime(2026, 3, 12, 10, 5, tzinfo=timezone.utc),
+    )
 
 
 if __name__ == "__main__":

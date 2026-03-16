@@ -100,30 +100,36 @@ def build_watch_only_snapshot(
             price_staleness_ms=int(effective_pricing_context.get("price_staleness_ms") or 0),
             source_freshness_status=str(effective_pricing_context.get("source_freshness_status") or "fresh"),
             spread_bps=int(effective_pricing_context.get("spread_bps") or 0) or None,
+            calibration_health_status=str(effective_pricing_context.get("calibration_health_status") or "lookup_missing"),
+            sample_count=int(effective_pricing_context.get("sample_count") or 0),
+            calibration_multiplier=effective_pricing_context.get("calibration_multiplier"),
+            calibration_reason_codes=effective_pricing_context.get("calibration_reason_codes")
+            if isinstance(effective_pricing_context.get("calibration_reason_codes"), list)
+            else None,
             source_context=effective_pricing_context,
         )
     edge_bps = int(assessment.edge_bps_executable)
+    best_side = str(assessment.assessment_context_json.get("best_side") or "") or None
 
-    if assessment.actionability_status == "actionable" and edge_bps > threshold:
+    if assessment.actionability_status == "actionable" and best_side and abs(edge_bps) > threshold:
         decision = "TAKE"
-        side = "BUY"
-        rationale = (
-            f"market_price={price:.4f} below execution_adjusted_fair_value="
-            f"{assessment.execution_adjusted_fair_value:.4f}"
-        )
-    elif assessment.actionability_status == "actionable" and edge_bps < -threshold:
-        decision = "TAKE"
-        side = "SELL"
-        rationale = (
-            f"market_price={price:.4f} above execution_adjusted_fair_value="
-            f"{assessment.execution_adjusted_fair_value:.4f}"
-        )
+        side = best_side
+        if best_side == "BUY":
+            rationale = (
+                f"market_price={price:.4f} below execution_adjusted_fair_value="
+                f"{assessment.execution_adjusted_fair_value:.4f}"
+            )
+        else:
+            rationale = (
+                f"market_price={price:.4f} above execution_adjusted_fair_value="
+                f"{assessment.execution_adjusted_fair_value:.4f}"
+            )
     else:
         decision = "NO_TRADE"
         side = "HOLD"
         rationale = (
             f"actionability_status={assessment.actionability_status}, "
-            f"edge_bps={edge_bps}, threshold_bps={threshold}"
+            f"best_side={best_side}, edge_bps={edge_bps}, threshold_bps={threshold}"
         )
 
     context = dict(assessment.assessment_context_json)

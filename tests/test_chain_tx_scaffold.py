@@ -19,6 +19,7 @@ from asterion_core.blockchain import (
     build_transaction_signer_request,
 )
 from asterion_core.contracts import AccountTradingCapability
+from asterion_core.monitoring import build_live_side_effect_guard
 
 
 class _Reader:
@@ -63,6 +64,10 @@ def _chain_registry() -> PolygonChainRegistry:
 
 
 class ChainTxScaffoldUnitTest(unittest.TestCase):
+    class _ExplodingChainTxBackend:
+        def broadcast(self, request, *, signed_payload_json):  # noqa: ANN001
+            raise AssertionError("backend should not be called")
+
     def test_build_approve_usdc_request_is_stable(self) -> None:
         left = build_approve_usdc_request(
             account_capability=_account_capability(),
@@ -264,6 +269,51 @@ class ChainTxScaffoldUnitTest(unittest.TestCase):
         self.assertEqual(record.tx_mode, "controlled_live")
         self.assertEqual(record.status, "broadcasted")
         self.assertEqual(record.tx_hash, "0xabc123")
+
+    def test_chain_tx_service_requires_guard_for_controlled_live(self) -> None:
+        chain_request = build_approve_usdc_request(
+            account_capability=_account_capability(),
+            chain_registry=_chain_registry(),
+            chain_tx_reader=_Reader(),
+            requester="operator",
+            request_id="req_chain_live_2",
+            timestamp=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+            tx_mode=ChainTxMode.CONTROLLED_LIVE,
+            spender="0x2222222222222222222222222222222222222222",
+            amount=Decimal("25"),
+        )
+        with patch("asterion_core.blockchain.chain_tx_v1.enqueue_journal_event_upserts", return_value="task_ctx_journal"):
+            result = ChainTxServiceShell(self._ExplodingChainTxBackend()).submit_transaction(
+                chain_request,
+                signed_payload_json={"raw_transaction_hex": "0xabc"},
+                queue_cfg=type("QueueCfg", (), {"path": ":memory:"})(),
+                run_id="run_chain_live_2",
+            ).response
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.error, "controlled_live_guard_missing")
+
+    def test_chain_tx_service_blocks_not_armed_controlled_live(self) -> None:
+        chain_request = build_approve_usdc_request(
+            account_capability=_account_capability(),
+            chain_registry=_chain_registry(),
+            chain_tx_reader=_Reader(),
+            requester="operator",
+            request_id="req_chain_live_3",
+            timestamp=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+            tx_mode=ChainTxMode.CONTROLLED_LIVE,
+            spender="0x2222222222222222222222222222222222222222",
+            amount=Decimal("25"),
+        )
+        with patch("asterion_core.blockchain.chain_tx_v1.enqueue_journal_event_upserts", return_value="task_ctx_journal"):
+            result = ChainTxServiceShell(self._ExplodingChainTxBackend()).submit_transaction(
+                chain_request,
+                signed_payload_json={"raw_transaction_hex": "0xabc"},
+                live_guard=build_live_side_effect_guard(mode="controlled_live", armed=False),
+                queue_cfg=type("QueueCfg", (), {"path": ":memory:"})(),
+                run_id="run_chain_live_3",
+            ).response
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.error, "controlled_live_not_armed")
 
 
 if __name__ == "__main__":

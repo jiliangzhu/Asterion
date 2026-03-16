@@ -1,9 +1,11 @@
 """Weather forecast package."""
 
-from .adapters import NWSAdapter, OpenMeteoAdapter
+from .adapters import NWSAdapter, OpenMeteoAdapter, StdDevResolutionSummary, resolve_std_dev_summary
 from .calibration import (
+    CalibrationConfidenceSummary,
     DuckDBForecastStdDevProvider,
     build_calibration_lookup_key,
+    calibration_confidence_from_metrics,
     build_forecast_calibration_sample,
     forecast_distribution_mean,
     forecast_horizon_bucket,
@@ -40,18 +42,21 @@ from .replay import (
 
 __all__ = [
     "AdapterRouter",
+    "CalibrationConfidenceSummary",
     "DuckDBForecastStdDevProvider",
     "ForecastDistribution",
     "ForecastService",
     "InMemoryForecastCache",
     "NWSAdapter",
     "OpenMeteoAdapter",
+    "StdDevResolutionSummary",
     "WEATHER_FORECAST_CALIBRATION_SAMPLE_COLUMNS",
     "WEATHER_FORECAST_REPLAY_COLUMNS",
     "WEATHER_FORECAST_REPLAY_DIFF_COLUMNS",
     "WEATHER_FORECAST_RUN_COLUMNS",
     "WEATHER_SOURCE_HEALTH_SNAPSHOT_COLUMNS",
     "build_calibration_lookup_key",
+    "calibration_confidence_from_metrics",
     "build_forecast_calibration_sample",
     "build_forecast_replay_diff_records",
     "build_forecast_replay_record",
@@ -73,6 +78,7 @@ __all__ = [
     "recompute_forecast_run",
     "recompute_pricing_outputs",
     "run_forecast_replay",
+    "resolve_std_dev_summary",
     "season_bucket",
     "source_health_snapshot_to_row",
 ]

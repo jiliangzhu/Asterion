@@ -116,6 +116,150 @@ class WeatherOpportunityServiceTest(unittest.TestCase):
         self.assertEqual(quality.market_quality_status, "blocked")
         self.assertIn("source_missing", quality.market_quality_reason_codes)
 
+    def test_sell_side_costs_reduce_absolute_executable_edge(self) -> None:
+        assessment = build_weather_opportunity_assessment(
+            market_id="mkt_sell_1",
+            token_id="tok_no",
+            outcome="NO",
+            reference_price=0.70,
+            model_fair_value=0.50,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+            confidence_score=84.0,
+        )
+        self.assertEqual(assessment.assessment_context_json["model_side"], "SELL")
+        self.assertEqual(assessment.assessment_context_json["best_side"], "SELL")
+        self.assertLess(assessment.edge_bps_model, 0)
+        self.assertLess(assessment.edge_bps_executable, 0)
+        self.assertLess(abs(assessment.edge_bps_executable), abs(assessment.edge_bps_model))
+        self.assertGreater(assessment.execution_adjusted_fair_value, assessment.model_fair_value)
+
+    def test_buy_and_sell_same_absolute_mispricing_both_shrink_after_costs(self) -> None:
+        buy = build_weather_opportunity_assessment(
+            market_id="mkt_buy_sym",
+            token_id="tok_yes",
+            outcome="YES",
+            reference_price=0.30,
+            model_fair_value=0.50,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+        )
+        sell = build_weather_opportunity_assessment(
+            market_id="mkt_sell_sym",
+            token_id="tok_no",
+            outcome="NO",
+            reference_price=0.70,
+            model_fair_value=0.50,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+        )
+        self.assertLess(abs(buy.edge_bps_executable), abs(buy.edge_bps_model))
+        self.assertLess(abs(sell.edge_bps_executable), abs(sell.edge_bps_model))
+        self.assertEqual(buy.assessment_context_json["best_side"], "BUY")
+        self.assertEqual(sell.assessment_context_json["best_side"], "SELL")
+
+    def test_sell_edge_crossing_zero_becomes_no_trade(self) -> None:
+        assessment = build_weather_opportunity_assessment(
+            market_id="mkt_sell_cross",
+            token_id="tok_no",
+            outcome="NO",
+            reference_price=0.51,
+            model_fair_value=0.50,
+            accepting_orders=True,
+            enable_order_book=False,
+            threshold_bps=10,
+            fees_bps=20,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+        )
+        self.assertEqual(assessment.edge_bps_model, -100)
+        self.assertEqual(assessment.edge_bps_executable, 0)
+        self.assertIsNone(assessment.assessment_context_json["best_side"])
+        self.assertEqual(assessment.actionability_status, "no_trade")
+
+    def test_calibration_lookup_missing_penalizes_ranking_without_rewriting_edge(self) -> None:
+        baseline = build_weather_opportunity_assessment(
+            market_id="mkt_cal_baseline",
+            token_id="tok_yes",
+            outcome="YES",
+            reference_price=0.41,
+            model_fair_value=0.67,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+            confidence_score=88.0,
+            calibration_health_status="healthy",
+            sample_count=24,
+        )
+        missing = build_weather_opportunity_assessment(
+            market_id="mkt_cal_missing",
+            token_id="tok_yes",
+            outcome="YES",
+            reference_price=0.41,
+            model_fair_value=0.67,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+            confidence_score=88.0,
+            calibration_health_status="lookup_missing",
+            sample_count=0,
+            calibration_reason_codes=["calibration_lookup_missing"],
+        )
+        self.assertEqual(baseline.edge_bps_executable, missing.edge_bps_executable)
+        self.assertGreater(baseline.ranking_score, missing.ranking_score)
+        self.assertEqual(missing.calibration_health_status, "lookup_missing")
+        self.assertEqual(missing.sample_count, 0)
+        self.assertLess(missing.uncertainty_multiplier, baseline.uncertainty_multiplier)
+        self.assertIn("calibration_lookup_missing", missing.ranking_penalty_reasons)
+
+    def test_degraded_calibration_and_source_quality_compose_penalty(self) -> None:
+        assessment = build_weather_opportunity_assessment(
+            market_id="mkt_cal_degraded",
+            token_id="tok_yes",
+            outcome="YES",
+            reference_price=0.38,
+            model_fair_value=0.70,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=400,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+            confidence_score=84.0,
+            calibration_health_status="degraded",
+            sample_count=32,
+            calibration_reason_codes=["calibration_degraded"],
+            mapping_confidence=0.62,
+            source_freshness_status="stale",
+            price_staleness_ms=120_000,
+        )
+        self.assertGreater(assessment.edge_bps_executable, 0)
+        self.assertGreater(assessment.uncertainty_penalty_bps, 0)
+        self.assertLess(assessment.uncertainty_multiplier, 1.0)
+        self.assertIn("calibration_degraded", assessment.ranking_penalty_reasons)
+        self.assertIn("freshness_stale", assessment.ranking_penalty_reasons)
+        self.assertIn("mapping_confidence_reduced", assessment.ranking_penalty_reasons)
+        self.assertEqual(assessment.assessment_context_json["uncertainty_multiplier"], assessment.uncertainty_multiplier)
+        self.assertEqual(assessment.assessment_context_json["ranking_penalty_reasons"], assessment.ranking_penalty_reasons)
+
 
 if __name__ == "__main__":
     unittest.main()

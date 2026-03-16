@@ -890,7 +890,7 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             "SubmitterServiceStub",
             (),
             {
-                "submit_order": lambda self, request, *, queue_cfg, run_id=None: type(
+                "submit_order": lambda self, request, *, live_guard=None, boundary_inputs=None, queue_cfg, run_id=None: type(
                     "InvocationResultStub",
                     (),
                     {

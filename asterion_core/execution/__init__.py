@@ -67,6 +67,7 @@ from .live_submitter_v1 import (
     RealClobSubmitterBackend,
     RUNTIME_EXTERNAL_FILL_OBSERVATION_COLUMNS,
     RUNTIME_EXTERNAL_ORDER_OBSERVATION_COLUMNS,
+    RUNTIME_LIVE_BOUNDARY_ATTESTATION_COLUMNS,
     ShadowSubmitterBackend,
     ShadowFillMode,
     SubmitMode,
@@ -80,8 +81,10 @@ from .live_submitter_v1 import (
     build_submit_order_request_from_sign_attempt,
     enqueue_external_fill_observation_upserts,
     enqueue_external_order_observation_upserts,
+    enqueue_live_boundary_attestation_upserts,
     external_fill_observation_to_row,
     external_order_observation_to_row,
+    submitter_boundary_attestation_to_row,
 )
 from .trade_ticket_v1 import bind_trade_ticket_handoff, build_trade_ticket, load_trade_ticket
 from .watch_only_gate_v3 import decide_watch_only
@@ -96,6 +99,7 @@ __all__ = [
     "DisabledSubmitterBackend",
     "ExternalOrderObservationRecord",
     "RealClobSubmitterBackend",
+    "RUNTIME_LIVE_BOUNDARY_ATTESTATION_COLUMNS",
     "apply_fills_to_order",
     "account_capability_to_row",
     "bind_trade_ticket_handoff",
@@ -122,6 +126,7 @@ __all__ = [
     "enqueue_execution_context_upserts",
     "enqueue_external_fill_observation_upserts",
     "enqueue_external_order_observation_upserts",
+    "enqueue_live_boundary_attestation_upserts",
     "evaluate_execution_gate",
     "execution_context_record_to_row",
     "external_fill_observation_to_row",
@@ -159,6 +164,7 @@ __all__ = [
     "SubmitOrderResult",
     "SubmitterBackend",
     "SubmitterServiceShell",
+    "submitter_boundary_attestation_to_row",
     "transition_order_to_posted",
     "validate_order_transition",
     "WalletRegistryEntry",

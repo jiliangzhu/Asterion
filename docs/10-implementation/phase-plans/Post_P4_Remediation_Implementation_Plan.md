@@ -1,12 +1,13 @@
 # Post-P4 Remediation Implementation Plan
 
-**版本**: v1.1
-**更新日期**: 2026-03-15  
+**版本**: v1.2
+**更新日期**: 2026-03-16
 **状态**: active  
 **定位**: `post-P4 remediation` 的 canonical 实施计划  
 **输入来源**:
 - [Project_Full_Assessment.md](../../analysis/Project_Full_Assessment.md)
 - [Remediation_Plan.md](../../analysis/Remediation_Plan.md)
+- [Current_Code_Reassessment.md](../../analysis/Current_Code_Reassessment.md)
 
 ---
 
@@ -77,6 +78,7 @@
 - active remediation plan 仍有“把已完成工作继续写成当前缺口”的漂移
 - repo 入口文档对 Asterion / AlphaDesk 当前关系仍有部分冲突口径
 - 全量测试必须持续保持全绿，任何 provider/runtime 回归都优先收口
+- reassessment 中已确认的后续修复，应统一收口到本文档的 `Phase 5+ Remediation Roadmap`
 
 ### 3.2 交易能力下一层
 
@@ -108,13 +110,13 @@ Phase 2 到 Phase 4b 虽已落地，但后续仍有明确的增强空间：
 
 当前系统最大的资本风险不是代码 exploit，而是交易经济模型过弱。后续 remediation 的交易主线固定按以下 5 条建议推进，并且每条建议都必须映射到具体 phase、交付物和验收标准。
 
-### 3.1 Forecast Calibration First
+### 4.1 Forecast Calibration First
 
 - 按 `station / source / horizon / season` 建立历史 residual 数据集
 - 停止把统一固定 sigma 作为长期方案
 - 固定归入 `Phase 3`
 
-### 3.2 Fair Value -> Executable Edge
+### 4.2 Fair Value -> Executable Edge
 
 - 把 `fee / spread / slippage / fill probability / depth` 纳入
 - 明确区分：
@@ -122,13 +124,13 @@ Phase 2 到 Phase 4b 虽已落地，但后续仍有明确的增强空间：
   - `execution-adjusted edge`
 - 固定归入 `Phase 2`
 
-### 3.3 Opportunity Ranking by Expected Value
+### 4.3 Opportunity Ranking by Expected Value
 
 - 排序主目标改成 `expected value / expected PnL`
 - 不再由 UI heuristic 分数主导
 - 固定归入 `Phase 2`
 
-### 3.4 Market Quality Screen
+### 4.4 Market Quality Screen
 
 - 优先过滤：
   - 深度差
@@ -137,7 +139,7 @@ Phase 2 到 Phase 4b 虽已落地，但后续仍有明确的增强空间：
   - mapping/confidence 低
 - 固定归入 `Phase 3`
 
-### 3.5 Predicted vs Realized Closed Loop
+### 4.5 Predicted vs Realized Closed Loop
 
 - 持续比较：
   - 预测 edge
@@ -582,3 +584,272 @@ Phase 2 到 Phase 4b 虽已落地，但后续仍有明确的增强空间：
 - `docs/analysis/` 继续保留为评估与历史输入，不替代本计划
 - 从 `Phase 2` 开始，盈利能力主线必须成为正式交付目标，而不是附录性备注
 - `Phase 0` 到 `Phase 4` 完成后，新的工作应优先按 stabilization / analytics / auth UX / constrained-live decision 分组，而不是假装 remediation 主体尚未开始
+
+---
+
+## 10. Phase 5+ Remediation Roadmap
+
+### 10.1 Reassessment Intake
+
+本章节基于 [Current_Code_Reassessment.md](../../analysis/Current_Code_Reassessment.md) 增补，目的不是重写 `Phase 0` 到 `Phase 4` 的已完成历史，而是把 reassessment 中仍然成立的剩余问题拆成新的、可逐阶段执行的 remediation phases。
+
+固定解释规则：
+
+- `Accepted State`
+  - 仍以本文 `Phase 0` 到 `Phase 4`、`Residual Gaps Repair Status` 为准
+- `Residual Gaps`
+  - 只指 reassessment 中在当前代码现实下仍然成立的缺口
+- `Next Implementation Phases`
+  - 只指本章节新增的 `Phase 5` 到 `Phase 9`
+
+当前后续开发默认以本章节为准，不再把 reassessment 中的剩余问题散落保存在分析报告里。
+
+### 10.2 Residual Gaps To Close
+
+Reassessment 中确认仍需继续收口的主线固定为：
+
+- execution math correctness
+- constrained live boundary intrinsic enforcement
+- capability manifest / submitter truth-source strengthening
+- calibration / ranking / executable edge quality
+- post-trade execution science
+- operator wording / docs truth-source cleanup
+
+这些问题都不应通过新建第二份 canonical 实施文档来处理，而应在本文中继续顺延为新的阶段路线。
+
+### 10.3 Phase 5: Execution Math and Gate Parity
+
+**状态**
+
+- accepted (`2026-03-16`)
+
+**目标**
+
+- 先修 correctness bug 和 boundary parity，不先扩功能
+
+**交付物**
+
+- SELL-side executable edge 方向修复
+- BUY/SELL 对称的 `edge_bps / expected_pnl / ranking_score` 定义
+- `ARMED=true` 在所有真实 side-effect 路径上的一致 enforcement
+- handler 外 direct service call denial-path 覆盖
+
+**明确不做**
+
+- 不改 capability model 结构
+- 不扩 `real_clob_submit` 功能面
+- 不引入新 analytics
+
+**新增/重构接口**
+
+- execution-side normalization helper
+- live side-effect guard helper
+- BUY/SELL symmetry decomposition helpers
+
+**测试与验收**
+
+- BUY/SELL executable-edge symmetry tests
+- real submit / real chain tx / controlled-live smoke 的 arming parity tests
+- direct-call denial-path tests
+
+**Exit Criteria**
+
+- SELL-side 排序、trade ticket、UI decomposition 一致
+- 无 `ARMED=true` 时任何 real submit / real chain tx 都 blocked
+- direct service path 不能绕过 canonical gate
+
+### 10.4 Phase 6: Intrinsic Submitter Boundary and Capability Attestation
+
+**当前状态**
+
+- accepted
+
+**目标**
+
+- 把 constrained real submit boundary 从 handler-centric 升级成 service-intrinsic and attestable
+
+**交付物**
+
+- submitter shell / backend 自身能力边界校验
+- manifest 从“有用 artifact”升级成 submitter 强约束输入之一
+- 真实 submit path 的 machine-readable boundary attestation
+- manifest + readiness + approval token + arming 的统一 decision record
+- `runtime.live_boundary_attestations`
+
+**明确不做**
+
+- 不做 unrestricted live
+- 不做 KMS / HSM
+- 不做自动资金部署
+
+**新增/重构接口**
+
+- `SubmitterBoundaryAttestation` 或等价 capability decision object
+- submitter-side capability verification helper
+- submitter decision record schema
+
+**测试与验收**
+
+- manifest / attestation enforcement tests
+- submitter self-gating tests
+- rejection audit path persistence tests
+
+**Exit Criteria**
+
+- submitter backend 即使被单独调用，也必须自证 boundary 满足
+- manifest 缺失/不一致时，backend 自身拒绝
+- 所有 rejection 都可审计并落入 canonical runtime audit path
+
+### 10.5 Phase 7: Ranking and Calibration Quality Upgrade
+
+**当前状态**
+
+- accepted (`2026-03-16`)
+
+**目标**
+
+- 把 calibration 和 source quality 从“已接入”提升成“真正影响机会质量和排序”
+
+**交付物**
+
+- calibration health 进入 ranking 主路径
+- executable edge 的 uncertainty / confidence penalty
+- source freshness、mapping confidence、market quality 的统一 ranking penalty
+- 更稳的 deterministic sigma bucket / weight / coverage 策略
+
+**明确不做**
+
+- 不引入黑盒 ML
+- 不默认新增 DB schema，除非现有 JSON / read models 无法承载
+
+**新增/重构接口**
+
+- ranking penalty decomposition fields
+- calibration confidence / sample sufficiency summary
+- uncertainty-adjusted executable edge contract extension
+- `assessment_context_json` 中的 calibration health / uncertainty penalty / ranking penalty reasons
+
+**测试与验收**
+
+- ranking penalty / calibration confidence tests
+- fallback with degradation tests
+- UI / runtime / paper candidate ranking parity regression
+
+**Exit Criteria**
+
+- calibration miss / sparse sample / stale source 会真实影响 ranking
+- UI / runtime / paper candidate 继续消费同一排序语义
+- 无 calibration 数据时仍可 fallback，但会被显式降权
+
+### 10.6 Phase 8: Post-Trade Execution Science
+
+**当前状态**
+
+- accepted
+
+**目标**
+
+- 把当前 v1 `predicted_vs_realized` 和 `watch-only vs executed` 提升为真实研究与策略改进可用的分析层
+
+**交付物**
+
+- richer executed-only 复盘：
+  - partial fills
+  - cancel / reject buckets
+  - unresolved lag
+  - capture ratio by strategy / market / wallet
+- watch-only vs executed 的 missed-opportunity analysis
+- miss reason taxonomy
+- execution / forecast / ranking distortion 三类归因
+
+**明确不做**
+
+- 不新增第六个页面
+- 不做全新 BI 系统
+- 不把 watch-only 研究面变成独立产品
+
+**新增/重构接口**
+
+- richer `ui.predicted_vs_realized_summary`
+- richer `ui.watch_only_vs_executed_summary`
+- research-oriented `ui.execution_science_summary` 或等价现有表扩展
+- miss-reason / distortion-reason contract
+
+**测试与验收**
+
+- capture ratio / miss reason aggregation tests
+- post-trade error decomposition tests
+- watch-only 与 executed 分层一致性 tests
+
+**Exit Criteria**
+
+- operator 能区分模型错、排序错、没做、做了但执行差
+- analytics 来自 canonical execution / weather / resolution facts
+- UI 不发明第二套 analytics heuristic
+
+### 10.7 Phase 9: Operator Surface and Truth-Source Cleanup
+
+- accepted (`2026-03-16`)
+
+**目标**
+
+- 收口 reassessment 里剩余的 UI 文案漂移和文档真相源问题
+
+**交付物**
+
+- Agents / runtime / operator wording drift 修复
+- `README / AGENTS / Asterion_Project_Plan` 等入口的边界口径统一
+- system / home / agents 页中的边界提示统一
+- active docs 不再把已完成 work 写成 current gap
+
+**明确不做**
+
+- 不做大 UI IA 重构
+- 不做 marketing 化重写
+
+**新增/重构接口**
+
+- operator boundary wording baseline
+- docs truth-source checklist for active entry docs
+
+**测试与验收**
+
+- docs drift scans
+- UI wording / operator boundary smoke
+- active doc navigation consistency checks
+
+**Exit Criteria**
+
+- 当前入口文档与 UI 首页/系统页边界口径一致
+- 不再把已完成 work 写成 current gap
+- 不再把当前系统写成 unrestricted live stack
+- app shell / Home / Markets / Execution / Agents / System wording 已统一到 `operator console + constrained execution infra`
+
+### 10.8 Cross-Phase Acceptance Rules
+
+从 `Phase 5` 开始，所有后续 remediation phases 固定遵守以下跨阶段验收规则：
+
+- 不新增平行 execution ledger
+- 不让 agent 回到主排序
+- 不默认扩大真钱边界
+- 文档不得领先于代码与测试
+- 后续各 phase 的最小测试主线必须显式写入并作为 acceptance 的一部分
+
+后续各 phase 的最小测试主线固定为：
+
+- `Phase 5`
+  - BUY/SELL executable-edge symmetry
+  - real side-effect arming parity
+  - direct-call denial-path
+- `Phase 6`
+  - manifest / attestation enforcement
+  - submitter self-gating
+- `Phase 7`
+  - ranking penalty / calibration confidence
+  - fallback with degradation
+- `Phase 8`
+  - capture ratio / miss reasons / post-trade error decomposition
+- `Phase 9`
+  - docs drift
+  - UI wording
+  - operator boundary smoke

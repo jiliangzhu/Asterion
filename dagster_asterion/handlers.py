@@ -46,6 +46,7 @@ from asterion_core.contracts import (
     ProposalStatus,
     ResolutionSpec,
     RouteAction,
+    SubmitterBoundaryInputs,
     TimeInForce,
     UMAProposal,
     stable_object_id,
@@ -113,6 +114,7 @@ from asterion_core.journal import (
 from asterion_core.monitoring import (
     ReadinessReport,
     ReadinessConfig,
+    build_live_side_effect_guard,
     build_readiness_evidence_bundle,
     load_controlled_live_capability_manifest,
     evaluate_p4_live_prereq_readiness,
@@ -722,6 +724,8 @@ def run_weather_submitter_smoke_job(
     preview_count = 0
     accepted_count = 0
     rejected_count = 0
+    live_guard = None
+    boundary_inputs = None
 
     def _blocked(reason: str, *, metadata_extra: dict[str, Any] | None = None) -> ColdPathHandlerResult:
         metadata = {
@@ -751,36 +755,42 @@ def run_weather_submitter_smoke_job(
         )
 
     if normalized_request.submit_mode is SubmitMode.LIVE_SUBMIT:
-        if not controlled_live_capability_manifest_path or not readiness_report_json_path or not ui_lite_db_path:
-            return _blocked("missing_live_submit_boundary_inputs")
-        manifest = load_controlled_live_capability_manifest(controlled_live_capability_manifest_path)
-        if manifest is None:
-            return _blocked("missing_controlled_live_capability_manifest")
-        manifest_status = str(manifest.get("manifest_status") or "").strip()
-        if manifest_status != "valid":
-            return _blocked("invalid_controlled_live_capability_manifest", metadata_extra={"manifest_status": manifest_status or "missing"})
-        if str(manifest.get("controlled_live_mode") or "") != "manual_only":
-            return _blocked("controlled_live_mode_not_manual_only")
-        if str(manifest.get("submitter_backend_kind") or "") != "real_clob_submit":
-            return _blocked("submitter_backend_not_real_clob_submit")
-        if str(manifest.get("signer_backend_kind") or "") != "env_private_key_tx":
-            return _blocked("signer_backend_not_env_private_key_tx")
-        if str(manifest.get("chain_tx_backend_kind") or "") != "real_broadcast":
-            return _blocked("chain_tx_backend_not_real_broadcast")
-        allowed_wallet_ids = {str(item) for item in list(manifest.get("allowed_wallet_ids") or [])}
-        if wallet_id not in allowed_wallet_ids:
-            return _blocked("wallet_not_allowlisted")
+        manifest = None
+        if controlled_live_capability_manifest_path:
+            manifest = load_controlled_live_capability_manifest(controlled_live_capability_manifest_path)
+        readiness_report = None
+        readiness_payload = None
+        if readiness_report_json_path:
+            readiness_report = _load_readiness_report_or_none(readiness_report_json_path)
+            if readiness_report is not None:
+                readiness_payload = readiness_report.to_dict()
+        wallet_readiness_status = None
+        if ui_lite_db_path and os.path.exists(ui_lite_db_path):
+            wallet_readiness_status = _load_live_prereq_wallet_status(ui_lite_db_path, wallet_id=wallet_id)
+        live_boundary = submitter_service.describe_live_boundary()
+        is_armed = str(os.getenv("ASTERION_CONTROLLED_LIVE_SECRET_ARMED") or "").strip().lower() == "true"
         expected_token = str(os.getenv("ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN") or "").strip()
-        if not expected_token or normalized_request.approval_token != expected_token:
-            return _blocked("approval_token_mismatch")
-        readiness_report = _load_readiness_report_or_none(readiness_report_json_path)
-        if readiness_report is None or readiness_report.target.value != "p4_live_prerequisites":
-            return _blocked("missing_p4_readiness_report")
-        if readiness_report.go_decision != "GO":
-            return _blocked("p4_live_prereq_not_go")
-        wallet_readiness_status = _load_live_prereq_wallet_status(ui_lite_db_path, wallet_id=wallet_id)
-        if wallet_readiness_status != "ready":
-            return _blocked("wallet_not_ready", metadata_extra={"wallet_readiness_status": wallet_readiness_status})
+        approval_token_matches = bool(expected_token) and normalized_request.approval_token == expected_token
+        live_guard = build_live_side_effect_guard(mode="live_submit", armed=is_armed)
+        boundary_inputs = SubmitterBoundaryInputs(
+            request_id="",
+            wallet_id=wallet_id,
+            source_attempt_id=None,
+            ticket_id=None,
+            execution_context_id=None,
+            submit_mode=normalized_request.submit_mode.value,
+            submitter_backend_kind=str(live_boundary.get("submitter_backend_kind") or ""),
+            signer_backend_kind=str((manifest or {}).get("signer_backend_kind") or ""),
+            chain_tx_backend_kind=str((manifest or {}).get("chain_tx_backend_kind") or ""),
+            submitter_endpoint_fingerprint=live_boundary.get("submitter_endpoint_fingerprint"),
+            manifest_payload=dict(manifest) if isinstance(manifest, dict) else None,
+            manifest_path=controlled_live_capability_manifest_path,
+            readiness_report_payload=readiness_payload,
+            wallet_readiness_status=wallet_readiness_status,
+            approval_token_matches=approval_token_matches,
+            armed=is_armed,
+            evaluated_at=normalized_observed_at,
+        )
 
     for sign_attempt in sign_attempts:
         submit_request = build_submit_order_request_from_sign_attempt(
@@ -796,6 +806,30 @@ def run_weather_submitter_smoke_job(
         )
         invocation = submitter_service.submit_order(
             submit_request,
+            live_guard=live_guard,
+            boundary_inputs=(
+                SubmitterBoundaryInputs(
+                    request_id=submit_request.request_id,
+                    wallet_id=wallet_id,
+                    source_attempt_id=submit_request.source_attempt_id,
+                    ticket_id=submit_request.ticket_id,
+                    execution_context_id=submit_request.execution_context_id,
+                    submit_mode=boundary_inputs.submit_mode,
+                    submitter_backend_kind=boundary_inputs.submitter_backend_kind,
+                    signer_backend_kind=boundary_inputs.signer_backend_kind,
+                    chain_tx_backend_kind=boundary_inputs.chain_tx_backend_kind,
+                    submitter_endpoint_fingerprint=boundary_inputs.submitter_endpoint_fingerprint,
+                    manifest_payload=boundary_inputs.manifest_payload,
+                    manifest_path=boundary_inputs.manifest_path,
+                    readiness_report_payload=boundary_inputs.readiness_report_payload,
+                    wallet_readiness_status=boundary_inputs.wallet_readiness_status,
+                    approval_token_matches=boundary_inputs.approval_token_matches,
+                    armed=boundary_inputs.armed,
+                    evaluated_at=boundary_inputs.evaluated_at,
+                )
+                if boundary_inputs is not None
+                else None
+            ),
             queue_cfg=queue_cfg,
             run_id=request_id,
         )
@@ -989,6 +1023,7 @@ def run_weather_controlled_live_smoke_job(
     normalized_request = _normalize_controlled_live_smoke_request(params_json)
     normalized_observed_at = _normalize_datetime(observed_at) or datetime.now(UTC).replace(tzinfo=None)
     task_ids: list[str] = []
+    live_guard = None
 
     requested_event = build_journal_event(
         event_type="controlled_live_smoke.requested",
@@ -1114,6 +1149,7 @@ def run_weather_controlled_live_smoke_job(
     is_armed = str(os.getenv("ASTERION_CONTROLLED_LIVE_SECRET_ARMED") or "").strip().lower() == "true"
     if not is_armed:
         return _blocked("controlled_live_smoke_not_armed")
+    live_guard = build_live_side_effect_guard(mode="controlled_live", armed=True)
     expected_token = str(os.getenv("ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN") or "").strip()
     if not expected_token or normalized_request.approval_token != expected_token:
         return _blocked("approval_token_mismatch")
@@ -1186,6 +1222,7 @@ def run_weather_controlled_live_smoke_job(
     chain_tx_invocation = chain_tx_service.submit_transaction(
         chain_tx_request,
         signed_payload_json=signed_payload_json,
+        live_guard=live_guard,
         queue_cfg=queue_cfg,
         run_id=request_id,
     )

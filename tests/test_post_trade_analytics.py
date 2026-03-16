@@ -20,9 +20,19 @@ class PostTradeAnalyticsProjectionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "asterion.duckdb")
             lite_path = str(Path(tmpdir) / "ui_lite.duckdb")
-            helper._prepare_db(db_path, with_resolution=True)
+            helper._apply_migrations(db_path)
             con = duckdb.connect(db_path)
             try:
+                helper._insert_ticket_case(
+                    con,
+                    ticket_id="tt_1",
+                    market_id="mkt_1",
+                    watch_snapshot_id="snap_1",
+                    order_id="ord_1",
+                    order_status="filled",
+                    fill_size=10.0,
+                    with_resolution=True,
+                )
                 con.execute(
                     """
                     INSERT INTO weather.weather_markets (
@@ -85,13 +95,19 @@ class PostTradeAnalyticsProjectionTest(unittest.TestCase):
                     INSERT INTO weather.weather_watch_only_snapshots (
                         snapshot_id, fair_value_id, run_id, market_id, condition_id, token_id, outcome, reference_price,
                         fair_value, edge_bps, threshold_bps, decision, side, rationale, pricing_context_json, created_at
-                    ) VALUES (
+                    ) VALUES
+                    (
                         'snap_1', 'fv_1', 'frun_1', 'mkt_1', 'cond_1', 'tok_yes', 'YES',
                         0.40, 0.55, 900, 100, 'TAKE', 'BUY', 'edge', ?, '2026-03-15 08:32:00'
+                    ),
+                    (
+                        'snap_2', 'fv_1', 'frun_1', 'mkt_1', 'cond_1', 'tok_yes', 'YES',
+                        0.41, 0.56, 850, 100, 'TAKE', 'BUY', 'edge2', ?, '2026-03-15 08:42:00'
                     )
                     """,
                     [
-                        '{"model_fair_value":0.55,"execution_adjusted_fair_value":0.534,"edge_bps_model":1500,"edge_bps_executable":900,"fees_bps":0,"slippage_bps":40,"liquidity_penalty_bps":25,"mapping_confidence":0.92,"source_freshness_status":"fresh","market_quality_status":"pass","price_staleness_ms":60000}'
+                        '{"model_fair_value":0.55,"execution_adjusted_fair_value":0.534,"edge_bps_model":1500,"edge_bps_executable":900,"fees_bps":0,"slippage_bps":40,"liquidity_penalty_bps":25,"mapping_confidence":0.92,"source_freshness_status":"fresh","market_quality_status":"pass","price_staleness_ms":60000}',
+                        '{"model_fair_value":0.56,"execution_adjusted_fair_value":0.541,"edge_bps_model":1500,"edge_bps_executable":850,"fees_bps":0,"slippage_bps":40,"liquidity_penalty_bps":25,"mapping_confidence":0.92,"source_freshness_status":"fresh","market_quality_status":"pass","price_staleness_ms":60000}',
                     ],
                 )
                 con.execute(
@@ -117,14 +133,18 @@ class PostTradeAnalyticsProjectionTest(unittest.TestCase):
             try:
                 capture = con.execute(
                     """
-                    SELECT market_id, executed_ticket_count, execution_capture_ratio, miss_reason_bucket
+                    SELECT market_id, opportunity_count, submitted_ticket_count, filled_ticket_count, resolved_ticket_count,
+                           submission_capture_ratio, fill_capture_ratio, resolution_capture_ratio,
+                           miss_reason_bucket, distortion_reason_bucket
                     FROM ui.watch_only_vs_executed_summary
                     WHERE market_id = 'mkt_1'
                     """
                 ).fetchone()
                 research = con.execute(
                     """
-                    SELECT market_id, executed_evidence_status, resolved_trade_count
+                    SELECT market_id, executed_evidence_status, resolved_trade_count,
+                           submission_capture_ratio, fill_capture_ratio, resolution_capture_ratio,
+                           dominant_miss_reason_bucket, dominant_distortion_reason_bucket
                     FROM ui.market_research_summary
                     WHERE market_id = 'mkt_1'
                     """
@@ -139,6 +159,10 @@ class PostTradeAnalyticsProjectionTest(unittest.TestCase):
             finally:
                 con.close()
 
-        self.assertEqual(capture, ("mkt_1", 1, 1.0, "captured"))
-        self.assertEqual(research, ("mkt_1", "executed", 1))
+        self.assertEqual(capture, ("mkt_1", 2, 1, 1, 1, 0.5, 0.5, 0.5, "not_submitted", "forecast_distortion"))
+        self.assertEqual(research, ("mkt_1", "resolved", 1, 0.5, 0.5, 0.5, "not_submitted", "forecast_distortion"))
         self.assertEqual(calibration, ("KSEA", "openmeteo", 5, "watch"))
+
+
+if __name__ == "__main__":
+    unittest.main()

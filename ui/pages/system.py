@@ -68,7 +68,7 @@ def show() -> None:
     surface_status = load_operator_surface_status()
 
     st.markdown("### Readiness Evidence")
-    st.caption("System 页面主叙事是 evidence bundle，而不是单一的 GO/NO-GO 口号或文件路径。")
+    st.caption("System 页面主叙事是 readiness evidence 与 constrained execution boundary，而不是单一的 GO/NO-GO 口号或 file-path console。")
 
     surface_rows = [
         {
@@ -188,6 +188,6 @@ def show() -> None:
         st.dataframe(pd.DataFrame(path_rows), width="stretch", hide_index=True)
 
     st.caption(
-        "当前 UI 保持 controlled-live boundary：`GO` 只表示 ready for controlled live rollout decision，"
-        "不表示 ready for unattended live。"
+        "当前 UI 保持 constrained execution boundary：`GO` 只表示 ready for controlled live rollout decision，"
+        "不表示 ready for unattended live，也不表示 unrestricted live。"
     )

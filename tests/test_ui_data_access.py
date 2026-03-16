@@ -127,6 +127,44 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(payload["frame"].iloc[0]["market_id"], "mkt_actionable")
             self.assertEqual(payload["frame"].iloc[1]["market_id"], "mkt_review")
 
+    def test_build_opportunity_row_keeps_sell_edge_negative_and_reduced_by_costs(self) -> None:
+        row = data_access_module._build_opportunity_row(
+            market_id="mkt_sell",
+            question="Will Seattle stay below threshold?",
+            location_name="Seattle",
+            station_id="KSEA",
+            market_close_time="2026-03-20T12:00:00+00:00",
+            accepting_orders=True,
+            enable_order_book=True,
+            token_id="tok_sell",
+            outcome="NO",
+            reference_price=0.70,
+            model_fair_value=0.50,
+            threshold_bps=500,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+            confidence_score=82.0,
+            latest_run_source="nws",
+            latest_forecast_target_time="2026-03-20T00:00:00+00:00",
+            signal_created_at="2026-03-19T00:00:00+00:00",
+            mapping_confidence=0.92,
+            source_freshness_status="fresh",
+            price_staleness_ms=60_000,
+            spread_bps=40,
+            calibration_health_status="limited_samples",
+            sample_count=7,
+            calibration_multiplier=0.75,
+            calibration_reason_codes=["calibration_limited_samples"],
+        )
+        self.assertEqual(row["best_side"], "SELL")
+        self.assertLess(row["edge_bps_executable"], 0)
+        self.assertLess(abs(row["edge_bps_executable"]), abs(row["edge_bps_model"]))
+        self.assertGreater(row["ranking_score"], 0)
+        self.assertEqual(row["calibration_health_status"], "limited_samples")
+        self.assertEqual(row["sample_count"], 7)
+        self.assertLess(row["uncertainty_multiplier"], 1.0)
+        self.assertIn("calibration_limited_samples", row["ranking_penalty_reasons"])
+
     def test_load_agent_review_data_falls_back_to_smoke_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "real_weather_chain_report.json"

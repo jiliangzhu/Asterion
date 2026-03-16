@@ -219,6 +219,7 @@ def run_strategy_engine(
         candidate_pairs,
         key=lambda item: (
             item[0].priority,
+            -_ranking_score(item[1]),
             -abs(int(item[1].edge_bps)),
             _signal_ts_ms(item[1], signal_ts_lookup),
             item[1].market_id,
@@ -275,6 +276,14 @@ def run_strategy_engine(
         created_at=created_at or datetime.now(UTC),
     )
     return run, decisions
+
+
+def _ranking_score(snapshot: WatchOnlySnapshotRecord) -> float:
+    value = snapshot.pricing_context.get("ranking_score") if isinstance(snapshot.pricing_context, dict) else None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(abs(int(snapshot.edge_bps)))
 
 
 def _signal_ts_ms(snapshot: WatchOnlySnapshotRecord, signal_ts_lookup: dict[str, int]) -> int:

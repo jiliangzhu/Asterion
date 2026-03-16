@@ -40,6 +40,7 @@ _REQUIRED_UI_TABLES = [
     "ui.readiness_evidence_summary",
     "ui.predicted_vs_realized_summary",
     "ui.watch_only_vs_executed_summary",
+    "ui.execution_science_summary",
     "ui.market_research_summary",
     "ui.calibration_health_summary",
 ]
@@ -1350,6 +1351,10 @@ def _build_ui_lite_contract(
             con,
             table_row_counts=table_row_counts,
         )
+        _create_execution_science_summary(
+            con,
+            table_row_counts=table_row_counts,
+        )
         _create_market_research_summary(
             con,
             table_row_counts=table_row_counts,
@@ -1560,21 +1565,46 @@ def _create_readiness_evidence_summary(con, *, evidence_path: Path, table_row_co
     table_row_counts["ui.readiness_evidence_summary"] = int(row[0]) if row is not None else 0
 
 
-def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, int]) -> None:
-    con.execute("DROP TABLE IF EXISTS ui.predicted_vs_realized_summary")
+def _empty_predicted_vs_realized_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "ticket_id",
+            "run_id",
+            "wallet_id",
+            "strategy_id",
+            "market_id",
+            "order_id",
+            "outcome",
+            "predicted_edge_bps",
+            "expected_fill_price",
+            "realized_fill_price",
+            "filled_quantity",
+            "realized_notional",
+            "realized_pnl",
+            "resolution_value",
+            "forecast_freshness",
+            "source_disagreement",
+            "post_trade_error",
+            "evaluation_status",
+            "latest_fill_at",
+            "latest_resolution_at",
+            "execution_lifecycle_stage",
+            "fill_ratio",
+            "adverse_fill_slippage_bps",
+            "resolution_lag_hours",
+            "miss_reason_bucket",
+            "distortion_reason_codes_json",
+        ]
+    )
+
+
+def _build_execution_path_frame(con) -> pd.DataFrame:
     base = con.execute(
         """
-        WITH fill_agg AS (
+        WITH fill_fee_agg AS (
             SELECT
                 order_id,
-                SUM(size) AS filled_quantity,
-                SUM(price * size) AS realized_notional,
-                CASE
-                    WHEN SUM(size) > 0 THEN SUM(price * size) / SUM(size)
-                    ELSE NULL
-                END AS realized_fill_price,
-                SUM(fee) AS total_fee,
-                MAX(filled_at) AS latest_fill_at
+                SUM(fee) AS total_fee
             FROM src.trading.fills
             GROUP BY order_id
         ),
@@ -1582,7 +1612,6 @@ def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, in
             SELECT
                 market_id,
                 expected_outcome,
-                is_correct,
                 created_at,
                 ROW_NUMBER() OVER (
                     PARTITION BY market_id
@@ -1594,7 +1623,6 @@ def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, in
             SELECT
                 replay.market_id,
                 diff.diff_summary_json,
-                diff.created_at,
                 ROW_NUMBER() OVER (
                     PARTITION BY replay.market_id
                     ORDER BY diff.created_at DESC, diff.diff_id DESC
@@ -1612,22 +1640,30 @@ def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, in
             exec.order_id,
             ticket.outcome,
             ticket.side,
+            ticket.size,
             ticket.reference_price AS ticket_reference_price,
             ticket.edge_bps AS ticket_edge_bps,
             ticket.provenance_json,
             ticket.watch_snapshot_id,
-            fill.filled_quantity,
-            fill.realized_notional,
-            fill.realized_fill_price,
-            fill.total_fee,
-            fill.latest_fill_at,
+            exec.gate_allowed,
+            exec.order_status,
+            exec.execution_result,
+            exec.latest_submit_status,
+            exec.external_order_status,
+            exec.live_prereq_execution_status,
+            exec.latest_sign_attempt_id,
+            exec.latest_submit_attempt_id,
+            exec.filled_size,
+            exec.filled_notional,
+            exec.avg_fill_price,
+            exec.last_fill_at,
+            fee.total_fee,
             resolution.expected_outcome,
-            resolution.is_correct,
             resolution.created_at AS latest_resolution_at,
             replay.diff_summary_json
         FROM src.runtime.trade_tickets ticket
-        JOIN ui.execution_ticket_summary exec ON exec.ticket_id = ticket.ticket_id
-        JOIN fill_agg fill ON fill.order_id = exec.order_id
+        LEFT JOIN ui.execution_ticket_summary exec ON exec.ticket_id = ticket.ticket_id
+        LEFT JOIN fill_fee_agg fee ON fee.order_id = exec.order_id
         LEFT JOIN latest_resolution resolution
           ON resolution.market_id = ticket.market_id
          AND resolution.rn = 1
@@ -1637,34 +1673,7 @@ def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, in
         """
     ).df()
     if base.empty:
-        con.execute(
-            """
-            CREATE TABLE ui.predicted_vs_realized_summary (
-                ticket_id TEXT,
-                run_id TEXT,
-                wallet_id TEXT,
-                strategy_id TEXT,
-                market_id TEXT,
-                order_id TEXT,
-                outcome TEXT,
-                predicted_edge_bps DOUBLE,
-                expected_fill_price DOUBLE,
-                realized_fill_price DOUBLE,
-                filled_quantity DOUBLE,
-                realized_notional DOUBLE,
-                realized_pnl DOUBLE,
-                resolution_value DOUBLE,
-                forecast_freshness TEXT,
-                source_disagreement TEXT,
-                post_trade_error DOUBLE,
-                evaluation_status TEXT,
-                latest_fill_at TIMESTAMP,
-                latest_resolution_at TIMESTAMP
-            )
-            """
-        )
-        table_row_counts["ui.predicted_vs_realized_summary"] = 0
-        return
+        return pd.DataFrame()
 
     rows: list[dict[str, Any]] = []
     for _, item in base.iterrows():
@@ -1673,27 +1682,65 @@ def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, in
         predicted_edge_bps = _coerce_float(pricing_context.get("edge_bps_executable"))
         if predicted_edge_bps is None:
             predicted_edge_bps = _coerce_float(item.get("ticket_edge_bps")) or 0.0
-        snapshot_reference_price = _coerce_float(pricing_context.get("reference_price"))
-        expected_fill_price = snapshot_reference_price
+        expected_fill_price = _coerce_float(pricing_context.get("reference_price"))
         if expected_fill_price is None:
             expected_fill_price = _coerce_float(item.get("ticket_reference_price"))
-        realized_fill_price = _coerce_float(item.get("realized_fill_price"))
-        filled_quantity = _coerce_float(item.get("filled_quantity")) or 0.0
-        realized_notional = _coerce_float(item.get("realized_notional")) or 0.0
+        realized_fill_price = _coerce_float(item.get("avg_fill_price"))
+        filled_quantity = _coerce_float(item.get("filled_size")) or 0.0
+        realized_notional = _coerce_float(item.get("filled_notional")) or 0.0
         total_fee = _coerce_float(item.get("total_fee")) or 0.0
+        ticket_size = _coerce_float(item.get("size")) or 0.0
+        fill_ratio = (filled_quantity / ticket_size) if ticket_size > 0 else 0.0
         resolution_value = _resolution_value(item.get("expected_outcome"))
+        evaluation_status = _evaluation_status_for_ticket(
+            filled_quantity=filled_quantity,
+            resolution_value=resolution_value,
+        )
+        stage = _execution_lifecycle_stage(
+            evaluation_status=evaluation_status,
+            filled_quantity=filled_quantity,
+            fill_ratio=fill_ratio,
+            execution_result=item.get("execution_result"),
+            order_status=item.get("order_status"),
+            latest_submit_status=item.get("latest_submit_status"),
+            live_prereq_execution_status=item.get("live_prereq_execution_status"),
+            external_order_status=item.get("external_order_status"),
+            gate_allowed=item.get("gate_allowed"),
+            latest_sign_attempt_id=item.get("latest_sign_attempt_id"),
+            latest_submit_attempt_id=item.get("latest_submit_attempt_id"),
+        )
+        side = str(item.get("side") or "").strip().upper()
+        adverse_fill_slippage_bps = None
+        if expected_fill_price is not None and realized_fill_price is not None:
+            if side == "SELL":
+                adverse_fill_slippage_bps = max((expected_fill_price - realized_fill_price) * 10000.0, 0.0)
+            else:
+                adverse_fill_slippage_bps = max((realized_fill_price - expected_fill_price) * 10000.0, 0.0)
         realized_pnl = None
-        evaluation_status = "pending_resolution"
         post_trade_error = None
-        if resolution_value is not None and realized_fill_price is not None:
+        if resolution_value is not None and realized_fill_price is not None and filled_quantity > 0:
             contract_value = resolution_value if str(item.get("outcome") or "").upper() == "YES" else 1.0 - resolution_value
-            if str(item.get("side") or "").upper() == "SELL":
+            if side == "SELL":
                 realized_pnl = (realized_fill_price - contract_value) * filled_quantity - total_fee
             else:
                 realized_pnl = (contract_value - realized_fill_price) * filled_quantity - total_fee
             implied_pnl = (float(predicted_edge_bps) / 10000.0) * filled_quantity
             post_trade_error = realized_pnl - implied_pnl
-            evaluation_status = "resolved"
+        latest_fill_at = item.get("last_fill_at")
+        latest_resolution_at = item.get("latest_resolution_at")
+        resolution_lag_hours = None
+        if latest_fill_at is not None and latest_resolution_at is not None:
+            fill_ts = pd.to_datetime(latest_fill_at, errors="coerce")
+            resolution_ts = pd.to_datetime(latest_resolution_at, errors="coerce")
+            if pd.notna(fill_ts) and pd.notna(resolution_ts):
+                resolution_lag_hours = float((resolution_ts - fill_ts).total_seconds() / 3600.0)
+        source_disagreement = _source_disagreement(item.get("diff_summary_json"))
+        distortion_reasons = _distortion_reason_codes(
+            stage=stage,
+            source_disagreement=source_disagreement,
+            realized_pnl=realized_pnl,
+            adverse_fill_slippage_bps=adverse_fill_slippage_bps,
+        )
         rows.append(
             {
                 "ticket_id": item.get("ticket_id"),
@@ -1702,7 +1749,10 @@ def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, in
                 "strategy_id": item.get("strategy_id"),
                 "market_id": item.get("market_id"),
                 "order_id": item.get("order_id"),
+                "watch_snapshot_id": item.get("watch_snapshot_id"),
                 "outcome": item.get("outcome"),
+                "side": item.get("side"),
+                "ticket_size": ticket_size,
                 "predicted_edge_bps": predicted_edge_bps,
                 "expected_fill_price": expected_fill_price,
                 "realized_fill_price": realized_fill_price,
@@ -1711,18 +1761,81 @@ def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, in
                 "realized_pnl": realized_pnl,
                 "resolution_value": resolution_value,
                 "forecast_freshness": str(pricing_context.get("source_freshness_status") or "unavailable"),
-                "source_disagreement": _source_disagreement(item.get("diff_summary_json")),
+                "source_disagreement": source_disagreement,
                 "post_trade_error": post_trade_error,
                 "evaluation_status": evaluation_status,
-                "latest_fill_at": item.get("latest_fill_at"),
-                "latest_resolution_at": item.get("latest_resolution_at"),
+                "latest_fill_at": latest_fill_at,
+                "latest_resolution_at": latest_resolution_at,
+                "execution_lifecycle_stage": stage,
+                "fill_ratio": fill_ratio,
+                "adverse_fill_slippage_bps": adverse_fill_slippage_bps,
+                "resolution_lag_hours": resolution_lag_hours,
+                "miss_reason_bucket": _miss_reason_bucket_for_stage(stage),
+                "distortion_reason_codes_json": _json_array_text(distortion_reasons),
             }
         )
     frame = pd.DataFrame(rows)
-    for column in ["ticket_id", "run_id", "wallet_id", "strategy_id", "market_id", "order_id", "outcome", "forecast_freshness", "source_disagreement", "evaluation_status"]:
+    for column in [
+        "ticket_id",
+        "run_id",
+        "wallet_id",
+        "strategy_id",
+        "market_id",
+        "order_id",
+        "watch_snapshot_id",
+        "outcome",
+        "side",
+        "forecast_freshness",
+        "source_disagreement",
+        "evaluation_status",
+        "execution_lifecycle_stage",
+        "miss_reason_bucket",
+        "distortion_reason_codes_json",
+    ]:
         if column in frame.columns:
             frame[column] = frame[column].astype("string")
-    con.register("predicted_vs_realized_df", frame)
+    return frame
+
+
+def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    con.execute("DROP TABLE IF EXISTS ui.predicted_vs_realized_summary")
+    frame = _build_execution_path_frame(con)
+    if frame.empty:
+        con.register("predicted_vs_realized_df", _empty_predicted_vs_realized_frame())
+    else:
+        con.register(
+            "predicted_vs_realized_df",
+            frame[
+                [
+                    "ticket_id",
+                    "run_id",
+                    "wallet_id",
+                    "strategy_id",
+                    "market_id",
+                    "order_id",
+                    "outcome",
+                    "predicted_edge_bps",
+                    "expected_fill_price",
+                    "realized_fill_price",
+                    "filled_quantity",
+                    "realized_notional",
+                    "realized_pnl",
+                    "resolution_value",
+                    "forecast_freshness",
+                    "source_disagreement",
+                    "post_trade_error",
+                    "evaluation_status",
+                    "latest_fill_at",
+                    "latest_resolution_at",
+                    "execution_lifecycle_stage",
+                    "fill_ratio",
+                    "adverse_fill_slippage_bps",
+                    "resolution_lag_hours",
+                    "miss_reason_bucket",
+                    "distortion_reason_codes_json",
+                ]
+            ],
+        )
     con.execute("CREATE OR REPLACE TABLE ui.predicted_vs_realized_summary AS SELECT * FROM predicted_vs_realized_df")
     row = con.execute("SELECT COUNT(*) FROM ui.predicted_vs_realized_summary").fetchone()
     table_row_counts["ui.predicted_vs_realized_summary"] = int(row[0]) if row is not None else 0
@@ -1730,83 +1843,307 @@ def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, in
 
 
 def _create_watch_only_vs_executed_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    if not _table_exists(con, "src.weather.weather_watch_only_snapshots"):
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE ui.watch_only_vs_executed_summary (
+                market_id TEXT,
+                opportunity_count BIGINT,
+                submitted_ticket_count BIGINT,
+                filled_ticket_count BIGINT,
+                resolved_ticket_count BIGINT,
+                executed_ticket_count BIGINT,
+                avg_model_edge_bps DOUBLE,
+                avg_executable_edge_bps DOUBLE,
+                avg_realized_pnl DOUBLE,
+                submission_capture_ratio DOUBLE,
+                fill_capture_ratio DOUBLE,
+                resolution_capture_ratio DOUBLE,
+                execution_capture_ratio DOUBLE,
+                dominant_lifecycle_stage TEXT,
+                miss_reason_bucket TEXT,
+                distortion_reason_bucket TEXT
+            )
+            """
+        )
+        table_row_counts["ui.watch_only_vs_executed_summary"] = 0
+        return
     opportunity = con.execute(
         """
         SELECT
+            snapshot_id,
             market_id,
-            edge_bps AS avg_executable_edge_bps,
-            edge_bps_model AS avg_model_edge_bps,
-            actionability_status,
-            ranking_score
-        FROM ui.market_opportunity_summary
+            edge_bps AS executable_edge_bps,
+            pricing_context_json
+        FROM src.weather.weather_watch_only_snapshots
+        WHERE decision = 'TAKE'
         """
     ).df()
-    executed = con.execute(
-        """
-        SELECT
-            market_id,
-            COUNT(DISTINCT ticket_id) AS executed_ticket_count,
-            AVG(realized_pnl) AS avg_realized_pnl
-        FROM ui.predicted_vs_realized_summary
-        GROUP BY market_id
-        """
-    ).df()
-    if "market_id" in opportunity.columns:
-        opportunity["market_id"] = opportunity["market_id"].astype("string")
-    if "market_id" in executed.columns:
-        executed["market_id"] = executed["market_id"].astype("string")
-    base = opportunity.merge(executed, on="market_id", how="left")
-    rows: list[dict[str, Any]] = []
-    for _, item in base.iterrows():
-        executed_ticket_count = int(item.get("executed_ticket_count") or 0)
-        opportunity_count = 1
-        if executed_ticket_count > 0:
-            miss_reason_bucket = "captured"
-        elif str(item.get("actionability_status") or "") == "blocked":
-            miss_reason_bucket = "blocked"
-        elif str(item.get("actionability_status") or "") == "review_required":
-            miss_reason_bucket = "review_required"
-        elif str(item.get("actionability_status") or "") == "no_trade":
-            miss_reason_bucket = "no_trade"
-        else:
-            miss_reason_bucket = "not_executed"
-        rows.append(
+    if opportunity.empty:
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE ui.watch_only_vs_executed_summary (
+                market_id TEXT,
+                opportunity_count BIGINT,
+                submitted_ticket_count BIGINT,
+                filled_ticket_count BIGINT,
+                resolved_ticket_count BIGINT,
+                executed_ticket_count BIGINT,
+                avg_model_edge_bps DOUBLE,
+                avg_executable_edge_bps DOUBLE,
+                avg_realized_pnl DOUBLE,
+                submission_capture_ratio DOUBLE,
+                fill_capture_ratio DOUBLE,
+                resolution_capture_ratio DOUBLE,
+                execution_capture_ratio DOUBLE,
+                dominant_lifecycle_stage TEXT,
+                miss_reason_bucket TEXT,
+                distortion_reason_bucket TEXT
+            )
+            """
+        )
+        table_row_counts["ui.watch_only_vs_executed_summary"] = 0
+        return
+
+    execution_frame = _build_execution_path_frame(con)
+    snapshot_rows: list[dict[str, Any]] = []
+    submitted_stages = {"submitted_ack", "working_unfilled", "partially_filled", "filled_unresolved", "resolved", "cancelled", "submit_rejected"}
+    for _, item in opportunity.iterrows():
+        pricing_context = _json_object(item.get("pricing_context_json"))
+        snapshot_id = item.get("snapshot_id")
+        linked = execution_frame[execution_frame["watch_snapshot_id"] == snapshot_id] if (not execution_frame.empty and "watch_snapshot_id" in execution_frame.columns) else execution_frame.iloc[0:0]
+        linked = linked.sort_values(
+            by=["execution_lifecycle_stage", "latest_resolution_at", "latest_fill_at"],
+            ascending=[True, False, False],
+            key=lambda series: series.map(_lifecycle_sort_key) if series.name == "execution_lifecycle_stage" else series,
+            kind="stable",
+        ) if not linked.empty else linked
+        best_stage = str(linked.iloc[0]["execution_lifecycle_stage"]) if not linked.empty else "ticket_created"
+        best_miss_reason = str(linked.iloc[0]["miss_reason_bucket"]) if not linked.empty else "not_submitted"
+        snapshot_rows.append(
             {
+                "snapshot_id": snapshot_id,
                 "market_id": item.get("market_id"),
-                "opportunity_count": opportunity_count,
-                "executed_ticket_count": executed_ticket_count,
-                "avg_model_edge_bps": _coerce_float(item.get("avg_model_edge_bps")),
-                "avg_executable_edge_bps": _coerce_float(item.get("avg_executable_edge_bps")),
-                "avg_realized_pnl": _coerce_float(item.get("avg_realized_pnl")),
-                "execution_capture_ratio": 1.0 if executed_ticket_count > 0 else 0.0,
-                "miss_reason_bucket": miss_reason_bucket,
+                "model_edge_bps": _coerce_float(pricing_context.get("edge_bps_model")) or _coerce_float(item.get("executable_edge_bps")) or 0.0,
+                "executable_edge_bps": _coerce_float(item.get("executable_edge_bps")) or 0.0,
+                "stage": best_stage,
+                "miss_reason_bucket": best_miss_reason,
+                "has_submission": bool(not linked.empty and linked["execution_lifecycle_stage"].isin(submitted_stages).any()),
+                "has_fill": bool(not linked.empty and (pd.to_numeric(linked["filled_quantity"], errors="coerce").fillna(0) > 0).any()),
+                "has_resolution": bool(not linked.empty and (linked["evaluation_status"] == "resolved").any()),
+                "resolved_source_disagreement": "different"
+                if (not linked.empty and ((linked["evaluation_status"] == "resolved") & (linked["source_disagreement"] == "different")).any())
+                else "match",
             }
         )
-    frame = pd.DataFrame(
-        rows,
-        columns=[
-            "market_id",
-            "opportunity_count",
-            "executed_ticket_count",
-            "avg_model_edge_bps",
-            "avg_executable_edge_bps",
-            "avg_realized_pnl",
-            "execution_capture_ratio",
-            "miss_reason_bucket",
-        ],
-    )
+    snapshot_frame = pd.DataFrame(snapshot_rows)
+    rows: list[dict[str, Any]] = []
+    for market_id, market_opportunities in snapshot_frame.groupby("market_id", dropna=False):
+        market_key = str(market_id)
+        market_execution = execution_frame[execution_frame["market_id"] == market_id] if (not execution_frame.empty and "market_id" in execution_frame.columns) else execution_frame.iloc[0:0]
+        opportunity_count = int(len(market_opportunities.index))
+        submitted_ticket_count = int(
+            market_execution[
+                market_execution["execution_lifecycle_stage"].isin(list(submitted_stages))
+            ]["ticket_id"].nunique()
+        ) if not market_execution.empty else 0
+        filled_ticket_count = int(
+            market_execution[
+                pd.to_numeric(market_execution["filled_quantity"], errors="coerce").fillna(0) > 0
+            ]["ticket_id"].nunique()
+        ) if not market_execution.empty else 0
+        resolved_ticket_count = int(
+            market_execution[
+                market_execution["evaluation_status"] == "resolved"
+            ]["ticket_id"].nunique()
+        ) if not market_execution.empty else 0
+        dominant_lifecycle_stage = _dominant_bucket(
+            [str(value) for value in market_opportunities["stage"].dropna().tolist()],
+            priority=_LIFECYCLE_PRIORITY,
+            default="ticket_created",
+        )
+        uncaptured = [
+            str(value)
+            for value in market_opportunities["miss_reason_bucket"].dropna().tolist()
+            if str(value) != "captured_resolved"
+        ]
+        if not uncaptured:
+            miss_reason_bucket = "captured"
+        else:
+            miss_reason_bucket = _dominant_bucket(
+                uncaptured,
+                priority={**_MARKET_MISS_PRIORITY, "not_submitted": 3},
+                default="not_submitted",
+            )
+        submission_capture_ratio = float(submitted_ticket_count / opportunity_count) if opportunity_count > 0 else 0.0
+        fill_capture_ratio = float(filled_ticket_count / opportunity_count) if opportunity_count > 0 else 0.0
+        resolution_capture_ratio = float(resolved_ticket_count / opportunity_count) if opportunity_count > 0 else 0.0
+        resolved_disagreements = market_execution[
+            market_execution["evaluation_status"] == "resolved"
+        ]["source_disagreement"].dropna().astype(str).tolist() if not market_execution.empty else []
+        dominant_resolved_disagreement = _dominant_bucket(
+            resolved_disagreements,
+            priority={"different": 0, "match": 1, "unavailable": 2},
+            default="match",
+        )
+        if dominant_lifecycle_stage in {"working_unfilled", "partially_filled", "cancelled", "submit_rejected"}:
+            distortion_reason_bucket = "execution_distortion"
+        elif opportunity_count > 0 and submission_capture_ratio == 0.0:
+            distortion_reason_bucket = "ranking_distortion"
+        elif resolved_ticket_count > 0 and dominant_resolved_disagreement == "different":
+            distortion_reason_bucket = "forecast_distortion"
+        else:
+            distortion_reason_bucket = "none"
+        rows.append(
+            {
+                "market_id": market_key,
+                "opportunity_count": opportunity_count,
+                "submitted_ticket_count": submitted_ticket_count,
+                "filled_ticket_count": filled_ticket_count,
+                "resolved_ticket_count": resolved_ticket_count,
+                "executed_ticket_count": filled_ticket_count,
+                "avg_model_edge_bps": float(pd.to_numeric(market_opportunities["model_edge_bps"], errors="coerce").dropna().mean()) if "model_edge_bps" in market_opportunities.columns else None,
+                "avg_executable_edge_bps": float(pd.to_numeric(market_opportunities["executable_edge_bps"], errors="coerce").dropna().mean()) if "executable_edge_bps" in market_opportunities.columns else None,
+                "avg_realized_pnl": float(pd.to_numeric(market_execution["realized_pnl"], errors="coerce").dropna().mean()) if ("realized_pnl" in market_execution.columns and not market_execution.empty) else None,
+                "submission_capture_ratio": submission_capture_ratio,
+                "fill_capture_ratio": fill_capture_ratio,
+                "resolution_capture_ratio": resolution_capture_ratio,
+                "execution_capture_ratio": fill_capture_ratio,
+                "dominant_lifecycle_stage": dominant_lifecycle_stage,
+                "miss_reason_bucket": miss_reason_bucket,
+                "distortion_reason_bucket": distortion_reason_bucket,
+            }
+        )
+    frame = pd.DataFrame(rows)
     if "market_id" in frame.columns:
         frame["market_id"] = frame["market_id"].astype("string")
     con.register("watch_only_vs_executed_df", frame)
-    con.execute(
-        """
-        CREATE OR REPLACE TABLE ui.watch_only_vs_executed_summary AS
-        SELECT * FROM watch_only_vs_executed_df
-        """
-    )
+    con.execute("CREATE OR REPLACE TABLE ui.watch_only_vs_executed_summary AS SELECT * FROM watch_only_vs_executed_df")
     row = con.execute("SELECT COUNT(*) FROM ui.watch_only_vs_executed_summary").fetchone()
     table_row_counts["ui.watch_only_vs_executed_summary"] = int(row[0]) if row is not None else 0
     con.unregister("watch_only_vs_executed_df")
+
+
+def _create_execution_science_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    frame = _build_execution_path_frame(con)
+    if frame.empty:
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE ui.execution_science_summary (
+                cohort_type TEXT,
+                cohort_key TEXT,
+                ticket_count BIGINT,
+                submitted_ack_count BIGINT,
+                filled_ticket_count BIGINT,
+                resolved_ticket_count BIGINT,
+                partial_fill_count BIGINT,
+                cancelled_count BIGINT,
+                rejected_count BIGINT,
+                working_unfilled_count BIGINT,
+                avg_predicted_edge_bps DOUBLE,
+                avg_realized_pnl DOUBLE,
+                avg_post_trade_error DOUBLE,
+                avg_adverse_fill_slippage_bps DOUBLE,
+                submission_capture_ratio DOUBLE,
+                fill_capture_ratio DOUBLE,
+                resolution_capture_ratio DOUBLE,
+                dominant_miss_reason_bucket TEXT,
+                dominant_distortion_reason_bucket TEXT
+            )
+            """
+        )
+        table_row_counts["ui.execution_science_summary"] = 0
+        return
+
+    rows: list[dict[str, Any]] = []
+    submitted_ack_stages = {"submitted_ack", "working_unfilled", "partially_filled", "filled_unresolved", "resolved", "cancelled"}
+    rejected_stages = {"submit_rejected", "sign_rejected", "gate_rejected"}
+    for cohort_type, key_column in [("market", "market_id"), ("strategy", "strategy_id"), ("wallet", "wallet_id")]:
+        grouped = frame.groupby(key_column, dropna=False)
+        for cohort_key, cohort_frame in grouped:
+            ticket_count = int(len(cohort_frame.index))
+            submitted_ack_count = int(cohort_frame["execution_lifecycle_stage"].isin(list(submitted_ack_stages)).sum())
+            filled_ticket_count = int((pd.to_numeric(cohort_frame["filled_quantity"], errors="coerce").fillna(0) > 0).sum())
+            resolved_ticket_count = int((cohort_frame["evaluation_status"] == "resolved").sum())
+            partial_fill_count = int((cohort_frame["execution_lifecycle_stage"] == "partially_filled").sum())
+            cancelled_count = int((cohort_frame["execution_lifecycle_stage"] == "cancelled").sum())
+            rejected_count = int(cohort_frame["execution_lifecycle_stage"].isin(list(rejected_stages)).sum())
+            working_unfilled_count = int((cohort_frame["execution_lifecycle_stage"] == "working_unfilled").sum())
+            distortion_buckets: list[str] = []
+            for _, ticket_row in cohort_frame.iterrows():
+                stage = str(ticket_row.get("execution_lifecycle_stage") or "")
+                values = json.loads(str(ticket_row.get("distortion_reason_codes_json") or "[]"))
+                if stage in {"working_unfilled", "partially_filled", "cancelled", "submit_rejected"}:
+                    distortion_buckets.append("execution_distortion")
+                elif any(str(item).startswith("execution_") for item in values):
+                    distortion_buckets.append("execution_distortion")
+                elif any(str(item).startswith("forecast_") for item in values):
+                    distortion_buckets.append("forecast_distortion")
+                else:
+                    distortion_buckets.append("none")
+            rows.append(
+                {
+                    "cohort_type": cohort_type,
+                    "cohort_key": str(cohort_key),
+                    "ticket_count": ticket_count,
+                    "submitted_ack_count": submitted_ack_count,
+                    "filled_ticket_count": filled_ticket_count,
+                    "resolved_ticket_count": resolved_ticket_count,
+                    "partial_fill_count": partial_fill_count,
+                    "cancelled_count": cancelled_count,
+                    "rejected_count": rejected_count,
+                    "working_unfilled_count": working_unfilled_count,
+                    "avg_predicted_edge_bps": float(pd.to_numeric(cohort_frame["predicted_edge_bps"], errors="coerce").dropna().mean()) if "predicted_edge_bps" in cohort_frame.columns else None,
+                    "avg_realized_pnl": float(pd.to_numeric(cohort_frame["realized_pnl"], errors="coerce").dropna().mean()) if "realized_pnl" in cohort_frame.columns else None,
+                    "avg_post_trade_error": float(pd.to_numeric(cohort_frame["post_trade_error"], errors="coerce").dropna().mean()) if "post_trade_error" in cohort_frame.columns else None,
+                    "avg_adverse_fill_slippage_bps": float(pd.to_numeric(cohort_frame["adverse_fill_slippage_bps"], errors="coerce").dropna().mean()) if "adverse_fill_slippage_bps" in cohort_frame.columns else None,
+                    "submission_capture_ratio": float(submitted_ack_count / ticket_count) if ticket_count > 0 else 0.0,
+                    "fill_capture_ratio": float(filled_ticket_count / ticket_count) if ticket_count > 0 else 0.0,
+                    "resolution_capture_ratio": float(resolved_ticket_count / ticket_count) if ticket_count > 0 else 0.0,
+                    "dominant_miss_reason_bucket": _dominant_bucket(
+                        [str(value) for value in cohort_frame["miss_reason_bucket"].dropna().tolist()],
+                        priority={**_MARKET_MISS_PRIORITY, "captured_resolved": 8, "not_submitted": 3},
+                        default="not_submitted",
+                    ),
+                    "dominant_distortion_reason_bucket": _dominant_bucket(
+                        distortion_buckets,
+                        priority={"execution_distortion": 0, "forecast_distortion": 1, "ranking_distortion": 2, "none": 3},
+                        default="none",
+                    ),
+                }
+            )
+    science = pd.DataFrame(
+        rows,
+        columns=[
+            "cohort_type",
+            "cohort_key",
+            "ticket_count",
+            "submitted_ack_count",
+            "filled_ticket_count",
+            "resolved_ticket_count",
+            "partial_fill_count",
+            "cancelled_count",
+            "rejected_count",
+            "working_unfilled_count",
+            "avg_predicted_edge_bps",
+            "avg_realized_pnl",
+            "avg_post_trade_error",
+            "avg_adverse_fill_slippage_bps",
+            "submission_capture_ratio",
+            "fill_capture_ratio",
+            "resolution_capture_ratio",
+            "dominant_miss_reason_bucket",
+            "dominant_distortion_reason_bucket",
+        ],
+    )
+    for column in ["cohort_type", "cohort_key", "dominant_miss_reason_bucket", "dominant_distortion_reason_bucket"]:
+        if column in science.columns:
+            science[column] = science[column].astype("string")
+    con.register("execution_science_df", science)
+    con.execute("CREATE OR REPLACE TABLE ui.execution_science_summary AS SELECT * FROM execution_science_df")
+    row = con.execute("SELECT COUNT(*) FROM ui.execution_science_summary").fetchone()
+    table_row_counts["ui.execution_science_summary"] = int(row[0]) if row is not None else 0
+    con.unregister("execution_science_df")
 
 
 def _create_market_research_summary(con, *, table_row_counts: dict[str, int]) -> None:
@@ -1819,9 +2156,21 @@ def _create_market_research_summary(con, *, table_row_counts: dict[str, int]) ->
             COALESCE(execution_adjusted_fair_value, fair_value) AS latest_execution_adjusted_fair_value,
             mapping_confidence AS latest_mapping_confidence,
             source_freshness_status AS latest_source_freshness_status,
-            market_quality_status AS latest_market_quality_status,
-            actionability_status
+            market_quality_status AS latest_market_quality_status
         FROM ui.market_opportunity_summary
+        """
+    ).df()
+    watch_only = con.execute(
+        """
+        SELECT
+            market_id,
+            submission_capture_ratio,
+            fill_capture_ratio,
+            resolution_capture_ratio,
+            dominant_lifecycle_stage,
+            miss_reason_bucket,
+            distortion_reason_bucket
+        FROM ui.watch_only_vs_executed_summary
         """
     ).df()
     executed = con.execute(
@@ -1829,19 +2178,32 @@ def _create_market_research_summary(con, *, table_row_counts: dict[str, int]) ->
         SELECT
             market_id,
             COUNT(*) FILTER (WHERE evaluation_status = 'resolved') AS resolved_trade_count,
+            COUNT(*) FILTER (WHERE evaluation_status = 'pending_resolution') AS filled_unresolved_count,
+            COUNT(*) FILTER (
+                WHERE execution_lifecycle_stage IN ('submitted_ack', 'working_unfilled', 'submit_rejected', 'cancelled', 'partially_filled')
+            ) AS submitted_only_count,
             AVG(post_trade_error) AS avg_post_trade_error
         FROM ui.predicted_vs_realized_summary
         GROUP BY market_id
         """
     ).df()
-    if "market_id" in opportunity.columns:
-        opportunity["market_id"] = opportunity["market_id"].astype("string")
-    if "market_id" in executed.columns:
-        executed["market_id"] = executed["market_id"].astype("string")
-    base = opportunity.merge(executed, on="market_id", how="left")
+    for frame in [opportunity, watch_only, executed]:
+        if "market_id" in frame.columns:
+            frame["market_id"] = frame["market_id"].astype("string")
+    base = opportunity.merge(watch_only, on="market_id", how="left").merge(executed, on="market_id", how="left")
     rows: list[dict[str, Any]] = []
     for _, item in base.iterrows():
         resolved_trade_count = int(item.get("resolved_trade_count") or 0)
+        filled_unresolved_count = int(item.get("filled_unresolved_count") or 0)
+        submitted_only_count = int(item.get("submitted_only_count") or 0)
+        if resolved_trade_count > 0:
+            executed_evidence_status = "resolved"
+        elif filled_unresolved_count > 0:
+            executed_evidence_status = "filled_unresolved"
+        elif submitted_only_count > 0:
+            executed_evidence_status = "submitted_only"
+        else:
+            executed_evidence_status = "watch_only"
         rows.append(
             {
                 "market_id": item.get("market_id"),
@@ -1851,9 +2213,15 @@ def _create_market_research_summary(con, *, table_row_counts: dict[str, int]) ->
                 "latest_mapping_confidence": _coerce_float(item.get("latest_mapping_confidence")),
                 "latest_source_freshness_status": item.get("latest_source_freshness_status"),
                 "latest_market_quality_status": item.get("latest_market_quality_status"),
-                "executed_evidence_status": "executed" if resolved_trade_count > 0 else "watch_only",
+                "executed_evidence_status": executed_evidence_status,
                 "resolved_trade_count": resolved_trade_count,
                 "avg_post_trade_error": _coerce_float(item.get("avg_post_trade_error")),
+                "submission_capture_ratio": _coerce_float(item.get("submission_capture_ratio")) or 0.0,
+                "fill_capture_ratio": _coerce_float(item.get("fill_capture_ratio")) or 0.0,
+                "resolution_capture_ratio": _coerce_float(item.get("resolution_capture_ratio")) or 0.0,
+                "latest_execution_lifecycle_stage": item.get("dominant_lifecycle_stage"),
+                "dominant_miss_reason_bucket": item.get("miss_reason_bucket"),
+                "dominant_distortion_reason_bucket": item.get("distortion_reason_bucket"),
             }
         )
     frame = pd.DataFrame(
@@ -1869,6 +2237,12 @@ def _create_market_research_summary(con, *, table_row_counts: dict[str, int]) ->
             "executed_evidence_status",
             "resolved_trade_count",
             "avg_post_trade_error",
+            "submission_capture_ratio",
+            "fill_capture_ratio",
+            "resolution_capture_ratio",
+            "latest_execution_lifecycle_stage",
+            "dominant_miss_reason_bucket",
+            "dominant_distortion_reason_bucket",
         ],
     )
     if "market_id" in frame.columns:
@@ -1996,6 +2370,12 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                         PARTITION BY market_id
                         ORDER BY
                             CASE WHEN decision = 'TAKE' THEN 0 ELSE 1 END,
+                            COALESCE(
+                                TRY_CAST(
+                                    json_extract_string(try_cast(pricing_context_json AS JSON), '$.ranking_score') AS DOUBLE
+                                ),
+                                -1.0
+                            ) DESC,
                             ABS(COALESCE(edge_bps, 0)) DESC,
                             created_at DESC,
                             snapshot_id DESC
@@ -2089,6 +2469,12 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
         source_freshness_status = str(pricing_context.get("source_freshness_status") or "missing")
         price_staleness_ms = int(_coerce_float(pricing_context.get("price_staleness_ms")) or 0)
         market_quality_status = str(pricing_context.get("market_quality_status") or "review_required")
+        calibration_health_status = str(pricing_context.get("calibration_health_status") or "lookup_missing")
+        sample_count = int(_coerce_float(pricing_context.get("sample_count")) or 0)
+        calibration_multiplier = _coerce_float(pricing_context.get("calibration_multiplier"))
+        calibration_reason_codes = pricing_context.get("calibration_reason_codes")
+        if not isinstance(calibration_reason_codes, list):
+            calibration_reason_codes = None
         if not token_id or not outcome or market_price <= 0.0:
             actionability_status = (
                 "blocked"
@@ -2119,6 +2505,11 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                     "slippage_bps": None,
                     "fill_probability": None,
                     "depth_proxy": None,
+                    "calibration_health_status": calibration_health_status,
+                    "sample_count": sample_count,
+                    "uncertainty_multiplier": 0.0,
+                    "uncertainty_penalty_bps": 0,
+                    "ranking_penalty_reasons": calibration_reason_codes or [],
                     "mapping_confidence": mapping_confidence,
                     "source_freshness_status": source_freshness_status,
                     "price_staleness_ms": price_staleness_ms,
@@ -2162,7 +2553,15 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
             price_staleness_ms=price_staleness_ms,
             source_freshness_status=source_freshness_status,
             spread_bps=int(_coerce_float(pricing_context.get("spread_bps")) or 0) or None,
+            calibration_health_status=calibration_health_status,
+            sample_count=sample_count,
+            calibration_multiplier=calibration_multiplier,
+            calibration_reason_codes=calibration_reason_codes,
             source_context={
+                "calibration_health_status": calibration_health_status,
+                "sample_count": sample_count,
+                "calibration_multiplier": calibration_multiplier,
+                "calibration_reason_codes": calibration_reason_codes,
                 "forecast_target_time": str(row.get("latest_forecast_target_time") or ""),
                 "latest_run_source": row.get("latest_run_source"),
                 "mapping_method": pricing_context.get("mapping_method"),
@@ -2196,6 +2595,11 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                 "slippage_bps": assessment.slippage_bps,
                 "fill_probability": assessment.fill_probability,
                 "depth_proxy": assessment.depth_proxy,
+                "calibration_health_status": assessment.calibration_health_status,
+                "sample_count": assessment.sample_count,
+                "uncertainty_multiplier": assessment.uncertainty_multiplier,
+                "uncertainty_penalty_bps": assessment.uncertainty_penalty_bps,
+                "ranking_penalty_reasons": assessment.ranking_penalty_reasons,
                 "mapping_confidence": assessment.assessment_context_json.get("mapping_confidence"),
                 "source_freshness_status": assessment.assessment_context_json.get("source_freshness_status"),
                 "price_staleness_ms": assessment.assessment_context_json.get("price_staleness_ms"),
@@ -2242,6 +2646,11 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
         "slippage_bps",
         "fill_probability",
         "depth_proxy",
+        "calibration_health_status",
+        "sample_count",
+        "uncertainty_multiplier",
+        "uncertainty_penalty_bps",
+        "ranking_penalty_reasons",
         "mapping_confidence",
         "source_freshness_status",
         "price_staleness_ms",
@@ -2338,6 +2747,155 @@ def _resolution_value(expected_outcome: Any) -> float | None:
     if not text:
         return None
     return 1.0 if text == "YES" else 0.0 if text == "NO" else None
+
+
+_LIFECYCLE_PRIORITY = {
+    "resolved": 0,
+    "filled_unresolved": 1,
+    "partially_filled": 2,
+    "cancelled": 3,
+    "working_unfilled": 4,
+    "submitted_ack": 5,
+    "submit_rejected": 6,
+    "sign_rejected": 7,
+    "gate_rejected": 8,
+    "signed_not_submitted": 9,
+    "ticket_created": 10,
+}
+
+_MARKET_MISS_PRIORITY = {
+    "gate_rejected": 0,
+    "sign_rejected": 1,
+    "submit_rejected": 2,
+    "working_unfilled": 3,
+    "cancelled": 4,
+    "partial_fill": 5,
+    "captured_unresolved": 6,
+    "captured": 7,
+}
+
+
+def _json_array_text(values: list[str]) -> str:
+    return json.dumps(values, ensure_ascii=True, sort_keys=True)
+
+
+def _normalize_submit_mode(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_stage(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _lifecycle_sort_key(stage: Any) -> int:
+    return _LIFECYCLE_PRIORITY.get(_normalize_stage(stage), 999)
+
+
+def _evaluation_status_for_ticket(*, filled_quantity: float, resolution_value: float | None) -> str:
+    if resolution_value is not None and filled_quantity > 0:
+        return "resolved"
+    if filled_quantity > 0:
+        return "pending_resolution"
+    return "pending_fill"
+
+
+def _execution_lifecycle_stage(
+    *,
+    evaluation_status: str,
+    filled_quantity: float,
+    fill_ratio: float,
+    execution_result: Any,
+    order_status: Any,
+    latest_submit_status: Any,
+    live_prereq_execution_status: Any,
+    external_order_status: Any,
+    gate_allowed: Any,
+    latest_sign_attempt_id: Any,
+    latest_submit_attempt_id: Any,
+) -> str:
+    execution_result_text = str(execution_result or "").strip()
+    order_status_text = str(order_status or "").strip()
+    live_status_text = str(live_prereq_execution_status or "").strip()
+    submit_status_text = str(latest_submit_status or "").strip()
+    external_order_text = str(external_order_status or "").strip()
+    gate_allowed_bool = bool(gate_allowed) if gate_allowed is not None else None
+
+    if evaluation_status == "resolved":
+        return "resolved"
+    if execution_result_text == "partial_filled" or (0.0 < fill_ratio < 1.0):
+        return "partially_filled"
+    if filled_quantity > 0 and evaluation_status == "pending_resolution":
+        return "filled_unresolved"
+    if execution_result_text == "cancelled" or order_status_text == "cancelled":
+        return "cancelled"
+    if order_status_text == "posted" and filled_quantity <= 0:
+        return "working_unfilled"
+    if submit_status_text == "accepted":
+        return "submitted_ack"
+    if live_status_text == "submit_rejected" or external_order_text == "rejected":
+        return "submit_rejected"
+    if live_status_text == "sign_rejected":
+        return "sign_rejected"
+    if gate_allowed_bool is False:
+        return "gate_rejected"
+    if latest_sign_attempt_id and not latest_submit_attempt_id:
+        return "signed_not_submitted"
+    return "ticket_created"
+
+
+def _miss_reason_bucket_for_stage(stage: str) -> str:
+    if stage == "resolved":
+        return "captured_resolved"
+    if stage == "filled_unresolved":
+        return "captured_unresolved"
+    if stage == "partially_filled":
+        return "partial_fill"
+    if stage == "cancelled":
+        return "cancelled"
+    if stage == "working_unfilled":
+        return "working_unfilled"
+    if stage == "submit_rejected":
+        return "submit_rejected"
+    if stage == "sign_rejected":
+        return "sign_rejected"
+    if stage == "gate_rejected":
+        return "gate_rejected"
+    return "not_submitted"
+
+
+def _distortion_reason_codes(
+    *,
+    stage: str,
+    source_disagreement: str,
+    realized_pnl: float | None,
+    adverse_fill_slippage_bps: float | None,
+) -> list[str]:
+    reasons: list[str] = []
+    if source_disagreement == "different":
+        reasons.append("forecast_source_disagreement")
+    if realized_pnl is not None and realized_pnl < 0:
+        reasons.append("forecast_realized_pnl_negative")
+    if (adverse_fill_slippage_bps or 0.0) > 0:
+        reasons.append("execution_adverse_fill")
+    if stage == "partially_filled":
+        reasons.append("execution_partial_fill")
+    if stage == "cancelled":
+        reasons.append("execution_cancelled")
+    if stage in {"working_unfilled", "submitted_ack"}:
+        reasons.append("execution_unfilled")
+    return reasons
+
+
+def _dominant_bucket(values: list[str], *, priority: dict[str, int], default: str) -> str:
+    if not values:
+        return default
+    counts = pd.Series(values, dtype="string").value_counts(dropna=True)
+    if counts.empty:
+        return default
+    best_count = int(counts.max())
+    candidates = [str(index) for index, value in counts.items() if int(value) == best_count]
+    candidates.sort(key=lambda item: priority.get(item, 999))
+    return candidates[0] if candidates else default
 
 
 def _opportunity_bucket(edge_bps: int) -> str:

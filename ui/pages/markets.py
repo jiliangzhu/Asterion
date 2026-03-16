@@ -112,7 +112,7 @@ def show() -> None:
     refresh_note = report.get("refresh_note") or discovery.get("refresh_note")
 
     st.markdown("### Opportunity Terminal")
-    st.caption("Markets 现在首先回答哪些市场最值得优先看、最可执行、最值得赚钱，而不是只展示链路 debug 细节。")
+    st.caption("Markets 现在首先回答哪些市场最值得优先 review、最可执行、最值得研究，但它仍处于 constrained execution boundary 内，不暗示自动推进执行。")
 
     if market_surface["status"] in {"read_error", "degraded_source", "refresh_in_progress", "no_data"}:
         if market_surface["status"] == "read_error":
@@ -379,6 +379,7 @@ def show() -> None:
         if not executed_evidence.get("has_executed_evidence"):
             st.info("no executed evidence yet")
         else:
+            st.caption("这里展示的是 executed evidence 与 research decomposition，不代表 execution certainty。")
             st.dataframe(
                 _detail_frame(
                     [
@@ -390,6 +391,11 @@ def show() -> None:
                         {"字段": "Resolution Value", "值": executed_evidence.get("resolution_value")},
                         {"字段": "Realized PnL", "值": executed_evidence.get("realized_pnl")},
                         {"字段": "Post-Trade Error", "值": executed_evidence.get("post_trade_error")},
+                        {"字段": "Lifecycle Stage", "值": executed_evidence.get("execution_lifecycle_stage")},
+                        {"字段": "Fill Ratio", "值": executed_evidence.get("fill_ratio")},
+                        {"字段": "Adverse Fill Slippage (bps)", "值": executed_evidence.get("adverse_fill_slippage_bps")},
+                        {"字段": "Resolution Lag (hrs)", "值": executed_evidence.get("resolution_lag_hours")},
+                        {"字段": "Miss Reason", "值": executed_evidence.get("miss_reason_bucket")},
                         {"字段": "Source Disagreement", "值": executed_evidence.get("source_disagreement")},
                         {"字段": "Evaluation Status", "值": executed_evidence.get("evaluation_status")},
                     ]
@@ -401,9 +407,13 @@ def show() -> None:
             _detail_frame(
                 [
                     {"字段": "Executed Evidence Status", "值": market_research.get("executed_evidence_status")},
-                    {"字段": "Execution Capture Ratio", "值": watch_only_vs_executed.get("execution_capture_ratio")},
+                    {"字段": "Submission Capture Ratio", "值": watch_only_vs_executed.get("submission_capture_ratio")},
+                    {"字段": "Fill Capture Ratio", "值": watch_only_vs_executed.get("fill_capture_ratio")},
+                    {"字段": "Resolution Capture Ratio", "值": watch_only_vs_executed.get("resolution_capture_ratio")},
                     {"字段": "Executed Ticket Count", "值": watch_only_vs_executed.get("executed_ticket_count")},
+                    {"字段": "Dominant Lifecycle", "值": watch_only_vs_executed.get("dominant_lifecycle_stage")},
                     {"字段": "Miss Reason", "值": watch_only_vs_executed.get("miss_reason_bucket")},
+                    {"字段": "Distortion Reason", "值": watch_only_vs_executed.get("distortion_reason_bucket")},
                     {"字段": "Resolved Trade Count", "值": market_research.get("resolved_trade_count")},
                     {"字段": "Avg Post-Trade Error", "值": market_research.get("avg_post_trade_error")},
                 ]

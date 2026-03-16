@@ -48,6 +48,7 @@
 - `P2` 已关闭
 - `P3` 已关闭
 - `P4` scaffold 已落地（`P4-01` / `P4-12` artifacts 已存在），但当前 active 开发状态已切换到 `post-P4 remediation`
+- `Phase 5` 到 `Phase 8` 已作为 post-P4 remediation 的连续收口阶段落地；当前 `Phase 9` 只负责 operator wording / docs truth-source cleanup
 - 当前 historical closeout / planning artifacts 是：
   - [P4_Closeout_Checklist.md](../10-implementation/checklists/P4_Closeout_Checklist.md)
   - [P4_Controlled_Rollout_Decision_Runbook.md](../10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)

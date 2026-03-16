@@ -183,16 +183,17 @@ def _render_shell_header() -> None:
             <div class="console-title">
                 <div>
                     <div class="console-kicker">Asterion Ops Console</div>
-                    <h1 class="console-heading">Post-P4 Remediation Console</h1>
+                    <h1 class="console-heading">Operator Console for Constrained Execution</h1>
                 </div>
                 <div>
-                    {_render_status_badge("P4 scaffold landed", "ok")}
+                    {_render_status_badge("Post-P4 remediation active", "ok")}
                     {_render_status_badge("Closeout pending objective verification", "warn")}
                 </div>
             </div>
             <div class="console-subcopy">
-                当前 UI 聚焦 operator workflow：机会优先的 weather markets、paper execution、live-prereq wallet / execution、readiness 与 controlled-live boundary。
-                这里不承诺 unattended live，也不会暴露 raw signer / submitter payload；当前默认口径是 remediation in progress，而不是阶段已完成。
+                当前 UI 的定位是 operator console + constrained execution infra：聚焦机会优先的 weather markets、execution science、
+                live-prereq wallet / execution、readiness evidence 与 controlled-live boundary。这里不是 unattended live，也不是 unrestricted live；
+                当前默认口径是 post-P4 remediation active / closeout pending objective verification。
             </div>
         </div>
         """,
@@ -226,9 +227,9 @@ def _render_global_surface_banner() -> None:
 PAGES = {
     "Home": ("决策首页", home.show),
     "Markets": ("机会终端", markets.show),
-    "Execution": ("执行与 Live-Prereq", execution.show),
-    "Agents": ("Agent Workbench", agents.show),
-    "System": ("系统与 Readiness", system.show),
+    "Execution": ("Execution Science", execution.show),
+    "Agents": ("Exception Review", agents.show),
+    "System": ("Readiness Evidence", system.show),
 }
 
 auth_status = enforce_ui_auth()
@@ -252,7 +253,8 @@ st.sidebar.markdown("### 当前边界")
 st.sidebar.markdown("- `manual-only`")
 st.sidebar.markdown("- `default-off`")
 st.sidebar.markdown("- `approve_usdc only`")
-st.sidebar.markdown("- 不等于 unattended live")
+st.sidebar.markdown("- `constrained real submit`")
+st.sidebar.markdown("- `not unattended live`")
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Asterion v1.2 · post-P4 remediation")

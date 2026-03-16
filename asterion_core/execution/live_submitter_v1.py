@@ -4,11 +4,21 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_DOWN
 from enum import Enum
+import hashlib
 import importlib.util
 from typing import Any
 
-from asterion_core.contracts import ExternalFillObservation, ExternalFillObservationKind, stable_object_id
+from asterion_core.contracts import (
+    ExternalFillObservation,
+    ExternalFillObservationKind,
+    SubmitterBoundaryAttestation,
+    SubmitterBoundaryInputs,
+    build_submitter_boundary_attestation,
+    evaluate_submitter_boundary,
+    stable_object_id,
+)
 from asterion_core.journal import build_journal_event, enqueue_journal_event_upserts
+from asterion_core.live_side_effect_guard_v1 import LiveSideEffectGuard, validate_live_side_effect_guard
 from asterion_core.signer import SubmitAttemptRecord, hash_signer_payload
 from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.utils import safe_json_dumps
@@ -58,6 +68,23 @@ RUNTIME_EXTERNAL_FILL_OBSERVATION_COLUMNS = [
     "observed_at",
     "error",
     "raw_observation_json",
+]
+
+RUNTIME_LIVE_BOUNDARY_ATTESTATION_COLUMNS = [
+    "attestation_id",
+    "request_id",
+    "run_id",
+    "wallet_id",
+    "source_attempt_id",
+    "ticket_id",
+    "execution_context_id",
+    "attestation_kind",
+    "submit_mode",
+    "target_backend_kind",
+    "attestation_status",
+    "reason_codes_json",
+    "attestation_payload_json",
+    "created_at",
 ]
 
 
@@ -159,12 +186,31 @@ class _SubmitterInvocationResult:
 
 
 class SubmitterBackend:
-    def submit(self, request: SubmitOrderRequest) -> SubmitOrderResult:
+    def backend_kind(self) -> str:
+        raise NotImplementedError
+
+    def endpoint_fingerprint(self) -> str | None:
+        return None
+
+    def submit(
+        self,
+        request: SubmitOrderRequest,
+        *,
+        boundary_attestation: SubmitterBoundaryAttestation | None = None,
+    ) -> SubmitOrderResult:
         raise NotImplementedError
 
 
 class DisabledSubmitterBackend(SubmitterBackend):
-    def submit(self, request: SubmitOrderRequest) -> SubmitOrderResult:
+    def backend_kind(self) -> str:
+        return "disabled"
+
+    def submit(
+        self,
+        request: SubmitOrderRequest,
+        *,
+        boundary_attestation: SubmitterBoundaryAttestation | None = None,
+    ) -> SubmitOrderResult:
         envelope = _build_submit_payload(
             request,
             backend_kind="disabled",
@@ -184,7 +230,15 @@ class DisabledSubmitterBackend(SubmitterBackend):
 
 
 class ShadowSubmitterBackend(SubmitterBackend):
-    def submit(self, request: SubmitOrderRequest) -> SubmitOrderResult:
+    def backend_kind(self) -> str:
+        return "shadow_stub"
+
+    def submit(
+        self,
+        request: SubmitOrderRequest,
+        *,
+        boundary_attestation: SubmitterBoundaryAttestation | None = None,
+    ) -> SubmitOrderResult:
         should_reject = bool(request.signed_payload_json.get("shadow_reject"))
         status = "rejected" if should_reject else "accepted"
         external_order_id = None
@@ -243,7 +297,18 @@ class RealClobSubmitterBackend(SubmitterBackend):
         self._api_base_url = normalized
         self._client = client or _SubmitterHttpClient()
 
-    def submit(self, request: SubmitOrderRequest) -> SubmitOrderResult:
+    def backend_kind(self) -> str:
+        return "real_clob_submit"
+
+    def endpoint_fingerprint(self) -> str | None:
+        return hashlib.sha256(self._api_base_url.encode("utf-8")).hexdigest()
+
+    def submit(
+        self,
+        request: SubmitOrderRequest,
+        *,
+        boundary_attestation: SubmitterBoundaryAttestation | None = None,
+    ) -> SubmitOrderResult:
         if request.submit_mode is not SubmitMode.LIVE_SUBMIT:
             envelope = _build_submit_payload(
                 request,
@@ -260,6 +325,50 @@ class RealClobSubmitterBackend(SubmitterBackend):
                 external_order_id=None,
                 error="real_submitter_requires_submit_mode_live_submit",
                 completed_at=_normalize_timestamp(request.timestamp),
+            )
+        if boundary_attestation is None:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="submitter_boundary_attestation_missing",
+            )
+        if boundary_attestation.attestation_status != "approved":
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="submitter_boundary_attestation_not_approved",
+            )
+        if boundary_attestation.request_id != request.request_id:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="submitter_boundary_attestation_request_mismatch",
+            )
+        if boundary_attestation.wallet_id != request.wallet_id:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="submitter_boundary_attestation_wallet_mismatch",
+            )
+        if str(boundary_attestation.submit_mode).strip() != request.submit_mode.value:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="submitter_boundary_attestation_submit_mode_mismatch",
+            )
+        if str(boundary_attestation.target_backend_kind).strip() != self.backend_kind():
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="submitter_boundary_attestation_backend_mismatch",
+            )
+        if str(boundary_attestation.submitter_endpoint_fingerprint or "").strip() != str(
+            self.endpoint_fingerprint() or ""
+        ).strip():
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="submitter_endpoint_fingerprint_mismatch",
             )
 
         try:
@@ -311,10 +420,18 @@ class SubmitterServiceShell:
     def __init__(self, backend: SubmitterBackend | None = None) -> None:
         self._backend = backend or DisabledSubmitterBackend()
 
+    def describe_live_boundary(self) -> dict[str, str | None]:
+        return {
+            "submitter_backend_kind": self._backend.backend_kind(),
+            "submitter_endpoint_fingerprint": self._backend.endpoint_fingerprint(),
+        }
+
     def submit_order(
         self,
         request: SubmitOrderRequest,
         *,
+        live_guard: LiveSideEffectGuard | None = None,
+        boundary_inputs: SubmitterBoundaryInputs | None = None,
         queue_cfg: WriteQueueConfig,
         run_id: str | None = None,
     ) -> _SubmitterInvocationResult:
@@ -347,6 +464,50 @@ class SubmitterServiceShell:
         )
         if request.submit_mode is SubmitMode.DRY_RUN:
             response = _build_dry_run_preview(request)
+        elif request.submit_mode is SubmitMode.LIVE_SUBMIT:
+            guard_error = validate_live_side_effect_guard(expected_mode="live_submit", guard=live_guard)
+            effective_boundary_inputs = boundary_inputs
+            if boundary_inputs is not None and guard_error:
+                effective_boundary_inputs = SubmitterBoundaryInputs(
+                    request_id=boundary_inputs.request_id,
+                    wallet_id=boundary_inputs.wallet_id,
+                    source_attempt_id=boundary_inputs.source_attempt_id,
+                    ticket_id=boundary_inputs.ticket_id,
+                    execution_context_id=boundary_inputs.execution_context_id,
+                    submit_mode=boundary_inputs.submit_mode,
+                    submitter_backend_kind=boundary_inputs.submitter_backend_kind,
+                    signer_backend_kind=boundary_inputs.signer_backend_kind,
+                    chain_tx_backend_kind=boundary_inputs.chain_tx_backend_kind,
+                    submitter_endpoint_fingerprint=boundary_inputs.submitter_endpoint_fingerprint,
+                    manifest_payload=boundary_inputs.manifest_payload,
+                    manifest_path=boundary_inputs.manifest_path,
+                    readiness_report_payload=boundary_inputs.readiness_report_payload,
+                    wallet_readiness_status=boundary_inputs.wallet_readiness_status,
+                    approval_token_matches=boundary_inputs.approval_token_matches,
+                    armed=False,
+                    evaluated_at=boundary_inputs.evaluated_at,
+                )
+            attestation = self._build_live_submit_attestation(
+                request,
+                boundary_inputs=effective_boundary_inputs,
+            )
+            task_ids.extend(
+                _append_task_id(
+                    enqueue_live_boundary_attestation_upserts(
+                        queue_cfg,
+                        attestations=[attestation],
+                        run_id=run_id or request.request_id,
+                    )
+                )
+            )
+            if attestation.attestation_status != "approved":
+                response = _build_rejected_result(
+                    request,
+                    backend_kind="submitter_shell",
+                    error=attestation.reason_codes[0] if attestation.reason_codes else (guard_error or "submitter_boundary_blocked"),
+                )
+            else:
+                response = self._backend.submit(request, boundary_attestation=attestation)
         else:
             response = self._backend.submit(request)
         final_event = {
@@ -384,6 +545,31 @@ class SubmitterServiceShell:
             )
         )
         return _SubmitterInvocationResult(response=response, payload_hash=response.payload_hash, task_ids=task_ids)
+
+    def _build_live_submit_attestation(
+        self,
+        request: SubmitOrderRequest,
+        *,
+        boundary_inputs: SubmitterBoundaryInputs | None,
+    ) -> SubmitterBoundaryAttestation:
+        if boundary_inputs is None:
+            return build_submitter_boundary_attestation(
+                request_id=request.request_id,
+                wallet_id=request.wallet_id,
+                submit_mode=request.submit_mode.value,
+                target_backend_kind=self._backend.backend_kind(),
+                submitter_endpoint_fingerprint=self._backend.endpoint_fingerprint(),
+                manifest_payload=None,
+                readiness_report_payload=None,
+                reason_codes=["boundary_inputs_missing"],
+                created_at=request.timestamp,
+                extra_payload={
+                    "source_attempt_id": request.source_attempt_id,
+                    "ticket_id": request.ticket_id,
+                    "execution_context_id": request.execution_context_id,
+                },
+            )
+        return evaluate_submitter_boundary(boundary_inputs)
 
 
 def build_submit_order_request_from_sign_attempt(
@@ -616,6 +802,24 @@ def enqueue_external_fill_observation_upserts(
     )
 
 
+def enqueue_live_boundary_attestation_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    attestations: list[SubmitterBoundaryAttestation],
+    run_id: str | None = None,
+) -> str | None:
+    if not attestations:
+        return None
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="runtime.live_boundary_attestations",
+        pk_cols=["attestation_id"],
+        columns=list(RUNTIME_LIVE_BOUNDARY_ATTESTATION_COLUMNS),
+        rows=[submitter_boundary_attestation_to_row(item, run_id=run_id or item.request_id) for item in attestations],
+        run_id=run_id,
+    )
+
+
 def external_order_observation_to_row(record: ExternalOrderObservationRecord) -> list[object]:
     return [
         record.observation_id,
@@ -665,6 +869,32 @@ def external_fill_observation_to_row(record: ExternalFillObservation) -> list[ob
     ]
 
 
+def submitter_boundary_attestation_to_row(
+    record: SubmitterBoundaryAttestation,
+    *,
+    run_id: str,
+) -> list[object]:
+    payload = dict(record.attestation_payload_json)
+    payload.setdefault("manifest_hash", record.manifest_hash)
+    payload.setdefault("readiness_hash", record.readiness_hash)
+    return [
+        record.attestation_id,
+        record.request_id,
+        run_id,
+        record.wallet_id,
+        payload.get("source_attempt_id"),
+        payload.get("ticket_id"),
+        payload.get("execution_context_id"),
+        "submitter_live_boundary_v1",
+        record.submit_mode,
+        record.target_backend_kind,
+        record.attestation_status,
+        safe_json_dumps(record.reason_codes),
+        safe_json_dumps(payload),
+        _sql_timestamp(record.created_at),
+    ]
+
+
 def _build_dry_run_preview(request: SubmitOrderRequest) -> SubmitOrderResult:
     envelope = _build_submit_payload(
         request,
@@ -680,6 +910,30 @@ def _build_dry_run_preview(request: SubmitOrderRequest) -> SubmitOrderResult:
         submit_payload_json=envelope,
         external_order_id=None,
         error=None,
+        completed_at=_normalize_timestamp(request.timestamp),
+    )
+
+
+def _build_rejected_result(
+    request: SubmitOrderRequest,
+    *,
+    backend_kind: str,
+    error: str,
+) -> SubmitOrderResult:
+    envelope = _build_submit_payload(
+        request,
+        backend_kind=backend_kind,
+        status="rejected",
+        external_order_id=None,
+        error=error,
+    )
+    return SubmitOrderResult(
+        request_id=request.request_id,
+        status="rejected",
+        payload_hash=hash_signer_payload(envelope),
+        submit_payload_json=envelope,
+        external_order_id=None,
+        error=error,
         completed_at=_normalize_timestamp(request.timestamp),
     )
 

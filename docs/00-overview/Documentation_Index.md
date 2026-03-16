@@ -1,7 +1,7 @@
 # Asterion Documentation Index
 
-**版本**: v1.2
-**更新日期**: 2026-03-15
+**版本**: v1.3
+**更新日期**: 2026-03-16
 **目标**: 统一 Asterion 文档的目录结构、分类规则和 source-of-truth，避免后续开发中出现重复文档、重复接口定义和失效导航。
 
 ---
@@ -98,6 +98,8 @@ source-of-truth：
 - “这一阶段具体先做什么、后做什么、交付什么”
 - “每个阶段计划、检查清单、迁移台账分别放在哪里”
 - post-P4 remediation 的 canonical 实施路径，以及治理/安全/交易能力增强的分阶段修复顺序
+- reassessment 后续 `Phase 5+` 路线，不再单独新建第二份 canonical plan
+- 当前状态与 operator 边界的 truth-source，以 `Post_P4_Remediation_Implementation_Plan.md` 和入口文档同步口径为准
 
 ### `docs/20-architecture/`
 

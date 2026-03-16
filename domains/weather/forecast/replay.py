@@ -162,6 +162,10 @@ def recompute_pricing_outputs(
                 agent_review_status=str((original.pricing_context or {}).get("agent_review_status") or "no_agent_signal"),
                 live_prereq_status=str((original.pricing_context or {}).get("live_prereq_status") or "not_started"),
                 pricing_context={
+                    "calibration_health_status": (original.pricing_context or {}).get("calibration_health_status"),
+                    "sample_count": (original.pricing_context or {}).get("sample_count"),
+                    "calibration_multiplier": (original.pricing_context or {}).get("calibration_multiplier"),
+                    "calibration_reason_codes": (original.pricing_context or {}).get("calibration_reason_codes"),
                     "forecast_run_id": forecast_run.run_id,
                     "mapping_confidence": (original.pricing_context or {}).get("mapping_confidence"),
                     "market_quality_reason_codes": (original.pricing_context or {}).get("market_quality_reason_codes"),

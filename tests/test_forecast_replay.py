@@ -258,6 +258,7 @@ class ForecastReplayUnitTest(unittest.TestCase):
         self.assertEqual(len(snapshots), 2)
         self.assertEqual({item.outcome for item in fair_values}, {"YES", "NO"})
         self.assertEqual({item.side for item in snapshots}, {"BUY", "SELL"})
+        self.assertTrue(all("ranking_score" in item.pricing_context for item in snapshots))
 
     def test_forecast_replay_diff_marks_match_for_identical_outputs(self) -> None:
         original = _forecast_run(run_id="frun_orig")

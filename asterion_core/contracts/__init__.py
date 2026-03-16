@@ -28,6 +28,12 @@ from .ids import (
     new_reservation_id,
     stable_object_id,
 )
+from .live_boundary import (
+    SubmitterBoundaryAttestation,
+    SubmitterBoundaryInputs,
+    build_submitter_boundary_attestation,
+    evaluate_submitter_boundary,
+)
 from .inventory import (
     BalanceType,
     ExposureSnapshot,
@@ -131,6 +137,8 @@ __all__ = [
     "RouteAction",
     "RouteActionCLOBMapping",
     "SignalOrderIntent",
+    "SubmitterBoundaryAttestation",
+    "SubmitterBoundaryInputs",
     "StateTransition",
     "StationMappingReviewRecord",
     "StationMetadata",
@@ -156,5 +164,7 @@ __all__ = [
     "post_only_for_route_action",
     "reservation_asset_type_for_side",
     "stable_object_id",
+    "build_submitter_boundary_attestation",
+    "evaluate_submitter_boundary",
     "time_in_force_for_route_action",
 ]

@@ -26,18 +26,19 @@ def show() -> None:
     daily_ops = payload.get("daily_ops", pd.DataFrame())
     predicted_vs_realized = payload.get("predicted_vs_realized", pd.DataFrame())
     watch_only_vs_executed = payload.get("watch_only_vs_executed", pd.DataFrame())
+    execution_science = payload.get("execution_science", pd.DataFrame())
     calibration_health = payload.get("calibration_health", pd.DataFrame())
 
     st.markdown("### Execution Reality")
-    st.caption("Execution 页面现在优先展示 executed-only predicted-vs-realized 闭环，再下沉 live-prereq 和 ticket attention。")
+    st.caption("Execution 页面现在优先展示 execution science 与 execution-path evidence，再下沉 cohort capture、live-prereq exceptions 和 ticket attention。")
 
     top1, top2, top3, top4 = st.columns(4)
     resolved_count = int((predicted_vs_realized["evaluation_status"] == "resolved").sum()) if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0
     pending_resolution_count = int((predicted_vs_realized["evaluation_status"] == "pending_resolution").sum()) if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0
     with top1:
-        st.metric("Resolved Trades", resolved_count, delta="executed-only")
+        st.metric("Resolved Trades", resolved_count, delta="execution evidence")
     with top2:
-        st.metric("Pending Resolution", pending_resolution_count, delta="needs settlement")
+        st.metric("Pending Resolution", pending_resolution_count, delta="lifecycle open")
     with top3:
         avg_predicted_edge = float(pd.to_numeric(predicted_vs_realized["predicted_edge_bps"], errors="coerce").dropna().mean()) if ("predicted_edge_bps" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0.0
         st.metric("Avg Predicted Edge", f"{avg_predicted_edge:.1f}", delta="bps")
@@ -49,17 +50,14 @@ def show() -> None:
     st.markdown("#### Cohort Summary")
     cohort_left, cohort_mid, cohort_right = st.columns(3)
     with cohort_left:
-        capture_ratio = float(pd.to_numeric(watch_only_vs_executed["execution_capture_ratio"], errors="coerce").dropna().mean()) if ("execution_capture_ratio" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
-        st.metric("Capture Ratio", f"{capture_ratio:.2f}", delta="watch-only vs executed")
+        submission_capture = float(pd.to_numeric(watch_only_vs_executed["submission_capture_ratio"], errors="coerce").dropna().mean()) if ("submission_capture_ratio" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
+        st.metric("Submission Capture", f"{submission_capture:.2f}", delta="opportunity lifecycle")
     with cohort_mid:
-        uncaptured = watch_only_vs_executed[
-            (pd.to_numeric(watch_only_vs_executed["avg_executable_edge_bps"], errors="coerce").fillna(0) > 0)
-            & (pd.to_numeric(watch_only_vs_executed["execution_capture_ratio"], errors="coerce").fillna(0) <= 0)
-        ] if not watch_only_vs_executed.empty else watch_only_vs_executed
-        st.metric("Uncaptured High-Edge", int(len(uncaptured.index)), delta="markets")
+        fill_capture = float(pd.to_numeric(watch_only_vs_executed["fill_capture_ratio"], errors="coerce").dropna().mean()) if ("fill_capture_ratio" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
+        st.metric("Fill Capture", f"{fill_capture:.2f}", delta="opportunity lifecycle")
     with cohort_right:
-        healthy = calibration_health[calibration_health["calibration_health_status"] == "healthy"] if ("calibration_health_status" in calibration_health.columns and not calibration_health.empty) else calibration_health.iloc[0:0]
-        st.metric("Healthy Calibration Buckets", int(len(healthy.index)), delta=f"samples={int(calibration_health['sample_count'].sum()) if ('sample_count' in calibration_health.columns and not calibration_health.empty) else 0}")
+        resolution_capture = float(pd.to_numeric(watch_only_vs_executed["resolution_capture_ratio"], errors="coerce").dropna().mean()) if ("resolution_capture_ratio" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
+        st.metric("Resolution Capture", f"{resolution_capture:.2f}", delta="opportunity lifecycle")
 
     filters = st.columns(4)
     wallet_values = ["全部"]
@@ -113,7 +111,7 @@ def show() -> None:
 
     st.markdown("#### Predicted vs Realized")
     if filtered_pvr.empty:
-        st.info("当前没有 executed-only predicted-vs-realized rows。")
+        st.info("当前没有 execution-path evidence rows。")
     else:
         columns = [
             column
@@ -137,6 +135,7 @@ def show() -> None:
         st.dataframe(filtered_pvr[columns], width="stretch", hide_index=True)
 
     st.markdown("#### Attention Queue")
+    st.caption("这里聚合 execution / live-prereq exceptions，不是新的 execution gate。")
     if attention_tickets.empty and exceptions.empty:
         st.success("当前没有 execution / live-prereq attention rows。")
     else:
@@ -197,6 +196,11 @@ def show() -> None:
                     {"字段": "Resolution Value", "值": latest.get("resolution_value")},
                     {"字段": "Realized PnL", "值": latest.get("realized_pnl")},
                     {"字段": "Post-Trade Error", "值": latest.get("post_trade_error")},
+                    {"字段": "Lifecycle Stage", "值": latest.get("execution_lifecycle_stage")},
+                    {"字段": "Fill Ratio", "值": latest.get("fill_ratio")},
+                    {"字段": "Adverse Fill Slippage (bps)", "值": latest.get("adverse_fill_slippage_bps")},
+                    {"字段": "Resolution Lag (hrs)", "值": latest.get("resolution_lag_hours")},
+                    {"字段": "Miss Reason", "值": latest.get("miss_reason_bucket")},
                     {"字段": "Source Disagreement", "值": latest.get("source_disagreement")},
                 ]
             )
@@ -224,6 +228,26 @@ def show() -> None:
 
     lower_left, lower_right = st.columns([1.15, 1])
     with lower_left:
+        st.markdown("#### Execution Science Cohorts")
+        if execution_science.empty:
+            st.info("当前没有 `ui.execution_science_summary` 数据。")
+        else:
+            strategy_science = execution_science[execution_science["cohort_type"] == "strategy"] if "cohort_type" in execution_science.columns else execution_science
+            preferred_columns = [
+                column
+                for column in [
+                    "cohort_key",
+                    "ticket_count",
+                    "submission_capture_ratio",
+                    "fill_capture_ratio",
+                    "resolution_capture_ratio",
+                    "dominant_miss_reason_bucket",
+                    "dominant_distortion_reason_bucket",
+                ]
+                if column in strategy_science.columns
+            ]
+            st.dataframe(strategy_science[preferred_columns].head(10), width="stretch", hide_index=True)
+
         st.markdown("#### Run Summary")
         if runs.empty:
             st.info("当前没有 `ui.execution_run_summary` 数据。")
@@ -240,9 +264,13 @@ def show() -> None:
                 for column in [
                     "market_id",
                     "avg_executable_edge_bps",
+                    "submission_capture_ratio",
+                    "fill_capture_ratio",
+                    "resolution_capture_ratio",
                     "executed_ticket_count",
-                    "execution_capture_ratio",
+                    "dominant_lifecycle_stage",
                     "miss_reason_bucket",
+                    "distortion_reason_bucket",
                 ]
                 if column in watch_only_vs_executed.columns
             ]

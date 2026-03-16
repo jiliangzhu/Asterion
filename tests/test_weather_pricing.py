@@ -32,6 +32,7 @@ from domains.weather.forecast import (
     enqueue_forecast_run_upserts,
 )
 from domains.weather.forecast.adapters import build_normal_distribution
+from domains.weather.opportunity import build_weather_opportunity_assessment
 from domains.weather.pricing import (
     build_binary_fair_values,
     build_watch_only_snapshot,
@@ -255,7 +256,91 @@ class WeatherPricingUnitTest(unittest.TestCase):
         self.assertIn("model_fair_value", snapshot.pricing_context)
         self.assertIn("edge_bps_model", snapshot.pricing_context)
         self.assertIn("edge_bps_executable", snapshot.pricing_context)
+        self.assertIn("ranking_score", snapshot.pricing_context)
+        self.assertIn("uncertainty_multiplier", snapshot.pricing_context)
+        self.assertIn("ranking_penalty_reasons", snapshot.pricing_context)
         self.assertLess(snapshot.fair_value, fair_value.fair_value)
+
+    def test_snapshot_writes_penalty_fields_without_overwriting_raw_edge(self) -> None:
+        assessment = build_weather_opportunity_assessment(
+            market_id="mkt_penalty_1",
+            token_id="tok_yes",
+            outcome="YES",
+            reference_price=0.42,
+            model_fair_value=0.67,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+            calibration_health_status="limited_samples",
+            sample_count=8,
+            calibration_reason_codes=["calibration_limited_samples"],
+            mapping_confidence=0.68,
+            source_freshness_status="stale",
+            price_staleness_ms=120_000,
+        )
+        snapshot = build_watch_only_snapshot(
+            assessment=assessment,
+            reference_price=0.42,
+            threshold_bps=500,
+            pricing_context={"run_id": "frun_penalty", "condition_id": "cond_penalty"},
+        )
+        self.assertEqual(snapshot.edge_bps, assessment.edge_bps_executable)
+        self.assertEqual(snapshot.pricing_context["ranking_score"], assessment.ranking_score)
+        self.assertEqual(snapshot.pricing_context["uncertainty_multiplier"], assessment.uncertainty_multiplier)
+        self.assertEqual(snapshot.pricing_context["calibration_health_status"], "limited_samples")
+        self.assertIn("calibration_limited_samples", snapshot.pricing_context["ranking_penalty_reasons"])
+
+    def test_sell_snapshot_uses_side_aware_executable_edge(self) -> None:
+        assessment = build_weather_opportunity_assessment(
+            market_id="mkt_sell_1",
+            token_id="tok_no",
+            outcome="NO",
+            reference_price=0.70,
+            model_fair_value=0.50,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+        )
+        snapshot = build_watch_only_snapshot(
+            assessment=assessment,
+            reference_price=0.70,
+            threshold_bps=500,
+            pricing_context={"run_id": "frun_sell", "condition_id": "cond_sell"},
+        )
+        self.assertEqual(snapshot.decision, "TAKE")
+        self.assertEqual(snapshot.side, "SELL")
+        self.assertLess(snapshot.edge_bps, 0)
+        self.assertEqual(snapshot.pricing_context["best_side"], "SELL")
+
+    def test_sell_snapshot_holds_when_costs_erase_edge(self) -> None:
+        assessment = build_weather_opportunity_assessment(
+            market_id="mkt_sell_2",
+            token_id="tok_no",
+            outcome="NO",
+            reference_price=0.51,
+            model_fair_value=0.50,
+            accepting_orders=True,
+            enable_order_book=False,
+            threshold_bps=10,
+            fees_bps=20,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+        )
+        snapshot = build_watch_only_snapshot(
+            assessment=assessment,
+            reference_price=0.51,
+            threshold_bps=10,
+            pricing_context={"run_id": "frun_sell_flat", "condition_id": "cond_sell_flat"},
+        )
+        self.assertEqual(snapshot.decision, "NO_TRADE")
+        self.assertEqual(snapshot.side, "HOLD")
+        self.assertEqual(snapshot.edge_bps, 0)
 
 
 @unittest.skipUnless(HAS_DUCKDB, "duckdb is required for weather pricing tests")

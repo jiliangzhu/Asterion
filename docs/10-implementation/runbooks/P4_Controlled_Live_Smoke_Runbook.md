@@ -161,4 +161,6 @@ repo 配置：
 
 - `GO` 只表示 rollout decision readiness
 - 不表示 capability unrestricted
+- `ASTERION_CONTROLLED_LIVE_SECRET_ARMED=true` 现在也是 constrained `real_clob_submit` 路径的显式前提；submitter 与 controlled-live chain-tx 都已在 service shell 层执行 arming guard
 - `real_clob_submit` constrained backend 已存在，但它不属于本 runbook 的执行范围；本 runbook 仍只覆盖 `approve_usdc` chain-tx smoke
+- `real_clob_submit` 的 live submit 现已额外要求 shell-level boundary inputs 和 backend-approved attestation；相关决策证据落在 `runtime.live_boundary_attestations`

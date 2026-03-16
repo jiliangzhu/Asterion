@@ -1,7 +1,7 @@
 # Asterion Implementation Index
 
-**版本**: v1.2
-**更新日期**: 2026-03-15
+**版本**: v1.3
+**更新日期**: 2026-03-16
 **目标**: 作为 `docs/10-implementation/` 的统一入口，按“阶段计划 / 检查清单 / runbook / 迁移台账 / module notes”分类组织实施文档，便于快速定位每个阶段的实施计划、关闭条件和运行入口。
 
 ---
@@ -73,6 +73,7 @@ docs/10-implementation/
 ### 3.1 当前阶段计划
 
 - [Post_P4_Remediation_Implementation_Plan.md](./phase-plans/Post_P4_Remediation_Implementation_Plan.md)
+  - 当前 active canonical plan；已包含 accepted `Phase 0` 到 `Phase 9`、residual gaps repair status，以及 reassessment 后续 `Phase 5+` 路线
 - [P4_Implementation_Plan.md](./phase-plans/P4_Implementation_Plan.md)
 - [P3_Implementation_Plan.md](./phase-plans/P3_Implementation_Plan.md)
 - [P0_Implementation_Plan.md](./phase-plans/P0_Implementation_Plan.md)
@@ -190,6 +191,7 @@ docs/10-implementation/
 
 1. [Implementation_Index.md](./Implementation_Index.md)
 2. [Post_P4_Remediation_Implementation_Plan.md](./phase-plans/Post_P4_Remediation_Implementation_Plan.md)
+   - 当前 canonical remediation plan，同时承载 reassessment residual gaps 的 `Phase 5+` 路线
 3. [P4_Implementation_Plan.md](./phase-plans/P4_Implementation_Plan.md)
 4. [P4_Closeout_Checklist.md](./checklists/P4_Closeout_Checklist.md)
 5. [P4_Controlled_Rollout_Decision_Runbook.md](./runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
