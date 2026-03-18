@@ -63,7 +63,8 @@ class ExecutionScienceSummaryTest(unittest.TestCase):
                 rows = con.execute(
                     """
                     SELECT cohort_type, cohort_key, ticket_count, filled_ticket_count, resolved_ticket_count,
-                           dominant_miss_reason_bucket, dominant_distortion_reason_bucket
+                           dominant_miss_reason_bucket, dominant_distortion_reason_bucket,
+                           feedback_status, feedback_penalty
                     FROM ui.execution_science_summary
                     ORDER BY cohort_type, cohort_key
                     """
@@ -71,10 +72,10 @@ class ExecutionScienceSummaryTest(unittest.TestCase):
             finally:
                 con.close()
 
-        self.assertIn(("market", "mkt_1", 2, 2, 2, "captured_resolved", "execution_distortion"), rows)
-        self.assertIn(("market", "mkt_2", 1, 0, 0, "submit_rejected", "execution_distortion"), rows)
-        self.assertIn(("strategy", "weather_primary", 3, 2, 2, "captured_resolved", "execution_distortion"), rows)
-        self.assertIn(("wallet", "wallet_weather_1", 3, 2, 2, "captured_resolved", "execution_distortion"), rows)
+        self.assertIn(("market", "mkt_1", 2, 2, 2, "captured_resolved", "execution_distortion", "heuristic_only", 0.0), rows)
+        self.assertIn(("market", "mkt_2", 1, 0, 0, "submit_rejected", "execution_distortion", "heuristic_only", 0.0), rows)
+        self.assertIn(("strategy", "weather_primary", 3, 2, 2, "captured_resolved", "execution_distortion", "heuristic_only", 0.0), rows)
+        self.assertIn(("wallet", "wallet_weather_1", 3, 2, 2, "captured_resolved", "execution_distortion", "heuristic_only", 0.0), rows)
 
 
 if __name__ == "__main__":

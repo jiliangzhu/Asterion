@@ -1,8 +1,14 @@
 # Asterion 项目修复方案
 
+> Analysis input only.
+> Not implementation truth-source.
+> Active planning entry: `docs/10-implementation/phase-plans/V2_Implementation_Plan.md`
+
+**状态**: historical remediation draft (`2026-03-13`)
+
 **文档版本**: v1.0
 **创建日期**: 2026-03-13
-**基于**: Claude_Asterion_Project_Assessment.md
+**基于**: 10_Claude_Asterion_Project_Assessment.md
 **状态**: Draft
 
 ---

@@ -10,8 +10,13 @@ from unittest.mock import patch
 
 import duckdb
 
-from asterion_core.contracts import build_submitter_boundary_attestation
-from asterion_core.execution import RealClobSubmitterBackend, SubmitMode, SubmitterServiceShell
+from asterion_core.contracts import build_submitter_boundary_attestation, mint_submitter_boundary_attestation_v2
+from asterion_core.execution import (
+    RealClobSubmitterBackend,
+    SubmitMode,
+    SubmitterServiceShell,
+    submitter_boundary_attestation_to_row,
+)
 from asterion_core.monitoring import (
     ReadinessGateResult,
     ReadinessReport,
@@ -20,10 +25,10 @@ from asterion_core.monitoring import (
     write_controlled_live_capability_manifest,
 )
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
+from asterion_core.storage.db_migrate import MigrationConfig, apply_migrations
 from asterion_core.storage.write_queue import WriteQueueConfig
 from asterion_core.storage.writerd import process_one
 from dagster_asterion.handlers import run_weather_submitter_smoke_job
-from tests.test_p2_closeout import _apply_schema
 from tests.test_submitter_shell import _signed_attempt
 
 
@@ -49,17 +54,43 @@ class _ExplodingClient:
 
 class RealClobSubmitterBackendTest(unittest.TestCase):
     def test_real_backend_accepts_live_submit(self) -> None:
-        backend = RealClobSubmitterBackend(api_base_url="https://submit.invalid/orders", client=_AcceptedClient())
         request = _build_live_submit_request()
-        result = backend.submit(request, boundary_attestation=_approved_attestation(backend, request))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = _seed_live_boundary_db(tmpdir)
+            backend = RealClobSubmitterBackend(
+                api_base_url="https://submit.invalid/orders",
+                client=_AcceptedClient(),
+                db_path=db_path,
+            )
+            with patch.dict(
+                os.environ,
+                {"ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY": "phase10-test-secret"},
+                clear=False,
+            ):
+                attestation = _approved_attestation(backend, request)
+                _persist_attestation(db_path, attestation)
+                result = backend.submit(request, boundary_attestation=attestation)
         self.assertEqual(result.status, "accepted")
         self.assertEqual(result.external_order_id, "ext_live_1")
         self.assertEqual(result.submit_payload_json["backend_kind"], "real_clob_submit")
 
     def test_real_backend_rejects_provider_error_without_raising(self) -> None:
-        backend = RealClobSubmitterBackend(api_base_url="https://submit.invalid/orders", client=_BrokenClient())
         request = _build_live_submit_request()
-        result = backend.submit(request, boundary_attestation=_approved_attestation(backend, request))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = _seed_live_boundary_db(tmpdir)
+            backend = RealClobSubmitterBackend(
+                api_base_url="https://submit.invalid/orders",
+                client=_BrokenClient(),
+                db_path=db_path,
+            )
+            with patch.dict(
+                os.environ,
+                {"ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY": "phase10-test-secret"},
+                clear=False,
+            ):
+                attestation = _approved_attestation(backend, request)
+                _persist_attestation(db_path, attestation)
+                result = backend.submit(request, boundary_attestation=attestation)
         self.assertEqual(result.status, "rejected")
         self.assertIn("submitter_provider_error:", result.error or "")
 
@@ -78,11 +109,15 @@ class RealClobSubmitterBackendTest(unittest.TestCase):
         self.assertEqual(result.error, "submitter_boundary_attestation_missing")
 
     def test_real_backend_rejects_non_approved_attestation(self) -> None:
-        backend = RealClobSubmitterBackend(api_base_url="https://submit.invalid/orders", client=_AcceptedClient())
-        request = _build_live_submit_request()
-        result = backend.submit(
-            request,
-            boundary_attestation=build_submitter_boundary_attestation(
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = _seed_live_boundary_db(tmpdir)
+            backend = RealClobSubmitterBackend(
+                api_base_url="https://submit.invalid/orders",
+                client=_AcceptedClient(),
+                db_path=db_path,
+            )
+            request = _build_live_submit_request()
+            attestation = build_submitter_boundary_attestation(
                 request_id=request.request_id,
                 wallet_id=request.wallet_id,
                 submit_mode=request.submit_mode.value,
@@ -92,30 +127,79 @@ class RealClobSubmitterBackendTest(unittest.TestCase):
                 readiness_report_payload=None,
                 reason_codes=["manifest_missing"],
                 created_at=request.timestamp,
-            ),
-        )
+            )
+            result = backend.submit(request, boundary_attestation=attestation)
         self.assertEqual(result.status, "rejected")
         self.assertEqual(result.error, "submitter_boundary_attestation_not_approved")
 
     def test_real_backend_rejects_endpoint_fingerprint_mismatch(self) -> None:
-        backend = RealClobSubmitterBackend(api_base_url="https://submit.invalid/orders", client=_AcceptedClient())
-        request = _build_live_submit_request()
-        result = backend.submit(
-            request,
-            boundary_attestation=build_submitter_boundary_attestation(
-                request_id=request.request_id,
-                wallet_id=request.wallet_id,
-                submit_mode=request.submit_mode.value,
-                target_backend_kind="real_clob_submit",
-                submitter_endpoint_fingerprint="wrong",
-                manifest_payload={"manifest_status": "valid"},
-                readiness_report_payload={"go_decision": "GO"},
-                reason_codes=[],
-                created_at=request.timestamp,
-            ),
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = _seed_live_boundary_db(tmpdir)
+            backend = RealClobSubmitterBackend(
+                api_base_url="https://submit.invalid/orders",
+                client=_AcceptedClient(),
+                db_path=db_path,
+            )
+            request = _build_live_submit_request()
+            with patch.dict(
+                os.environ,
+                {"ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY": "phase10-test-secret"},
+                clear=False,
+            ):
+                attestation = mint_submitter_boundary_attestation_v2(
+                    build_submitter_boundary_attestation(
+                        request_id=request.request_id,
+                        wallet_id=request.wallet_id,
+                        submit_mode=request.submit_mode.value,
+                        target_backend_kind="real_clob_submit",
+                        submitter_endpoint_fingerprint="wrong",
+                        manifest_payload={"manifest_status": "valid"},
+                        readiness_report_payload={"go_decision": "GO"},
+                        reason_codes=[],
+                        created_at=request.timestamp,
+                    ),
+                    attestation_secret="phase10-test-secret",
+                    issued_at=request.timestamp,
+                )
+                _persist_attestation(db_path, attestation)
+                result = backend.submit(request, boundary_attestation=attestation)
         self.assertEqual(result.status, "rejected")
         self.assertEqual(result.error, "submitter_endpoint_fingerprint_mismatch")
+
+    def test_real_backend_rejects_attestation_not_persisted(self) -> None:
+        backend = RealClobSubmitterBackend(api_base_url="https://submit.invalid/orders", client=_AcceptedClient())
+        request = _build_live_submit_request()
+        with patch.dict(
+            os.environ,
+            {"ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY": "phase10-test-secret"},
+            clear=False,
+        ):
+            attestation = _approved_attestation(backend, request)
+            result = backend.submit(request, boundary_attestation=attestation)
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.error, "attestation_not_persisted")
+
+    def test_real_backend_rejects_reused_attestation(self) -> None:
+        request = _build_live_submit_request()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = _seed_live_boundary_db(tmpdir)
+            backend = RealClobSubmitterBackend(
+                api_base_url="https://submit.invalid/orders",
+                client=_AcceptedClient(),
+                db_path=db_path,
+            )
+            with patch.dict(
+                os.environ,
+                {"ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY": "phase10-test-secret"},
+                clear=False,
+            ):
+                attestation = _approved_attestation(backend, request)
+                _persist_attestation(db_path, attestation)
+                first = backend.submit(request, boundary_attestation=attestation)
+                second = backend.submit(request, boundary_attestation=attestation)
+        self.assertEqual(first.status, "accepted")
+        self.assertEqual(second.status, "rejected")
+        self.assertEqual(second.error, "attestation_reused")
 
 
 class LiveSubmitterSmokeHandlerTest(unittest.TestCase):
@@ -126,6 +210,7 @@ class LiveSubmitterSmokeHandlerTest(unittest.TestCase):
                 with patch.dict(
                     os.environ,
                     {
+                        "ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY": "phase10-test-secret",
                         "ASTERION_WRITERD_ALLOWED_TABLES": "runtime.journal_events,runtime.submit_attempts,runtime.external_order_observations,runtime.live_boundary_attestations",
                     },
                     clear=False,
@@ -137,6 +222,7 @@ class LiveSubmitterSmokeHandlerTest(unittest.TestCase):
                             RealClobSubmitterBackend(
                                 api_base_url="https://submit.invalid/orders",
                                 client=_AcceptedClient(),
+                                db_path=env["db_path"],
                             )
                         ),
                         controlled_live_capability_manifest_path=str(Path(tmpdir) / "missing_manifest.json"),
@@ -175,6 +261,7 @@ class LiveSubmitterSmokeHandlerTest(unittest.TestCase):
                     {
                         "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "true",
                         "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
+                        "ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY": "phase10-test-secret",
                         "ASTERION_CONTROLLED_LIVE_SECRET_PK_WALLET_WEATHER_1": "0xabc",
                         "ASTERION_WRITERD_ALLOWED_TABLES": "runtime.journal_events,runtime.submit_attempts,runtime.external_order_observations,runtime.live_boundary_attestations",
                     },
@@ -187,6 +274,7 @@ class LiveSubmitterSmokeHandlerTest(unittest.TestCase):
                             RealClobSubmitterBackend(
                                 api_base_url="https://submit.invalid/orders",
                                 client=_AcceptedClient(),
+                                db_path=env["db_path"],
                             )
                         ),
                         controlled_live_capability_manifest_path=env["manifest_path"],
@@ -233,6 +321,7 @@ class LiveSubmitterSmokeHandlerTest(unittest.TestCase):
                     {
                         "ASTERION_CONTROLLED_LIVE_SECRET_ARMED": "false",
                         "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "live-token",
+                        "ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY": "phase10-test-secret",
                         "ASTERION_CONTROLLED_LIVE_SECRET_PK_WALLET_WEATHER_1": "0xabc",
                         "ASTERION_WRITERD_ALLOWED_TABLES": "runtime.journal_events,runtime.submit_attempts,runtime.external_order_observations,runtime.live_boundary_attestations",
                     },
@@ -245,6 +334,7 @@ class LiveSubmitterSmokeHandlerTest(unittest.TestCase):
                             RealClobSubmitterBackend(
                                 api_base_url="https://submit.invalid/orders",
                                 client=_ExplodingClient(),
+                                db_path=env["db_path"],
                             )
                         ),
                         controlled_live_capability_manifest_path=env["manifest_path"],
@@ -292,17 +382,74 @@ def _build_live_submit_request(*, submit_mode: SubmitMode = SubmitMode.LIVE_SUBM
 
 
 def _approved_attestation(backend: RealClobSubmitterBackend, request):
-    return build_submitter_boundary_attestation(
-        request_id=request.request_id,
-        wallet_id=request.wallet_id,
-        submit_mode=request.submit_mode.value,
-        target_backend_kind=backend.backend_kind(),
-        submitter_endpoint_fingerprint=backend.endpoint_fingerprint(),
-        manifest_payload={"manifest_status": "valid"},
-        readiness_report_payload={"go_decision": "GO"},
-        reason_codes=[],
-        created_at=request.timestamp,
+    return mint_submitter_boundary_attestation_v2(
+        build_submitter_boundary_attestation(
+            request_id=request.request_id,
+            wallet_id=request.wallet_id,
+            submit_mode=request.submit_mode.value,
+            target_backend_kind=backend.backend_kind(),
+            submitter_endpoint_fingerprint=backend.endpoint_fingerprint(),
+            manifest_payload={"manifest_status": "valid"},
+            readiness_report_payload={"go_decision": "GO"},
+            reason_codes=[],
+            created_at=request.timestamp,
+        ),
+        attestation_secret="phase10-test-secret",
+        issued_at=request.timestamp,
     )
+
+
+def _seed_live_boundary_db(tmpdir: str) -> str:
+    db_path = str(Path(tmpdir) / "asterion.duckdb")
+    root = Path(__file__).resolve().parents[1]
+    migrations_dir = root / "sql" / "migrations"
+    with patch.dict(
+        os.environ,
+        {
+            "ASTERION_STRICT_SINGLE_WRITER": "1",
+            "ASTERION_DB_ROLE": "writer",
+            "WRITERD": "1",
+        },
+        clear=False,
+    ):
+        apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=str(migrations_dir)))
+    return db_path
+
+
+def _persist_attestation(db_path: str, attestation) -> None:  # noqa: ANN001
+    con = duckdb.connect(db_path)
+    try:
+        con.execute(
+            """
+            INSERT INTO runtime.live_boundary_attestations
+            (
+                attestation_id,
+                request_id,
+                run_id,
+                wallet_id,
+                source_attempt_id,
+                ticket_id,
+                execution_context_id,
+                attestation_kind,
+                submit_mode,
+                target_backend_kind,
+                attestation_status,
+                reason_codes_json,
+                attestation_payload_json,
+                created_at,
+                issuer,
+                issued_at,
+                expires_at,
+                nonce,
+                decision_fingerprint,
+                attestation_mac
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            submitter_boundary_attestation_to_row(attestation, run_id=attestation.request_id),
+        )
+    finally:
+        con.close()
 
 
 def _seed_submitter_env(tmpdir: str, *, manifest_submitter_backend_kind: str = "shadow_stub") -> dict[str, object]:
@@ -312,7 +459,7 @@ def _seed_submitter_env(tmpdir: str, *, manifest_submitter_backend_kind: str = "
     readiness_path = str(Path(tmpdir) / "readiness.json")
     manifest_path = str(Path(tmpdir) / "manifest.json")
     policy_path = Path(tmpdir) / "controlled_live_smoke.json"
-    _apply_schema(db_path)
+    _seed_live_boundary_db(tmpdir)
     con = duckdb.connect(db_path)
     con.execute(
         """

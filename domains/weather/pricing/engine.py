@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from asterion_core.contracts import (
+    ExecutionPriorSummary,
     ForecastRunRecord,
     OpportunityAssessment,
     WatchOnlySnapshotRecord,
@@ -13,6 +14,7 @@ from asterion_core.contracts import (
     WeatherMarketSpecRecord,
     stable_object_id,
 )
+from domains.weather.forecast.calibration import calibration_v2_context_for_probability
 from domains.weather.opportunity import build_weather_opportunity_assessment
 
 
@@ -62,6 +64,20 @@ def build_binary_fair_values(
     return out
 
 
+def build_forecast_calibration_pricing_context(
+    *,
+    forecast_run: ForecastRunRecord,
+    outcome: str,
+    fair_value: float,
+) -> dict[str, Any]:
+    summary = forecast_run.forecast_payload.get("distribution_summary_v2")
+    if not isinstance(summary, dict):
+        return {}
+    normalized_outcome = _normalize_outcome(outcome)
+    yes_probability = float(fair_value) if normalized_outcome == "YES" else max(0.0, min(1.0, 1.0 - float(fair_value)))
+    return calibration_v2_context_for_probability(summary, probability=yes_probability)
+
+
 def build_watch_only_snapshot(
     *,
     assessment: OpportunityAssessment | None = None,
@@ -73,6 +89,7 @@ def build_watch_only_snapshot(
     fees_bps: int | None = None,
     agent_review_status: str = "no_agent_signal",
     live_prereq_status: str = "not_started",
+    execution_prior_summary: ExecutionPriorSummary | None = None,
     pricing_context: dict[str, Any] | None = None,
 ) -> WatchOnlySnapshotRecord:
     price = float(reference_price)
@@ -101,10 +118,18 @@ def build_watch_only_snapshot(
             source_freshness_status=str(effective_pricing_context.get("source_freshness_status") or "fresh"),
             spread_bps=int(effective_pricing_context.get("spread_bps") or 0) or None,
             calibration_health_status=str(effective_pricing_context.get("calibration_health_status") or "lookup_missing"),
+            calibration_bias_quality=effective_pricing_context.get("calibration_bias_quality")
+            or effective_pricing_context.get("bias_quality_status"),
+            threshold_probability_quality=effective_pricing_context.get("threshold_probability_quality")
+            or effective_pricing_context.get("threshold_probability_quality_status"),
             sample_count=int(effective_pricing_context.get("sample_count") or 0),
             calibration_multiplier=effective_pricing_context.get("calibration_multiplier"),
             calibration_reason_codes=effective_pricing_context.get("calibration_reason_codes")
             if isinstance(effective_pricing_context.get("calibration_reason_codes"), list)
+            else None,
+            execution_prior_summary=execution_prior_summary,
+            forecast_distribution_summary_v2=effective_pricing_context.get("distribution_summary_v2")
+            if isinstance(effective_pricing_context.get("distribution_summary_v2"), dict)
             else None,
             source_context=effective_pricing_context,
         )

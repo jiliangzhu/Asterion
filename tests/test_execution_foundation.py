@@ -259,22 +259,51 @@ class StrategyEngineTest(unittest.TestCase):
         self.assertLess(sell_snapshot.edge_bps, 0)
         self.assertGreater(abs(sell_snapshot.edge_bps), abs(buy_snapshot.edge_bps))
 
+    def test_strategy_engine_prefers_higher_ranking_score_over_absolute_edge(self) -> None:
+        ctx = StrategyContext(
+            data_snapshot_id="snap_weather_1",
+            universe_snapshot_id="uni_weather_1",
+            asof_ts_ms=1_710_000_000_000,
+            dq_level="PASS",
+            quote_snapshot_refs=[],
+        )
+        high_edge_low_rank = dataclasses.replace(
+            _watch_snapshot(
+                snapshot_id="snap_high_edge",
+                token_id="tok_high_edge",
+                outcome="YES",
+                side="BUY",
+                edge_bps=1200,
+                signal_ts_ms=200,
+            ),
+            pricing_context={"signal_ts_ms": 200, "ranking_score": 0.18},
+        )
+        lower_edge_high_rank = dataclasses.replace(
+            _watch_snapshot(
+                snapshot_id="snap_high_rank",
+                token_id="tok_high_rank",
+                outcome="YES",
+                side="BUY",
+                edge_bps=900,
+                signal_ts_ms=100,
+            ),
+            pricing_context={"signal_ts_ms": 100, "ranking_score": 0.26},
+        )
+        strategy = StrategyRegistration(
+            strategy_id="weather_primary",
+            strategy_version="v1",
+            priority=1,
+            route_action=RouteAction.FAK,
+            size=Decimal("10"),
+        )
+
         _, decisions = run_strategy_engine(
             ctx=ctx,
-            snapshots=[buy_snapshot, sell_snapshot],
-            strategies=[
-                StrategyRegistration(
-                    strategy_id="weather_primary",
-                    strategy_version="v1",
-                    priority=1,
-                    route_action=RouteAction.FAK,
-                    size=Decimal("10"),
-                )
-            ],
+            snapshots=[high_edge_low_rank, lower_edge_high_rank],
+            strategies=[strategy],
         )
-        self.assertEqual([item.watch_snapshot_id for item in decisions], ["snap_sell", "snap_buy"])
-        self.assertEqual(decisions[0].side, "sell")
-        self.assertEqual(decisions[0].edge_bps, sell_snapshot.edge_bps)
+
+        self.assertEqual(decisions[0].watch_snapshot_id, "snap_high_rank")
 
     def test_strategy_engine_prefers_penalty_aware_ranking_score_over_raw_edge(self) -> None:
         ctx = StrategyContext(

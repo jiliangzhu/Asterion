@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from ui.pages import agents, execution, system
+from ui.pages import agents, execution, markets, system
 
 
 class _DummyContext:
@@ -32,12 +32,46 @@ class UiPhase4ConsoleSmokeTest(unittest.TestCase):
                         "wallet_id": "wallet_weather_1",
                         "strategy_id": "weather_primary",
                         "market_id": "mkt_1",
+                        "source_badge": "derived",
                         "predicted_edge_bps": 900.0,
                         "realized_pnl": 5.7,
                         "evaluation_status": "resolved",
                     }
                 ]
             ),
+            "watch_only_vs_executed": pd.DataFrame(
+                [
+                    {
+                        "market_id": "mkt_1",
+                        "source_badge": "derived",
+                        "avg_executable_edge_bps": 850.0,
+                        "submission_capture_ratio": 0.5,
+                        "fill_capture_ratio": 0.5,
+                        "resolution_capture_ratio": 0.5,
+                        "executed_ticket_count": 1,
+                        "dominant_lifecycle_stage": "resolved",
+                        "miss_reason_bucket": "captured",
+                        "distortion_reason_bucket": "none",
+                    }
+                ]
+            ),
+            "execution_science": pd.DataFrame(
+                [
+                    {
+                        "cohort_type": "strategy",
+                        "cohort_key": "weather_primary",
+                        "source_badge": "derived",
+                        "ticket_count": 1,
+                        "submission_capture_ratio": 1.0,
+                        "fill_capture_ratio": 1.0,
+                        "resolution_capture_ratio": 1.0,
+                        "dominant_miss_reason_bucket": "captured_resolved",
+                        "dominant_distortion_reason_bucket": "none",
+                    }
+                ]
+            ),
+            "market_research": pd.DataFrame(),
+            "calibration_health": pd.DataFrame(),
         }
         with patch("ui.pages.execution.load_execution_console_data", return_value=payload), \
             patch.object(execution.st, "markdown"), \
@@ -50,6 +84,8 @@ class UiPhase4ConsoleSmokeTest(unittest.TestCase):
             patch.object(execution.st, "columns", side_effect=lambda spec: [_DummyContext() for _ in range(spec if isinstance(spec, int) else len(spec))]):
             execution.show()
         self.assertTrue(dataframe_mock.called)
+        rendered_frames = [call.args[0] for call in dataframe_mock.call_args_list if call.args]
+        self.assertTrue(any("source_badge" in getattr(frame, "columns", []) for frame in rendered_frames))
 
     def test_system_show_renders_evidence_bundle(self) -> None:
         readiness = {
@@ -137,6 +173,89 @@ class UiPhase4ConsoleSmokeTest(unittest.TestCase):
             patch.object(agents.st, "expander", return_value=_DummyContext()):
             agents.show()
         self.assertTrue(dataframe_mock.called)
+
+    def test_markets_show_renders_ranking_score_and_source_badge(self) -> None:
+        payload = {
+            "weather_smoke_report": {"chain_status": "ok", "market_discovery": {"market_source": "ui_lite", "selected_market_count": 1}},
+            "market_opportunities": pd.DataFrame(
+                [
+                    {
+                        "market_id": "mkt_1",
+                        "location_name": "Seattle",
+                        "question": "Seattle weather",
+                        "best_side": "BUY",
+                        "edge_bps": 850.0,
+                        "edge_bps_model": 1000.0,
+                        "ranking_score": 88.0,
+                        "source_badge": "canonical",
+                        "source_truth_status": "canonical",
+                        "liquidity_proxy": 75.0,
+                        "mapping_confidence": 0.91,
+                        "source_freshness_status": "fresh",
+                        "market_quality_status": "pass",
+                        "agent_review_status": "passed",
+                        "actionability_status": "actionable",
+                        "accepting_orders": True,
+                        "market_close_time": "2026-03-18T12:00:00+00:00",
+                        "expected_value_score": 65.0,
+                        "expected_pnl_score": 55.0,
+                    }
+                ]
+            ),
+            "market_rows": [
+                {
+                    "market_id": "mkt_1",
+                    "location_name": "Seattle",
+                    "question": "Seattle weather",
+                    "best_side": "BUY",
+                    "edge_bps": 850.0,
+                    "edge_bps_model": 1000.0,
+                    "ranking_score": 88.0,
+                    "source_badge": "canonical",
+                    "source_truth_status": "canonical",
+                    "liquidity_proxy": 75.0,
+                    "mapping_confidence": 0.91,
+                    "source_freshness_status": "fresh",
+                    "market_quality_status": "pass",
+                    "agent_review_status": "passed",
+                    "actionability_status": "actionable",
+                    "accepting_orders": True,
+                    "market_close_time": "2026-03-18T12:00:00+00:00",
+                    "spec": {},
+                    "forecast": {},
+                    "pricing": {},
+                    "signals": {},
+                    "executed_evidence": {"has_executed_evidence": False},
+                    "watch_only_vs_executed": {"source_badge": "derived"},
+                    "market_research": {},
+                }
+            ],
+            "market_opportunity_source": "ui_lite",
+            "predicted_vs_realized": pd.DataFrame(),
+            "watch_only_vs_executed": pd.DataFrame(),
+            "market_research": pd.DataFrame(),
+        }
+        surface = {
+            "market_chain": {"status": "ok", "label": "ok", "detail": "", "source": "ui_lite", "updated_at": None},
+        }
+        with patch("ui.pages.markets.load_market_chain_analysis_data", return_value=payload), \
+            patch("ui.pages.markets.load_operator_surface_status", return_value=surface), \
+            patch.object(markets.st, "markdown"), \
+            patch.object(markets.st, "caption"), \
+            patch.object(markets.st, "metric"), \
+            patch.object(markets.st, "info"), \
+            patch.object(markets.st, "success"), \
+            patch.object(markets.st, "warning"), \
+            patch.object(markets.st, "error"), \
+            patch.object(markets.st, "dataframe", new=MagicMock()) as dataframe_mock, \
+            patch.object(markets.st, "columns", side_effect=lambda spec: [_DummyContext() for _ in range(spec if isinstance(spec, int) else len(spec))]), \
+            patch.object(markets.st, "selectbox", side_effect=["All", "All", "All", "All", "All", "mkt_1"]), \
+            patch.object(markets.st, "checkbox", return_value=False), \
+            patch.object(markets.st, "expander", return_value=_DummyContext()), \
+            patch.object(markets.st, "code"):
+            markets.show()
+        rendered_frames = [call.args[0] for call in dataframe_mock.call_args_list if call.args]
+        self.assertTrue(any("source_badge" in getattr(frame, "columns", []) for frame in rendered_frames))
 
 
 if __name__ == "__main__":

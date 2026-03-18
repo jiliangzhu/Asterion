@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from web3 import Account
 
+from asterion_core.blockchain import controlled_live_wallet_secret_env_var
 from asterion_core.contracts import AccountTradingCapability, CanonicalOrderContract, stable_object_id
 from asterion_core.journal import build_journal_event, enqueue_journal_event_upserts
 from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
@@ -113,11 +114,12 @@ class SignerRequest:
     requester: str
     timestamp: datetime
     context: SigningContext
+    wallet_id: str
     payload: dict[str, Any]
 
     def __post_init__(self) -> None:
-        if not self.request_id or not self.requester:
-            raise ValueError("request_id and requester are required")
+        if not self.request_id or not self.requester or not self.wallet_id:
+            raise ValueError("request_id, requester, and wallet_id are required")
         if not isinstance(self.payload, dict) or not self.payload:
             raise ValueError("payload must be a non-empty object")
 
@@ -355,16 +357,16 @@ class EnvPrivateKeyTransactionSignerBackend(OrderSigningBackend):
 
     def sign_transaction(self, request: SignerRequest) -> SignerResponse:
         payload_hash = hash_signer_payload(request.payload)
-        private_key_env_var = str(request.payload.get("private_key_env_var") or "").strip()
-        if not private_key_env_var:
+        if str(request.payload.get("private_key_env_var") or "").strip():
             return SignerResponse(
                 request_id=request.request_id,
                 status=SignatureAuditStatus.REJECTED.value,
                 signature=None,
                 signed_payload_ref=None,
-                error="controlled_live_private_key_env_var_missing",
+                error="controlled_live_private_key_env_var_forbidden",
                 completed_at=_normalize_timestamp(request.timestamp),
             )
+        private_key_env_var = controlled_live_wallet_secret_env_var(request.wallet_id)
         private_key = os.getenv(private_key_env_var)
         if not private_key:
             return SignerResponse(
@@ -413,6 +415,7 @@ class EnvPrivateKeyTransactionSignerBackend(OrderSigningBackend):
             signed_payload_json={
                 "backend_kind": "env_private_key_tx",
                 "request_id": request.request_id,
+                "wallet_id": request.wallet_id,
                 "signed_payload_ref": signed_payload_ref,
                 "signature": tx_hash_hex,
                 "signer_address": account.address,
@@ -631,6 +634,7 @@ class SignerServiceShell:
                             run_id=run_id or request.request_id,
                             payload_json={
                                 "request_id": request.request_id,
+                                "wallet_id": request.wallet_id,
                                 "signing_purpose": request.context.signing_purpose.value,
                                 "payload_hash": payload_hash,
                                 "status": SignatureAuditStatus.REQUESTED.value,
@@ -669,6 +673,7 @@ class SignerServiceShell:
                             run_id=run_id or request.request_id,
                             payload_json={
                                 "request_id": request.request_id,
+                                "wallet_id": request.wallet_id,
                                 "signing_purpose": request.context.signing_purpose.value,
                                 "payload_hash": payload_hash,
                                 "status": response.status,

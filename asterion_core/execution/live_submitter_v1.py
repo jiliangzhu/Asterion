@@ -6,15 +6,22 @@ from decimal import Decimal, ROUND_DOWN
 from enum import Enum
 import hashlib
 import importlib.util
+import json
+import os
 from typing import Any
 
 from asterion_core.contracts import (
+    SUBMITTER_BOUNDARY_ATTESTATION_KIND_V2,
+    SUBMITTER_BOUNDARY_ATTESTATION_V2_ISSUER,
     ExternalFillObservation,
     ExternalFillObservationKind,
     SubmitterBoundaryAttestation,
     SubmitterBoundaryInputs,
     build_submitter_boundary_attestation,
+    compute_boundary_attestation_mac,
+    compute_boundary_decision_fingerprint,
     evaluate_submitter_boundary,
+    mint_submitter_boundary_attestation_v2,
     stable_object_id,
 )
 from asterion_core.journal import build_journal_event, enqueue_journal_event_upserts
@@ -85,6 +92,26 @@ RUNTIME_LIVE_BOUNDARY_ATTESTATION_COLUMNS = [
     "reason_codes_json",
     "attestation_payload_json",
     "created_at",
+    "issuer",
+    "issued_at",
+    "expires_at",
+    "nonce",
+    "decision_fingerprint",
+    "attestation_mac",
+]
+
+RUNTIME_LIVE_BOUNDARY_ATTESTATION_USE_COLUMNS = [
+    "use_id",
+    "attestation_id",
+    "request_id",
+    "wallet_id",
+    "target_backend_kind",
+    "submitter_endpoint_fingerprint",
+    "use_status",
+    "provider_status",
+    "error",
+    "created_at",
+    "completed_at",
 ]
 
 
@@ -183,6 +210,21 @@ class _SubmitterInvocationResult:
     response: SubmitOrderResult
     payload_hash: str
     task_ids: list[str]
+
+
+@dataclass(frozen=True)
+class LiveBoundaryAttestationUseRecord:
+    use_id: str
+    attestation_id: str
+    request_id: str
+    wallet_id: str
+    target_backend_kind: str
+    submitter_endpoint_fingerprint: str
+    use_status: str
+    provider_status: str | None
+    error: str | None
+    created_at: datetime
+    completed_at: datetime | None
 
 
 class SubmitterBackend:
@@ -290,12 +332,13 @@ class _SubmitterHttpClient:
 
 
 class RealClobSubmitterBackend(SubmitterBackend):
-    def __init__(self, *, api_base_url: str, client: Any | None = None) -> None:
+    def __init__(self, *, api_base_url: str, client: Any | None = None, db_path: str | None = None) -> None:
         normalized = str(api_base_url or "").strip()
         if not normalized:
             raise ValueError("real_clob_submit requires submitter_api_base_url")
         self._api_base_url = normalized
         self._client = client or _SubmitterHttpClient()
+        self._db_path = str(db_path or os.getenv("ASTERION_DB_PATH") or "").strip() or None
 
     def backend_kind(self) -> str:
         return "real_clob_submit"
@@ -370,6 +413,90 @@ class RealClobSubmitterBackend(SubmitterBackend):
                 backend_kind="real_clob_submit",
                 error="submitter_endpoint_fingerprint_mismatch",
             )
+        if str(boundary_attestation.attestation_kind).strip() != SUBMITTER_BOUNDARY_ATTESTATION_KIND_V2:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="submitter_boundary_attestation_kind_mismatch",
+            )
+        if str(boundary_attestation.issuer or "").strip() != SUBMITTER_BOUNDARY_ATTESTATION_V2_ISSUER:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="attestation_issuer_mismatch",
+            )
+        if boundary_attestation.issued_at is None or boundary_attestation.expires_at is None or not boundary_attestation.nonce:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="submitter_boundary_attestation_incomplete",
+            )
+        if _normalize_timestamp(request.timestamp) > _normalize_timestamp(boundary_attestation.expires_at):
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="attestation_expired",
+            )
+        expected_decision_fingerprint = compute_boundary_decision_fingerprint(boundary_attestation.attestation_payload_json)
+        if str(boundary_attestation.decision_fingerprint or "").strip() != expected_decision_fingerprint:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="attestation_decision_fingerprint_mismatch",
+            )
+        attestation_secret = str(os.getenv("ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY") or "").strip()
+        if not attestation_secret:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="attestation_secret_missing",
+            )
+        expected_mac = compute_boundary_attestation_mac(
+            secret=attestation_secret,
+            issuer=SUBMITTER_BOUNDARY_ATTESTATION_V2_ISSUER,
+            attestation_id=boundary_attestation.attestation_id,
+            nonce=boundary_attestation.nonce,
+            issued_at=boundary_attestation.issued_at,
+            expires_at=boundary_attestation.expires_at,
+            decision_fingerprint=expected_decision_fingerprint,
+        )
+        if str(boundary_attestation.attestation_mac or "").strip() != expected_mac:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="attestation_mac_invalid",
+            )
+        persisted_attestation = _load_persisted_live_boundary_attestation(
+            db_path=self._db_path,
+            attestation_id=boundary_attestation.attestation_id,
+        )
+        if persisted_attestation is None:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="attestation_not_persisted",
+            )
+        if not _persisted_attestation_matches(
+            persisted_attestation=persisted_attestation,
+            attestation=boundary_attestation,
+        ):
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="attestation_decision_fingerprint_mismatch",
+            )
+        claimed_use = _claim_live_boundary_attestation_use(
+            db_path=self._db_path,
+            attestation=boundary_attestation,
+            request=request,
+            endpoint_fingerprint=str(self.endpoint_fingerprint() or ""),
+        )
+        if claimed_use is None:
+            return _build_rejected_result(
+                request,
+                backend_kind="real_clob_submit",
+                error="attestation_reused",
+            )
 
         try:
             provider_payload = self._client.post_json(
@@ -385,6 +512,14 @@ class RealClobSubmitterBackend(SubmitterBackend):
                 external_order_id=None,
                 error=error,
                 provider_response={"provider_error": str(exc)},
+            )
+            _finalize_live_boundary_attestation_use(
+                db_path=self._db_path,
+                use_id=claimed_use.use_id,
+                use_status="provider_rejected",
+                provider_status="rejected",
+                error=error,
+                completed_at=_normalize_timestamp(request.timestamp),
             )
             return SubmitOrderResult(
                 request_id=request.request_id,
@@ -405,6 +540,14 @@ class RealClobSubmitterBackend(SubmitterBackend):
             error=error,
             provider_response=provider_payload,
         )
+        _finalize_live_boundary_attestation_use(
+            db_path=self._db_path,
+            use_id=claimed_use.use_id,
+            use_status="provider_completed",
+            provider_status=status,
+            error=error,
+            completed_at=_normalize_timestamp(request.timestamp),
+        )
         return SubmitOrderResult(
             request_id=request.request_id,
             status=status,
@@ -419,6 +562,7 @@ class RealClobSubmitterBackend(SubmitterBackend):
 class SubmitterServiceShell:
     def __init__(self, backend: SubmitterBackend | None = None) -> None:
         self._backend = backend or DisabledSubmitterBackend()
+        self._db_path = str(getattr(self._backend, "_db_path", None) or os.getenv("ASTERION_DB_PATH") or "").strip() or None
 
     def describe_live_boundary(self) -> dict[str, str | None]:
         return {
@@ -500,6 +644,11 @@ class SubmitterServiceShell:
                     )
                 )
             )
+            _persist_live_boundary_attestation_direct(
+                db_path=self._db_path,
+                attestation=attestation,
+                run_id=run_id or request.request_id,
+            )
             if attestation.attestation_status != "approved":
                 response = _build_rejected_result(
                     request,
@@ -552,8 +701,9 @@ class SubmitterServiceShell:
         *,
         boundary_inputs: SubmitterBoundaryInputs | None,
     ) -> SubmitterBoundaryAttestation:
+        base_attestation: SubmitterBoundaryAttestation
         if boundary_inputs is None:
-            return build_submitter_boundary_attestation(
+            base_attestation = build_submitter_boundary_attestation(
                 request_id=request.request_id,
                 wallet_id=request.wallet_id,
                 submit_mode=request.submit_mode.value,
@@ -569,7 +719,13 @@ class SubmitterServiceShell:
                     "execution_context_id": request.execution_context_id,
                 },
             )
-        return evaluate_submitter_boundary(boundary_inputs)
+        else:
+            base_attestation = evaluate_submitter_boundary(boundary_inputs)
+        return mint_submitter_boundary_attestation_v2(
+            base_attestation,
+            attestation_secret=str(os.getenv("ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY") or "").strip(),
+            issued_at=request.timestamp,
+        )
 
 
 def build_submit_order_request_from_sign_attempt(
@@ -885,14 +1041,279 @@ def submitter_boundary_attestation_to_row(
         payload.get("source_attempt_id"),
         payload.get("ticket_id"),
         payload.get("execution_context_id"),
-        "submitter_live_boundary_v1",
+        record.attestation_kind,
         record.submit_mode,
         record.target_backend_kind,
         record.attestation_status,
         safe_json_dumps(record.reason_codes),
         safe_json_dumps(payload),
         _sql_timestamp(record.created_at),
+        record.issuer,
+        _sql_timestamp(record.issued_at),
+        _sql_timestamp(record.expires_at),
+        record.nonce,
+        record.decision_fingerprint,
+        record.attestation_mac,
     ]
+
+
+def live_boundary_attestation_use_to_row(record: LiveBoundaryAttestationUseRecord) -> list[object]:
+    return [
+        record.use_id,
+        record.attestation_id,
+        record.request_id,
+        record.wallet_id,
+        record.target_backend_kind,
+        record.submitter_endpoint_fingerprint,
+        record.use_status,
+        record.provider_status,
+        record.error,
+        _sql_timestamp(record.created_at),
+        _sql_timestamp(record.completed_at),
+    ]
+
+
+def _persist_live_boundary_attestation_direct(
+    *,
+    db_path: str | None,
+    attestation: SubmitterBoundaryAttestation,
+    run_id: str,
+) -> None:
+    if not str(db_path or "").strip():
+        return
+    try:
+        import duckdb
+    except ModuleNotFoundError:  # pragma: no cover
+        return
+    con = duckdb.connect(str(db_path), read_only=False)
+    try:
+        con.execute("DELETE FROM runtime.live_boundary_attestations WHERE attestation_id = ?", [attestation.attestation_id])
+        con.execute(
+            """
+            INSERT INTO runtime.live_boundary_attestations
+            (
+                attestation_id,
+                request_id,
+                run_id,
+                wallet_id,
+                source_attempt_id,
+                ticket_id,
+                execution_context_id,
+                attestation_kind,
+                submit_mode,
+                target_backend_kind,
+                attestation_status,
+                reason_codes_json,
+                attestation_payload_json,
+                created_at,
+                issuer,
+                issued_at,
+                expires_at,
+                nonce,
+                decision_fingerprint,
+                attestation_mac
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            submitter_boundary_attestation_to_row(attestation, run_id=run_id),
+        )
+    finally:
+        con.close()
+
+
+def _load_persisted_live_boundary_attestation(
+    *,
+    db_path: str | None,
+    attestation_id: str,
+) -> SubmitterBoundaryAttestation | None:
+    if not str(db_path or "").strip():
+        return None
+    try:
+        import duckdb
+    except ModuleNotFoundError:  # pragma: no cover
+        return None
+    con = duckdb.connect(str(db_path), read_only=False)
+    try:
+        row = con.execute(
+            """
+            SELECT
+                request_id,
+                wallet_id,
+                attestation_kind,
+                submit_mode,
+                target_backend_kind,
+                attestation_status,
+                reason_codes_json,
+                attestation_payload_json,
+                created_at,
+                issuer,
+                issued_at,
+                expires_at,
+                nonce,
+                decision_fingerprint,
+                attestation_mac
+            FROM runtime.live_boundary_attestations
+            WHERE attestation_id = ?
+            """,
+            [attestation_id],
+        ).fetchone()
+    except Exception:  # noqa: BLE001
+        con.close()
+        return None
+    finally:
+        con.close()
+    if row is None:
+        return None
+    payload = _safe_json_dict(row[7])
+    return SubmitterBoundaryAttestation(
+        attestation_id=attestation_id,
+        request_id=str(row[0]),
+        wallet_id=str(row[1]),
+        attestation_kind=str(row[2]),
+        submit_mode=str(row[3]),
+        target_backend_kind=str(row[4]),
+        manifest_hash=payload.get("manifest_hash"),
+        readiness_hash=payload.get("readiness_hash"),
+        submitter_endpoint_fingerprint=str(payload.get("submitter_endpoint_fingerprint") or ""),
+        attestation_status=str(row[5]),
+        reason_codes=_safe_json_list(row[6]),
+        attestation_payload_json=payload,
+        created_at=_coerce_datetime(row[8]),
+        issuer=str(row[9]) if row[9] is not None else None,
+        issued_at=_coerce_datetime(row[10]),
+        expires_at=_coerce_datetime(row[11]),
+        nonce=str(row[12]) if row[12] is not None else None,
+        decision_fingerprint=str(row[13]) if row[13] is not None else None,
+        attestation_mac=str(row[14]) if row[14] is not None else None,
+    )
+
+
+def _persisted_attestation_matches(
+    *,
+    persisted_attestation: SubmitterBoundaryAttestation,
+    attestation: SubmitterBoundaryAttestation,
+) -> bool:
+    persisted_payload = dict(persisted_attestation.attestation_payload_json)
+    persisted_payload.setdefault("manifest_hash", persisted_attestation.manifest_hash)
+    persisted_payload.setdefault("readiness_hash", persisted_attestation.readiness_hash)
+    current_payload = dict(attestation.attestation_payload_json)
+    current_payload.setdefault("manifest_hash", attestation.manifest_hash)
+    current_payload.setdefault("readiness_hash", attestation.readiness_hash)
+    return (
+        persisted_attestation.request_id == attestation.request_id
+        and persisted_attestation.wallet_id == attestation.wallet_id
+        and persisted_attestation.attestation_kind == attestation.attestation_kind
+        and persisted_attestation.submit_mode == attestation.submit_mode
+        and persisted_attestation.target_backend_kind == attestation.target_backend_kind
+        and persisted_attestation.attestation_status == attestation.attestation_status
+        and persisted_attestation.submitter_endpoint_fingerprint == attestation.submitter_endpoint_fingerprint
+        and persisted_attestation.issuer == attestation.issuer
+        and persisted_attestation.nonce == attestation.nonce
+        and persisted_attestation.decision_fingerprint == attestation.decision_fingerprint
+        and persisted_attestation.attestation_mac == attestation.attestation_mac
+        and compute_boundary_decision_fingerprint(persisted_payload) == compute_boundary_decision_fingerprint(current_payload)
+    )
+
+
+def _claim_live_boundary_attestation_use(
+    *,
+    db_path: str | None,
+    attestation: SubmitterBoundaryAttestation,
+    request: SubmitOrderRequest,
+    endpoint_fingerprint: str,
+) -> LiveBoundaryAttestationUseRecord | None:
+    if not str(db_path or "").strip():
+        return None
+    try:
+        import duckdb
+    except ModuleNotFoundError:  # pragma: no cover
+        return None
+    created_at = _normalize_timestamp(request.timestamp)
+    record = LiveBoundaryAttestationUseRecord(
+        use_id=stable_object_id(
+            "sbuse",
+            {"attestation_id": attestation.attestation_id, "request_id": request.request_id, "wallet_id": request.wallet_id},
+        ),
+        attestation_id=attestation.attestation_id,
+        request_id=request.request_id,
+        wallet_id=request.wallet_id,
+        target_backend_kind=attestation.target_backend_kind,
+        submitter_endpoint_fingerprint=endpoint_fingerprint,
+        use_status="claimed",
+        provider_status=None,
+        error=None,
+        created_at=created_at,
+        completed_at=None,
+    )
+    con = duckdb.connect(str(db_path), read_only=False)
+    try:
+        con.execute("BEGIN TRANSACTION")
+        existing = con.execute(
+            "SELECT attestation_id FROM runtime.live_boundary_attestation_uses WHERE attestation_id = ?",
+            [attestation.attestation_id],
+        ).fetchone()
+        if existing is not None:
+            con.execute("ROLLBACK")
+            return None
+        con.execute(
+            """
+            INSERT INTO runtime.live_boundary_attestation_uses
+            (
+                use_id,
+                attestation_id,
+                request_id,
+                wallet_id,
+                target_backend_kind,
+                submitter_endpoint_fingerprint,
+                use_status,
+                provider_status,
+                error,
+                created_at,
+                completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            live_boundary_attestation_use_to_row(record),
+        )
+        con.execute("COMMIT")
+        return record
+    except Exception:  # noqa: BLE001
+        try:
+            con.execute("ROLLBACK")
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+    finally:
+        con.close()
+
+
+def _finalize_live_boundary_attestation_use(
+    *,
+    db_path: str | None,
+    use_id: str,
+    use_status: str,
+    provider_status: str | None,
+    error: str | None,
+    completed_at: datetime,
+) -> None:
+    if not str(db_path or "").strip():
+        return
+    try:
+        import duckdb
+    except ModuleNotFoundError:  # pragma: no cover
+        return
+    con = duckdb.connect(str(db_path), read_only=False)
+    try:
+        con.execute(
+            """
+            UPDATE runtime.live_boundary_attestation_uses
+            SET use_status = ?, provider_status = ?, error = ?, completed_at = ?
+            WHERE use_id = ?
+            """,
+            [use_status, provider_status, error, _sql_timestamp(completed_at), use_id],
+        )
+    finally:
+        con.close()
 
 
 def _build_dry_run_preview(request: SubmitOrderRequest) -> SubmitOrderResult:
@@ -1026,7 +1447,43 @@ def _normalize_timestamp(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(tzinfo=None)
 
 
-def _sql_timestamp(value: datetime) -> str:
+def _coerce_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _normalize_timestamp(value)
+    return _normalize_timestamp(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+
+
+def _safe_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if value in {None, ""}:
+        return {}
+    try:
+        payload = json.loads(str(value))
+    except Exception:  # noqa: BLE001
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _safe_json_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if value in {None, ""}:
+        return []
+    try:
+        payload = json.loads(str(value))
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [str(item) for item in payload]
+
+
+def _sql_timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
     return _normalize_timestamp(value).isoformat(sep=" ", timespec="seconds")
 
 

@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from asterion_core.contracts import MarketQualityAssessment, OpportunityAssessment, SourceHealthSnapshotRecord, stable_object_id
+from asterion_core.contracts import (
+    ExecutionPriorSummary,
+    MarketQualityAssessment,
+    OpportunityAssessment,
+    RankingScoreV2Decomposition,
+    SourceHealthSnapshotRecord,
+    stable_object_id,
+)
+
+from .execution_priors import build_execution_prior_summary_from_context, execution_prior_context_fields
 
 
 _REVIEW_FAILURE_STATUSES = {"agent_failure"}
@@ -37,9 +46,13 @@ def build_weather_opportunity_assessment(
     source_freshness_status: str = "fresh",
     spread_bps: int | None = None,
     calibration_health_status: str | None = None,
+    calibration_bias_quality: str | None = None,
+    threshold_probability_quality: str | None = None,
     sample_count: int | None = None,
     calibration_multiplier: float | None = None,
     calibration_reason_codes: list[str] | None = None,
+    execution_prior_summary: ExecutionPriorSummary | None = None,
+    forecast_distribution_summary_v2: dict[str, Any] | None = None,
     source_context: dict[str, Any] | None = None,
 ) -> OpportunityAssessment:
     normalized_fees_bps = max(0, int(fees_bps or 0))
@@ -68,7 +81,7 @@ def build_weather_opportunity_assessment(
         enable_order_book=enable_order_book,
         reference_price=normalized_reference_price,
     )
-    ops_readiness_score = _ops_readiness_score(live_prereq_status)
+    ops_readiness_score = _ops_tie_breaker(live_prereq_status)
     market_quality = build_market_quality_assessment(
         market_id=market_id,
         accepting_orders=accepting_orders,
@@ -94,6 +107,16 @@ def build_weather_opportunity_assessment(
     normalized_calibration_health_status = _normalize_calibration_health_status(
         calibration_health_status or source_context_value(source_context, "calibration_health_status")
     )
+    normalized_bias_quality = _normalize_quality_status(
+        calibration_bias_quality
+        or source_context_value(source_context, "calibration_bias_quality")
+        or source_context_value(source_context, "bias_quality_status")
+    )
+    normalized_threshold_probability_quality = _normalize_quality_status(
+        threshold_probability_quality
+        or source_context_value(source_context, "threshold_probability_quality")
+        or source_context_value(source_context, "threshold_probability_quality_status")
+    )
     normalized_sample_count = max(
         0,
         int(sample_count if sample_count is not None else source_context_value(source_context, "sample_count") or 0),
@@ -105,9 +128,35 @@ def build_weather_opportunity_assessment(
     freshness_multiplier = _freshness_multiplier(source_freshness_status)
     mapping_multiplier = _mapping_multiplier(float(mapping_confidence))
     market_quality_multiplier = _market_quality_multiplier(market_quality.market_quality_status)
+    bias_quality_multiplier = _quality_status_multiplier(
+        normalized_bias_quality,
+        healthy=1.00,
+        watch=0.90,
+        degraded=0.70,
+        sparse=0.60,
+        lookup_missing=0.50,
+    )
+    threshold_probability_multiplier = _quality_status_multiplier(
+        normalized_threshold_probability_quality,
+        healthy=1.00,
+        watch=0.85,
+        degraded=0.65,
+        sparse=0.55,
+        lookup_missing=0.50,
+    )
+    regime_stability_score = _regime_stability_score(
+        forecast_distribution_summary_v2 if forecast_distribution_summary_v2 is not None else source_context_value(source_context, "distribution_summary_v2") or source_context
+    )
+    regime_stability_multiplier = _regime_stability_multiplier(regime_stability_score)
     uncertainty_multiplier = round(
         _clamp_multiplier(
-            calibration_multiplier_value * freshness_multiplier * mapping_multiplier * market_quality_multiplier
+            calibration_multiplier_value
+            * freshness_multiplier
+            * mapping_multiplier
+            * market_quality_multiplier
+            * bias_quality_multiplier
+            * threshold_probability_multiplier
+            * regime_stability_multiplier
         ),
         4,
     )
@@ -115,7 +164,6 @@ def build_weather_opportunity_assessment(
     base_expected_pnl_score = round(base_expected_value_score * depth_proxy, 4)
     expected_value_score = round(base_expected_value_score * uncertainty_multiplier, 4)
     expected_pnl_score = round(base_expected_pnl_score * uncertainty_multiplier, 4)
-    ranking_score = round(expected_pnl_score + ops_readiness_score, 4)
     uncertainty_penalty_bps = max(
         0,
         effective_edge_bps - int(round(effective_edge_bps * uncertainty_multiplier)),
@@ -128,6 +176,57 @@ def build_weather_opportunity_assessment(
         freshness_status=source_freshness_status,
         mapping_confidence=float(mapping_confidence),
         market_quality=market_quality,
+        calibration_bias_quality=normalized_bias_quality,
+        threshold_probability_quality=normalized_threshold_probability_quality,
+        regime_stability_score=regime_stability_score,
+    )
+    resolved_execution_prior_summary = execution_prior_summary or build_execution_prior_summary_from_context(source_context)
+    ranking_v2 = _ranking_score_v2_decomposition(
+        edge_bps_executable=edge_bps_executable,
+        fill_probability=fill_probability,
+        reference_price=normalized_reference_price,
+        depth_proxy=depth_proxy,
+        side=opportunity_side,
+        slippage_bps=slippage_bps,
+        ops_tie_breaker=ops_readiness_score,
+        execution_prior_summary=resolved_execution_prior_summary,
+    )
+    feedback_prior = (
+        resolved_execution_prior_summary.feedback_prior
+        if resolved_execution_prior_summary is not None
+        else None
+    )
+    pre_feedback_ranking_score = round(ranking_v2.ranking_score * uncertainty_multiplier, 6)
+    feedback_penalty = round(float(feedback_prior.feedback_penalty), 6) if feedback_prior is not None else 0.0
+    feedback_status = str(feedback_prior.feedback_status) if feedback_prior is not None else "heuristic_only"
+    cohort_prior_version = (
+        str(feedback_prior.cohort_prior_version)
+        if feedback_prior is not None and feedback_prior.cohort_prior_version is not None
+        else None
+    )
+    final_ranking_score = round(pre_feedback_ranking_score * max(0.0, 1.0 - feedback_penalty), 6)
+    why_ranked_json = dict(ranking_v2.why_ranked_json)
+    why_ranked_json.update(
+        {
+            "base_ranking_score": ranking_v2.ranking_score,
+            "pre_feedback_ranking_score": pre_feedback_ranking_score,
+            "calibration_v2_mode": "profile_v2"
+            if bool(source_context_value(source_context, "distribution_summary_v2") or forecast_distribution_summary_v2)
+            else "sigma_fallback",
+            "corrected_mean": source_context_value(source_context, "corrected_mean"),
+            "corrected_std_dev": source_context_value(source_context, "corrected_std_dev"),
+            "bias_quality_status": normalized_bias_quality,
+            "threshold_probability_quality_status": normalized_threshold_probability_quality,
+            "threshold_probability_summary_json": source_context_value(source_context, "threshold_probability_summary_json"),
+            "regime_bucket": source_context_value(source_context, "regime_bucket"),
+            "regime_stability_score": regime_stability_score,
+            "uncertainty_multiplier": uncertainty_multiplier,
+            "feedback_penalty": feedback_penalty,
+            "feedback_status": feedback_status,
+            "cohort_prior_version": cohort_prior_version,
+            "feedback_scope_breakdown": dict(feedback_prior.scope_breakdown) if feedback_prior is not None else {},
+            "ranking_score": final_ranking_score,
+        }
     )
     actionability_status = _actionability_status(
         edge_bps_executable=edge_bps_executable,
@@ -143,7 +242,7 @@ def build_weather_opportunity_assessment(
         f"fees_bps={normalized_fees_bps}, slippage_bps={slippage_bps}, "
         f"liquidity_penalty_bps={liquidity_penalty_bps}, fill_probability={fill_probability:.2f}, "
         f"market_quality_status={market_quality.market_quality_status}, model_side={model_side}, "
-        f"uncertainty_multiplier={uncertainty_multiplier:.2f}"
+        f"uncertainty_multiplier={uncertainty_multiplier:.2f}, ranking_mode={why_ranked_json.get('mode')}"
     )
     context = {
         "accepting_orders": bool(accepting_orders),
@@ -157,8 +256,13 @@ def build_weather_opportunity_assessment(
         "enable_order_book": bool(enable_order_book),
         "execution_adjusted_fair_value": execution_adjusted_fair_value,
         "calibration_health_status": normalized_calibration_health_status,
+        "calibration_bias_quality": normalized_bias_quality,
+        "threshold_probability_quality": normalized_threshold_probability_quality,
         "sample_count": normalized_sample_count,
         "calibration_multiplier": calibration_multiplier_value,
+        "bias_quality_multiplier": bias_quality_multiplier,
+        "threshold_probability_multiplier": threshold_probability_multiplier,
+        "regime_stability_multiplier": regime_stability_multiplier,
         "freshness_multiplier": freshness_multiplier,
         "mapping_multiplier": mapping_multiplier,
         "market_quality_multiplier": market_quality_multiplier,
@@ -181,22 +285,39 @@ def build_weather_opportunity_assessment(
         "model_fair_value": normalized_model_fair_value,
         "ops_readiness_score": ops_readiness_score,
         "price_staleness_ms": max(0, int(price_staleness_ms)),
-        "ranking_score": ranking_score,
+        "pre_feedback_ranking_score": pre_feedback_ranking_score,
+        "feedback_penalty": feedback_penalty,
+        "feedback_status": feedback_status,
+        "cohort_prior_version": cohort_prior_version,
+        "ranking_score": final_ranking_score,
+        "expected_dollar_pnl": ranking_v2.expected_dollar_pnl,
+        "capture_probability": ranking_v2.capture_probability,
+        "risk_penalty": ranking_v2.risk_penalty,
+        "capital_efficiency": ranking_v2.capital_efficiency,
+        "why_ranked_json": why_ranked_json,
         "reference_price": normalized_reference_price,
         "source_freshness_status": source_freshness_status,
         "spread_bps": market_quality.spread_bps,
         "slippage_bps": slippage_bps,
         "threshold_bps": normalized_threshold_bps,
+        "regime_stability_score": regime_stability_score,
     }
     if source_context:
         context.update(source_context)
+    if forecast_distribution_summary_v2:
+        context["distribution_summary_v2"] = dict(forecast_distribution_summary_v2)
     context.update(
         {
             "actionability_status": actionability_status,
             "best_side": opportunity_side,
             "calibration_health_status": normalized_calibration_health_status,
+            "calibration_bias_quality": normalized_bias_quality,
+            "threshold_probability_quality": normalized_threshold_probability_quality,
             "sample_count": normalized_sample_count,
             "calibration_multiplier": calibration_multiplier_value,
+            "bias_quality_multiplier": bias_quality_multiplier,
+            "threshold_probability_multiplier": threshold_probability_multiplier,
+            "regime_stability_multiplier": regime_stability_multiplier,
             "freshness_multiplier": freshness_multiplier,
             "mapping_multiplier": mapping_multiplier,
             "market_quality_multiplier": market_quality_multiplier,
@@ -205,9 +326,20 @@ def build_weather_opportunity_assessment(
             "ranking_penalty_reasons": ranking_penalty_reasons,
             "expected_pnl_score": expected_pnl_score,
             "expected_value_score": expected_value_score,
-            "ranking_score": ranking_score,
+            "pre_feedback_ranking_score": pre_feedback_ranking_score,
+            "feedback_penalty": feedback_penalty,
+            "feedback_status": feedback_status,
+            "cohort_prior_version": cohort_prior_version,
+            "ranking_score": final_ranking_score,
+            "expected_dollar_pnl": ranking_v2.expected_dollar_pnl,
+            "capture_probability": ranking_v2.capture_probability,
+            "risk_penalty": ranking_v2.risk_penalty,
+            "capital_efficiency": ranking_v2.capital_efficiency,
+            "why_ranked_json": why_ranked_json,
+            "regime_stability_score": regime_stability_score,
         }
     )
+    context.update(execution_prior_context_fields(resolved_execution_prior_summary))
 
     assessment_id = stable_object_id(
         "opp",
@@ -226,6 +358,8 @@ def build_weather_opportunity_assessment(
             "source_freshness_status": source_freshness_status,
             "price_staleness_ms": max(0, int(price_staleness_ms)),
             "calibration_health_status": normalized_calibration_health_status,
+            "calibration_bias_quality": normalized_bias_quality,
+            "threshold_probability_quality": normalized_threshold_probability_quality,
             "sample_count": normalized_sample_count,
         },
     )
@@ -246,6 +380,8 @@ def build_weather_opportunity_assessment(
         edge_bps_executable=edge_bps_executable,
         confidence_score=normalized_confidence_score,
         calibration_health_status=normalized_calibration_health_status,
+        calibration_bias_quality=normalized_bias_quality,
+        threshold_probability_quality=normalized_threshold_probability_quality,
         sample_count=normalized_sample_count,
         uncertainty_multiplier=uncertainty_multiplier,
         uncertainty_penalty_bps=uncertainty_penalty_bps,
@@ -253,7 +389,16 @@ def build_weather_opportunity_assessment(
         ops_readiness_score=ops_readiness_score,
         expected_value_score=expected_value_score,
         expected_pnl_score=expected_pnl_score,
-        ranking_score=ranking_score,
+        expected_dollar_pnl=ranking_v2.expected_dollar_pnl,
+        capture_probability=ranking_v2.capture_probability,
+        risk_penalty=ranking_v2.risk_penalty,
+        capital_efficiency=ranking_v2.capital_efficiency,
+        execution_prior_key=context.get("execution_prior_key"),
+        why_ranked_json=why_ranked_json,
+        feedback_penalty=feedback_penalty,
+        feedback_status=feedback_status,
+        cohort_prior_version=cohort_prior_version,
+        ranking_score=final_ranking_score,
         actionability_status=actionability_status,
         rationale=rationale,
         assessment_context_json=context,
@@ -423,12 +568,103 @@ def _depth_proxy(*, accepting_orders: bool, enable_order_book: bool | None, refe
     return 0.55
 
 
-def _ops_readiness_score(live_prereq_status: str) -> float:
+def _ops_tie_breaker(live_prereq_status: str) -> float:
     if live_prereq_status == "shadow_aligned":
-        return 20.0
+        return 0.001
     if live_prereq_status == "not_started":
-        return 10.0
+        return 0.0005
     return 0.0
+
+
+def _ranking_score_v2_decomposition(
+    *,
+    edge_bps_executable: int,
+    fill_probability: float,
+    reference_price: float,
+    depth_proxy: float,
+    side: str | None,
+    slippage_bps: int,
+    ops_tie_breaker: float,
+    execution_prior_summary: ExecutionPriorSummary | None,
+) -> RankingScoreV2Decomposition:
+    gross_unit_edge = max(abs(int(edge_bps_executable)) / 10_000.0, 0.0)
+    prior_mode = "prior_backed" if execution_prior_summary is not None else "fallback_heuristic"
+    submit_ack_rate = execution_prior_summary.submit_ack_rate if execution_prior_summary is not None else 1.0
+    fill_rate = execution_prior_summary.fill_rate if execution_prior_summary is not None else 1.0
+    resolution_rate = execution_prior_summary.resolution_rate if execution_prior_summary is not None else 1.0
+    cancel_rate = execution_prior_summary.cancel_rate if execution_prior_summary is not None else 0.0
+    partial_fill_rate = execution_prior_summary.partial_fill_rate if execution_prior_summary is not None else 0.0
+    prior_quality_status = execution_prior_summary.prior_quality_status if execution_prior_summary is not None else "missing"
+    prior_key = execution_prior_summary.prior_key if execution_prior_summary is not None else None
+
+    capture_probability = max(
+        0.0,
+        min(
+            1.0,
+            float(fill_probability)
+            * float(submit_ack_rate)
+            * float(fill_rate)
+            * float(resolution_rate),
+        ),
+    )
+    expected_dollar_pnl = gross_unit_edge * capture_probability
+    prior_p50_slippage = execution_prior_summary.adverse_fill_slippage_bps_p50 if execution_prior_summary is not None else None
+    slippage_penalty = max(
+        max(0, int(slippage_bps)) / 10_000.0,
+        (float(prior_p50_slippage) / 10_000.0) if prior_p50_slippage is not None else 0.0,
+    )
+    cancel_penalty = max(0.0, float(cancel_rate)) * gross_unit_edge * 0.50
+    partial_fill_penalty = max(0.0, float(partial_fill_rate)) * gross_unit_edge * 0.25
+    risk_penalty = slippage_penalty + cancel_penalty + partial_fill_penalty
+
+    unit_capital_cost = max(reference_price if side == "BUY" else (1.0 - reference_price if side == "SELL" else 0.50), 0.05)
+    capital_efficiency = max(0.0, float(depth_proxy)) / unit_capital_cost
+    economic_score = max(expected_dollar_pnl - risk_penalty, 0.0) * capital_efficiency
+    ranking_score = round(economic_score + max(0.0, float(ops_tie_breaker)), 6)
+    why_ranked_json = {
+        "version": "ranking_v2",
+        "mode": prior_mode,
+        "execution_prior_key": None if prior_key is None else {
+            "prior_key": stable_object_id(
+                "eprior",
+                {
+                    "market_id": prior_key.market_id,
+                    "strategy_id": prior_key.strategy_id,
+                    "wallet_id": prior_key.wallet_id,
+                    "side": prior_key.side,
+                    "horizon_bucket": prior_key.horizon_bucket,
+                    "liquidity_bucket": prior_key.liquidity_bucket,
+                },
+            ),
+            "market_id": prior_key.market_id,
+            "strategy_id": prior_key.strategy_id,
+            "wallet_id": prior_key.wallet_id,
+            "side": prior_key.side,
+            "horizon_bucket": prior_key.horizon_bucket,
+            "liquidity_bucket": prior_key.liquidity_bucket,
+        },
+        "prior_quality_status": prior_quality_status,
+        "edge_bps_executable": int(edge_bps_executable),
+        "fill_probability_heuristic": round(float(fill_probability), 6),
+        "submit_ack_rate": round(float(submit_ack_rate), 6),
+        "fill_rate": round(float(fill_rate), 6),
+        "resolution_rate": round(float(resolution_rate), 6),
+        "capture_probability": round(capture_probability, 6),
+        "expected_dollar_pnl": round(expected_dollar_pnl, 6),
+        "risk_penalty": round(risk_penalty, 6),
+        "capital_efficiency": round(capital_efficiency, 6),
+        "ops_tie_breaker": round(max(0.0, float(ops_tie_breaker)), 6),
+        "ranking_score": ranking_score,
+    }
+    return RankingScoreV2Decomposition(
+        expected_dollar_pnl=round(expected_dollar_pnl, 6),
+        capture_probability=round(capture_probability, 6),
+        risk_penalty=round(risk_penalty, 6),
+        capital_efficiency=round(capital_efficiency, 6),
+        ops_tie_breaker=round(max(0.0, float(ops_tie_breaker)), 6),
+        ranking_score=ranking_score,
+        why_ranked_json=why_ranked_json,
+    )
 
 
 def _execution_adjusted_edge(
@@ -497,7 +733,7 @@ def _source_context_reason_codes(source_context: dict[str, Any] | None, key: str
 
 def _normalize_calibration_health_status(value: Any) -> str:
     normalized = str(value or "lookup_missing").strip().lower()
-    if normalized in {"healthy", "watch", "degraded", "insufficient_samples", "limited_samples", "lookup_missing"}:
+    if normalized in {"healthy", "watch", "degraded", "insufficient_samples", "limited_samples", "lookup_missing", "sparse"}:
         return normalized
     return "lookup_missing"
 
@@ -515,8 +751,54 @@ def _calibration_multiplier(*, calibration_health_status: str, explicit_multipli
         "limited_samples": 0.75,
         "insufficient_samples": 0.55,
         "lookup_missing": 0.50,
+        "sparse": 0.55,
     }
     return mapping.get(calibration_health_status, 0.50)
+
+
+def _normalize_quality_status(value: Any) -> str:
+    normalized = str(value or "lookup_missing").strip().lower()
+    if normalized in {"healthy", "watch", "degraded", "sparse", "lookup_missing"}:
+        return normalized
+    return "lookup_missing"
+
+
+def _quality_status_multiplier(
+    value: str,
+    *,
+    healthy: float,
+    watch: float,
+    degraded: float,
+    sparse: float,
+    lookup_missing: float,
+) -> float:
+    return {
+        "healthy": healthy,
+        "watch": watch,
+        "degraded": degraded,
+        "sparse": sparse,
+        "lookup_missing": lookup_missing,
+    }.get(_normalize_quality_status(value), lookup_missing)
+
+
+def _regime_stability_score(source: Any) -> float:
+    if isinstance(source, dict):
+        value = source.get("regime_stability_score")
+    else:
+        value = None
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def _regime_stability_multiplier(score: float) -> float:
+    normalized = max(0.0, min(1.0, float(score)))
+    if normalized >= 0.80:
+        return 1.0
+    if normalized >= 0.60:
+        return 0.85
+    return 0.65
 
 
 def _freshness_multiplier(source_freshness_status: str) -> float:
@@ -557,6 +839,9 @@ def _ranking_penalty_reasons(
     freshness_status: str,
     mapping_confidence: float,
     market_quality: MarketQualityAssessment,
+    calibration_bias_quality: str,
+    threshold_probability_quality: str,
+    regime_stability_score: float,
 ) -> list[str]:
     reasons: list[str] = []
     if calibration_reason_codes:
@@ -571,6 +856,31 @@ def _ranking_penalty_reasons(
         reasons.append("calibration_watch")
     elif calibration_health_status == "degraded":
         reasons.append("calibration_degraded")
+    elif calibration_health_status == "sparse":
+        reasons.append("calibration_sparse")
+
+    if calibration_bias_quality == "watch":
+        reasons.append("calibration_bias_watch")
+    elif calibration_bias_quality == "degraded":
+        reasons.append("calibration_bias_degraded")
+    elif calibration_bias_quality == "sparse":
+        reasons.append("calibration_bias_sparse")
+    elif calibration_bias_quality == "lookup_missing":
+        reasons.append("calibration_bias_lookup_missing")
+
+    if threshold_probability_quality == "watch":
+        reasons.append("threshold_probability_watch")
+    elif threshold_probability_quality == "degraded":
+        reasons.append("threshold_probability_degraded")
+    elif threshold_probability_quality == "sparse":
+        reasons.append("threshold_probability_sparse")
+    elif threshold_probability_quality == "lookup_missing":
+        reasons.append("threshold_probability_lookup_missing")
+
+    if regime_stability_score < 0.60:
+        reasons.append("regime_unstable")
+    elif regime_stability_score < 0.80:
+        reasons.append("regime_watch")
 
     if freshness_status == "stale":
         reasons.append("freshness_stale")

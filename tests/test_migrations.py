@@ -35,6 +35,11 @@ class MigrationFilesTest(unittest.TestCase):
                 "0015_trading_external_reconciliation.sql",
                 "0016_weather_mapping_calibration_quality.sql",
                 "0017_runtime_live_boundary_attestations.sql",
+                "0018_runtime_live_boundary_attestation_v2.sql",
+                "0019_weather_execution_priors.sql",
+                "0020_weather_forecast_calibration_profiles_v2.sql",
+                "0021_weather_execution_priors_feedback.sql",
+                "0022_runtime_execution_feedback_materializations.sql",
             ],
         )
 
@@ -84,6 +89,14 @@ class MigrationFilesTest(unittest.TestCase):
         self.assertIn("weather.forecast_calibration_samples", contents["0016_weather_mapping_calibration_quality.sql"])
         self.assertIn("weather.source_health_snapshots", contents["0016_weather_mapping_calibration_quality.sql"])
         self.assertIn("runtime.live_boundary_attestations", contents["0017_runtime_live_boundary_attestations.sql"])
+        self.assertIn("ALTER TABLE runtime.live_boundary_attestations ADD COLUMN IF NOT EXISTS issuer", contents["0018_runtime_live_boundary_attestation_v2.sql"])
+        self.assertIn("runtime.live_boundary_attestation_uses", contents["0018_runtime_live_boundary_attestation_v2.sql"])
+        self.assertIn("weather.weather_execution_priors", contents["0019_weather_execution_priors.sql"])
+        self.assertIn("prior_quality_status TEXT NOT NULL", contents["0019_weather_execution_priors.sql"])
+        self.assertIn("weather.forecast_calibration_profiles_v2", contents["0020_weather_forecast_calibration_profiles_v2.sql"])
+        self.assertIn("threshold_probability_profile_json TEXT", contents["0020_weather_forecast_calibration_profiles_v2.sql"])
+        self.assertIn("ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS cohort_type", contents["0021_weather_execution_priors_feedback.sql"])
+        self.assertIn("runtime.execution_feedback_materializations", contents["0022_runtime_execution_feedback_materializations.sql"])
 
 
 @unittest.skipUnless(HAS_DUCKDB, "duckdb is required for migration application tests")
@@ -102,7 +115,7 @@ class ApplyMigrationsTest(unittest.TestCase):
                 clear=False,
             ):
                 applied = apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=str(root)))
-            self.assertEqual(len(applied), 17)
+            self.assertEqual(len(applied), 22)
 
 
 if __name__ == "__main__":

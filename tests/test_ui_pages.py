@@ -45,13 +45,45 @@ class UiPagesSmokeTest(unittest.TestCase):
                 "avg_realized_pnl": 0.0,
             },
             "wallet_attention": pd.DataFrame(),
-            "top_opportunities": pd.DataFrame(),
+            "top_opportunities": pd.DataFrame(
+                [
+                    {
+                        "location_name": "Seattle",
+                        "question": "Seattle weather",
+                        "best_side": "BUY",
+                        "edge_bps": 900.0,
+                        "edge_bps_model": 1100.0,
+                        "ranking_score": 88.0,
+                        "source_badge": "fallback",
+                        "source_truth_status": "fallback",
+                        "mapping_confidence": 0.92,
+                        "source_freshness_status": "fresh",
+                        "market_quality_status": "pass",
+                        "agent_review_status": "passed",
+                        "actionability_status": "actionable",
+                    }
+                ]
+            ),
             "largest_blocker": {"source": "clear", "summary": "No material blocker"},
             "recent_agent_summary": {},
             "agent_data": {"frame": pd.DataFrame()},
             "readiness_evidence": {"exists": False, "blockers": [], "warnings": [], "decision_reason": "", "capability_manifest_status": "missing"},
             "predicted_vs_realized_snapshot": pd.DataFrame(),
             "degraded_inputs": ["market_source:weather_smoke_db"],
+            "uncaptured_high_edge_markets": pd.DataFrame(
+                [
+                    {
+                        "market_id": "mkt_1",
+                        "avg_executable_edge_bps": 700.0,
+                        "submission_capture_ratio": 0.0,
+                        "fill_capture_ratio": 0.0,
+                        "resolution_capture_ratio": 0.0,
+                        "source_badge": "derived",
+                        "miss_reason_bucket": "not_submitted",
+                        "distortion_reason_bucket": "ranking_distortion",
+                    }
+                ]
+            ),
         }
 
         with patch("ui.pages.home.load_home_decision_snapshot", return_value=fake_snapshot), \
@@ -62,12 +94,14 @@ class UiPagesSmokeTest(unittest.TestCase):
             patch.object(home.st, "success"), \
             patch.object(home.st, "error"), \
             patch.object(home.st, "write"), \
-            patch.object(home.st, "dataframe"), \
+            patch.object(home.st, "dataframe", new=MagicMock()) as dataframe_mock, \
             patch.object(home.st, "columns", side_effect=lambda spec: [_DummyContext() for _ in range(spec if isinstance(spec, int) else len(spec))]), \
             patch.object(home.st, "warning", new=MagicMock()) as warning_mock:
             home.show()
 
         warning_mock.assert_called()
+        rendered_frames = [call.args[0] for call in dataframe_mock.call_args_list if call.args]
+        self.assertTrue(any("source_badge" in getattr(frame, "columns", []) for frame in rendered_frames))
 
 
 if __name__ == "__main__":

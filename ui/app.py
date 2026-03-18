@@ -11,8 +11,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from ui.auth import enforce_ui_auth
-from ui.data_access import load_operator_surface_status
+from ui.data_access import load_boundary_sidebar_truth, load_operator_surface_status
 from ui.pages import agents, execution, home, markets, system
+from ui.runtime_env import load_ui_runtime_boundary_status
 
 
 st.set_page_config(
@@ -236,6 +237,16 @@ auth_status = enforce_ui_auth()
 if auth_status != "authenticated":
     st.stop()
 
+ui_boundary_status = load_ui_runtime_boundary_status()
+if ui_boundary_status.status != "ok":
+    st.error(
+        "UI runtime boundary blocked. "
+        f"bind_scope={ui_boundary_status.bind_scope} "
+        f"reason_codes={', '.join(ui_boundary_status.reason_codes) or 'unknown'} "
+        f"banned_env_categories={', '.join(ui_boundary_status.banned_env_categories) or 'none'}"
+    )
+    st.stop()
+
 
 _render_shell_header()
 _render_global_surface_banner()
@@ -250,13 +261,21 @@ page_key = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 当前边界")
-st.sidebar.markdown("- `manual-only`")
-st.sidebar.markdown("- `default-off`")
-st.sidebar.markdown("- `approve_usdc only`")
-st.sidebar.markdown("- `constrained real submit`")
-st.sidebar.markdown("- `not unattended live`")
+sidebar_truth = load_boundary_sidebar_truth()
+for item in sidebar_truth["capability_boundary"]:
+    st.sidebar.markdown(f"- `{item}`")
+for item in sidebar_truth["live_negations"]:
+    st.sidebar.markdown(f"- `{item}`")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Asterion v1.2 · post-P4 remediation")
+st.sidebar.caption(
+    " | ".join(
+        [
+            "Asterion v1.2",
+            sidebar_truth["current_phase_status"],
+            f"truth-source={sidebar_truth['truth_source_doc']}",
+        ]
+    )
+)
 
 PAGES[page_key][1]()

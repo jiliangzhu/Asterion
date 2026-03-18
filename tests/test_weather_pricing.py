@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from asterion_core.contracts import ResolutionSpec
+from asterion_core.contracts import ForecastRunRecord, ResolutionSpec
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.db_migrate import MigrationConfig, apply_migrations
 from asterion_core.storage.write_queue import WriteQueueConfig
@@ -35,6 +35,7 @@ from domains.weather.forecast.adapters import build_normal_distribution
 from domains.weather.opportunity import build_weather_opportunity_assessment
 from domains.weather.pricing import (
     build_binary_fair_values,
+    build_forecast_calibration_pricing_context,
     build_watch_only_snapshot,
     enqueue_fair_value_upserts,
     enqueue_watch_only_snapshot_upserts,
@@ -227,6 +228,88 @@ class WeatherPricingUnitTest(unittest.TestCase):
             inclusive_bounds=True,
         )
         self.assertAlmostEqual(probability, 0.7)
+
+    def test_snapshot_pricing_context_includes_ranking_v2_fields(self) -> None:
+        assessment = build_weather_opportunity_assessment(
+            market_id="mkt_1",
+            token_id="tok_yes",
+            outcome="YES",
+            reference_price=0.40,
+            model_fair_value=0.66,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+        )
+
+        snapshot = build_watch_only_snapshot(
+            assessment=assessment,
+            reference_price=0.40,
+            threshold_bps=500,
+            pricing_context={"run_id": "frun_1", "condition_id": "cond_1"},
+        )
+
+        self.assertIn("expected_dollar_pnl", snapshot.pricing_context)
+        self.assertIn("capture_probability", snapshot.pricing_context)
+        self.assertIn("risk_penalty", snapshot.pricing_context)
+        self.assertIn("capital_efficiency", snapshot.pricing_context)
+        self.assertEqual(snapshot.pricing_context["why_ranked_json"]["version"], "ranking_v2")
+        self.assertEqual(snapshot.pricing_context["ranking_score"], assessment.ranking_score)
+
+    def test_forecast_calibration_pricing_context_selects_threshold_quality(self) -> None:
+        run = ForecastRunRecord(
+            run_id="frun_v2",
+            market_id="mkt_1",
+            condition_id="cond_1",
+            station_id="KNYC",
+            source="openmeteo",
+            model_run="2026-03-10T12:00Z",
+            forecast_target_time=datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc),
+            observation_date=date(2026, 3, 11),
+            metric="temperature_max",
+            latitude=40.7128,
+            longitude=-74.0060,
+            timezone="America/New_York",
+            spec_version="spec_v1",
+            cache_key="cache_v2",
+            source_trace=["openmeteo"],
+            fallback_used=False,
+            from_cache=False,
+            confidence=0.72,
+            forecast_payload={
+                "temperature_distribution": {60: 0.2, 62: 0.5, 64: 0.3},
+                "distribution_summary_v2": {
+                    "corrected_mean": 61.5,
+                    "corrected_std_dev": 3.0,
+                    "bias_quality_status": "watch",
+                    "threshold_probability_quality_status": "watch",
+                    "regime_bucket": "warm",
+                    "regime_stability_score": 0.72,
+                    "lookup_hit": True,
+                    "threshold_probability_summary_json": {
+                        "60-75": {
+                            "sample_count": 14,
+                            "predicted_prob_mean": 0.68,
+                            "realized_hit_rate": 0.74,
+                            "brier_score": 0.18,
+                            "reliability_gap": 0.06,
+                            "quality_status": "watch",
+                        }
+                    },
+                },
+            },
+            raw_payload={},
+        )
+        context = build_forecast_calibration_pricing_context(
+            forecast_run=run,
+            outcome="YES",
+            fair_value=0.68,
+        )
+        self.assertEqual(context["threshold_probability_quality_status"], "watch")
+        self.assertEqual(context["bias_quality_status"], "watch")
+        self.assertEqual(context["regime_bucket"], "warm")
 
     def test_snapshot_uses_fair_value_edge(self) -> None:
         from asterion_core.contracts import WeatherFairValueRecord

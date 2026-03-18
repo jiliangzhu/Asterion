@@ -38,7 +38,7 @@
 - [DEVELOPMENT_ROADMAP.md](../../00-overview/DEVELOPMENT_ROADMAP.md)
 - [Documentation_Index.md](../../00-overview/Documentation_Index.md)
 - [Implementation_Index.md](../Implementation_Index.md)
-- [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](../checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+- [AlphaDesk_Migration_Ledger.md](../migration-ledger/AlphaDesk_Migration_Ledger.md)
 - [AlphaDesk_Migration_Ledger.md](../migration-ledger/AlphaDesk_Migration_Ledger.md)
 - [Forecast_Ensemble_Design.md](../../40-weather/Forecast_Ensemble_Design.md)
 - [UMA_Watcher_Design.md](../../40-weather/UMA_Watcher_Design.md)
@@ -50,7 +50,7 @@
 
 1. 对应 subsystem 设计文档
 2. `Asterion_Project_Plan.md`
-3. `P1_P2_AlphaDesk_Remaining_Migration_Checklist.md`
+3. `AlphaDesk_Migration_Ledger.md`
 4. 本实施文档
 
 ---

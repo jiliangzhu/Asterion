@@ -30,4 +30,4 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agents*", "asterion_core*", "domains*", "dagster_asterion*"]
+include = ["agents*", "asterion_core*", "domains*", "dagster_asterion*", "ui*"]

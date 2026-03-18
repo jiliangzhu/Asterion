@@ -28,6 +28,18 @@ def _detail_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
     return pd.DataFrame([{"字段": row["字段"], "值": _format_value(row["值"])} for row in rows])
 
 
+def _json_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if value in {None, ""}:
+        return {}
+    try:
+        payload = json.loads(str(value))
+    except Exception:  # noqa: BLE001
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _opportunity_thesis(selected_market: dict[str, object]) -> str:
     actionability = selected_market.get("actionability_status")
     if actionability == "actionable":
@@ -81,8 +93,9 @@ def _build_market_table_rows(
                 "best_side": row.get("best_side"),
                 "edge_bps": row.get("edge_bps"),
                 "edge_bps_model": row.get("edge_bps_model"),
-                "opportunity_score": row.get("opportunity_score"),
                 "ranking_score": row.get("ranking_score"),
+                "source_badge": row.get("source_badge"),
+                "source_truth_status": row.get("source_truth_status"),
                 "liquidity_proxy": row.get("liquidity_proxy"),
                 "mapping_confidence": row.get("mapping_confidence"),
                 "source_freshness_status": row.get("source_freshness_status"),
@@ -129,7 +142,7 @@ def show() -> None:
     with top1:
         st.metric("Actionable Markets", int(len(actionable.index)), delta=f"open={len(display_rows.index)}")
     with top2:
-        st.metric("Top Opportunity Score", _format_value(top_row.get("ranking_score") or top_row.get("opportunity_score")), delta=_format_value(top_row.get("location_name")))
+        st.metric("Top Ranking Score", _format_value(top_row.get("ranking_score")), delta=_format_value(top_row.get("location_name")))
     with top3:
         st.metric("Highest Edge", _format_value(pd.to_numeric(opportunities["edge_bps"], errors="coerce").abs().max()) if ("edge_bps" in opportunities.columns and not opportunities.empty) else "0", delta="bps")
     with top4:
@@ -171,7 +184,8 @@ def show() -> None:
                     "best_side",
                     "edge_bps",
                     "edge_bps_model",
-                    "opportunity_score",
+                    "ranking_score",
+                    "source_badge",
                     "liquidity_proxy",
                     "mapping_confidence",
                     "source_freshness_status",
@@ -202,7 +216,12 @@ def show() -> None:
                         {"字段": "Mapping Confidence", "值": top_display_row.get("mapping_confidence")},
                         {"字段": "Source Freshness", "值": top_display_row.get("source_freshness_status")},
                         {"字段": "Quality Status", "值": top_display_row.get("market_quality_status")},
-                        {"字段": "Ranking Score", "值": top_display_row.get("ranking_score") or top_display_row.get("opportunity_score")},
+                        {"字段": "Source Badge", "值": top_display_row.get("source_badge")},
+                        {"字段": "Ranking Score", "值": top_display_row.get("ranking_score")},
+                        {"字段": "Expected Dollar PnL", "值": top_display_row.get("expected_dollar_pnl")},
+                        {"字段": "Capture Probability", "值": top_display_row.get("capture_probability")},
+                        {"字段": "Feedback Status", "值": top_display_row.get("feedback_status")},
+                        {"字段": "Feedback Penalty", "值": top_display_row.get("feedback_penalty")},
                         {"字段": "Actionability", "值": top_display_row.get("actionability_status")},
                     ]
                 ),
@@ -257,8 +276,8 @@ def show() -> None:
                 "best_side",
                 "edge_bps",
                 "edge_bps_model",
-                "opportunity_score",
                 "ranking_score",
+                "source_badge",
                 "liquidity_proxy",
                 "mapping_confidence",
                 "source_freshness_status",
@@ -299,9 +318,9 @@ def show() -> None:
             _detail_frame(
                 [
                     {"字段": "Actionability", "值": selected_market.get("actionability_status")},
-                    {"字段": "Ranking Score", "值": selected_market.get("ranking_score") or selected_market.get("opportunity_score")},
-                    {"字段": "Expected Value Score", "值": selected_market.get("expected_value_score")},
-                    {"字段": "Expected PnL Score", "值": selected_market.get("expected_pnl_score")},
+                    {"字段": "Ranking Score", "值": selected_market.get("ranking_score")},
+                    {"字段": "Source Badge", "值": selected_market.get("source_badge")},
+                    {"字段": "Source Truth", "值": selected_market.get("source_truth_status")},
                     {"字段": "Best Side", "值": selected_market.get("best_side")},
                     {"字段": "Best Decision", "值": selected_market.get("best_decision")},
                     {"字段": "Quality Status", "值": selected_market.get("market_quality_status")},
@@ -344,6 +363,15 @@ def show() -> None:
                     {"字段": "Fill Probability", "值": selected_market.get("fill_probability")},
                     {"字段": "Liquidity Proxy", "值": selected_market.get("liquidity_proxy")},
                     {"字段": "Confidence Score", "值": selected_market.get("confidence_score") or selected_market.get("confidence_proxy")},
+                    {"字段": "Expected Value Score", "值": selected_market.get("expected_value_score")},
+                    {"字段": "Expected PnL Score", "值": selected_market.get("expected_pnl_score")},
+                    {"字段": "Expected Dollar PnL", "值": selected_market.get("expected_dollar_pnl")},
+                    {"字段": "Capture Probability", "值": selected_market.get("capture_probability")},
+                    {"字段": "Risk Penalty", "值": selected_market.get("risk_penalty")},
+                    {"字段": "Capital Efficiency", "值": selected_market.get("capital_efficiency")},
+                    {"字段": "Feedback Status", "值": selected_market.get("feedback_status")},
+                    {"字段": "Feedback Penalty", "值": selected_market.get("feedback_penalty")},
+                    {"字段": "Cohort Prior Version", "值": selected_market.get("cohort_prior_version")},
                 ]
             ),
             width="stretch",
@@ -371,6 +399,29 @@ def show() -> None:
             width="stretch",
             hide_index=True,
         )
+
+        why_ranked = _json_dict(selected_market.get("why_ranked_json"))
+        if why_ranked:
+            st.markdown("#### Why Ranked")
+            st.dataframe(
+                _detail_frame(
+                    [
+                        {"字段": "Mode", "值": why_ranked.get("mode")},
+                        {"字段": "Prior Quality", "值": why_ranked.get("prior_quality_status")},
+                        {"字段": "Capture Probability", "值": why_ranked.get("capture_probability")},
+                        {"字段": "Expected Dollar PnL", "值": why_ranked.get("expected_dollar_pnl")},
+                        {"字段": "Risk Penalty", "值": why_ranked.get("risk_penalty")},
+                        {"字段": "Capital Efficiency", "值": why_ranked.get("capital_efficiency")},
+                        {"字段": "Feedback Status", "值": why_ranked.get("feedback_status")},
+                        {"字段": "Feedback Penalty", "值": why_ranked.get("feedback_penalty")},
+                        {"字段": "Pre-Feedback Ranking Score", "值": why_ranked.get("pre_feedback_ranking_score")},
+                        {"字段": "Ops Tie-Breaker", "值": why_ranked.get("ops_tie_breaker")},
+                        {"字段": "Ranking Score", "值": why_ranked.get("ranking_score")},
+                    ]
+                ),
+                width="stretch",
+                hide_index=True,
+            )
 
         st.markdown("#### Execution Reality")
         executed_evidence = selected_market.get("executed_evidence") or {}
@@ -407,6 +458,7 @@ def show() -> None:
             _detail_frame(
                 [
                     {"字段": "Executed Evidence Status", "值": market_research.get("executed_evidence_status")},
+                    {"字段": "Source Badge", "值": watch_only_vs_executed.get("source_badge") or executed_evidence.get("source_badge")},
                     {"字段": "Submission Capture Ratio", "值": watch_only_vs_executed.get("submission_capture_ratio")},
                     {"字段": "Fill Capture Ratio", "值": watch_only_vs_executed.get("fill_capture_ratio")},
                     {"字段": "Resolution Capture Ratio", "值": watch_only_vs_executed.get("resolution_capture_ratio")},
@@ -414,6 +466,8 @@ def show() -> None:
                     {"字段": "Dominant Lifecycle", "值": watch_only_vs_executed.get("dominant_lifecycle_stage")},
                     {"字段": "Miss Reason", "值": watch_only_vs_executed.get("miss_reason_bucket")},
                     {"字段": "Distortion Reason", "值": watch_only_vs_executed.get("distortion_reason_bucket")},
+                    {"字段": "Feedback Status", "值": watch_only_vs_executed.get("feedback_status")},
+                    {"字段": "Feedback Penalty", "值": watch_only_vs_executed.get("feedback_penalty")},
                     {"字段": "Resolved Trade Count", "值": market_research.get("resolved_trade_count")},
                     {"字段": "Avg Post-Trade Error", "值": market_research.get("avg_post_trade_error")},
                 ]

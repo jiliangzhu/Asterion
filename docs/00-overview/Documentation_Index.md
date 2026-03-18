@@ -1,8 +1,10 @@
 # Asterion Documentation Index
 
-**版本**: v1.3
-**更新日期**: 2026-03-16
+**版本**: v1.5
+**更新日期**: 2026-03-17
 **目标**: 统一 Asterion 文档的目录结构、分类规则和 source-of-truth，避免后续开发中出现重复文档、重复接口定义和失效导航。
+
+> 当前仓库阶段状态：`P4 accepted; post-P4 remediation accepted; v2.0 planning`
 
 ---
 
@@ -52,18 +54,26 @@ source-of-truth：
 当前文档：
 
 - `Implementation_Index.md`
+- `phase-plans/V2_Implementation_Plan.md`
 - `phase-plans/P0_Implementation_Plan.md`
 - `phase-plans/P1_Implementation_Plan.md`
 - `phase-plans/P2_Implementation_Plan.md`
 - `phase-plans/P3_Implementation_Plan.md`
 - `phase-plans/P4_Implementation_Plan.md`
 - `phase-plans/Post_P4_Remediation_Implementation_Plan.md`
+- `checklists/V2_Closeout_Checklist.md`
 - `checklists/P0_Closeout_Checklist.md`
+- `checklists/Checklist_Index.md`
 - `checklists/P1_Closeout_Checklist.md`
 - `checklists/P2_Closeout_Checklist.md`
 - `checklists/P3_Closeout_Checklist.md`
 - `checklists/P4_Closeout_Checklist.md`
-- `checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md`
+- `checklists/Post_P4_P10_Closeout_Checklist.md`
+- `checklists/Post_P4_P11_Closeout_Checklist.md`
+- `checklists/Post_P4_P12_Closeout_Checklist.md`
+- `checklists/Post_P4_P13_Closeout_Checklist.md`
+- `checklists/Post_P4_P14_Closeout_Checklist.md`
+- `checklists/Post_P4_P15_Closeout_Checklist.md`
 - `runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md`
 - `runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md`
 - `runbooks/P3_Paper_Execution_Runbook.md`
@@ -97,9 +107,12 @@ source-of-truth：
 
 - “这一阶段具体先做什么、后做什么、交付什么”
 - “每个阶段计划、检查清单、迁移台账分别放在哪里”
-- post-P4 remediation 的 canonical 实施路径，以及治理/安全/交易能力增强的分阶段修复顺序
-- reassessment 后续 `Phase 5+` 路线，不再单独新建第二份 canonical plan
-- 当前状态与 operator 边界的 truth-source，以 `Post_P4_Remediation_Implementation_Plan.md` 和入口文档同步口径为准
+- `v2.0` 的 active planning entry，以及 `P4` / post-P4 remediation 的历史 accepted 记录
+- historical remediation 路径已完成到 `Post-P4 Phase 15`
+- reassessment 后续 `Phase 5+` 路线保留在历史 remediation record 中，不再作为当前 active planning entry
+- 当前状态与 operator 边界的 truth-source，以 `V2_Implementation_Plan.md` 和入口文档同步口径为准；`Post_P4_Remediation_Implementation_Plan.md` 保留为 historical accepted remediation record
+- `docs/analysis/*.md` 固定作为 analysis input，不升格为 implementation truth-source
+- `checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md` 当前只保留为 archive redirect note；不要把它当成 active closeout 入口
 
 ### `docs/20-architecture/`
 
@@ -114,6 +127,7 @@ source-of-truth：
 - `Database_Architecture_Design.md`
 - `Event_Sourcing_Design.md`
 - `Hot_Cold_Path_Architecture.md`
+- `UI_Read_Model_Design.md`
 
 source-of-truth：
 
@@ -138,6 +152,8 @@ source-of-truth：
 - `Market_Capability_Registry_Design.md`
 - `Signer_Service_Design.md`
 - `Gas_Manager_Design.md`
+- `Controlled_Live_Boundary_Design.md`
+- `Execution_Economics_Design.md`
 
 source-of-truth：
 
@@ -158,6 +174,7 @@ source-of-truth：
 
 - `Forecast_Ensemble_Design.md`
 - `UMA_Watcher_Design.md`
+- `Forecast_Calibration_v2_Design.md`
 
 source-of-truth：
 
@@ -177,10 +194,36 @@ source-of-truth：
 当前文档：
 
 - `Agent_Monitor_Design.md`
+- `Operator_Console_Truth_Source_Design.md`
 
 source-of-truth：
 
 - 监控、评估、运营和长期可观测性
+
+### `docs/analysis/`
+
+用途：
+
+- current code reassessment
+- deep audit inputs
+- 历史评估快照
+- 非 canonical 的专项分析
+
+当前文档：
+
+- `Analysis_Index.md`
+- `01_Current_Code_Reassessment.md`
+- `02_Current_Deep_Audit_and_Improvement_Plan.md`
+- `10_Claude_Asterion_Project_Assessment.md`
+- `11_Project_Full_Assessment.md`
+- `12_Remediation_Plan.md`
+- `13_UI_Redesign_Assessment.md`
+
+source-of-truth：
+
+- 这些文档只作为 analysis input 和历史材料
+- 当前 planning truth-source 是 `docs/10-implementation/phase-plans/V2_Implementation_Plan.md`
+- `docs/10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md` 继续保留为 historical accepted remediation record
 
 ---
 
@@ -199,6 +242,13 @@ source-of-truth：
 建议路径：
 
 - `docs/10-implementation/phase-plans/`
+
+### Analysis 文档
+
+- 使用 `<NN>_<Name>.md`
+- `01-09` 表示 current analysis inputs
+- `10+` 表示 historical / archived analysis snapshots
+- 统一先从 `docs/analysis/Analysis_Index.md` 进入
 
 ### 迁移说明 / module note
 

@@ -7,6 +7,12 @@ from typing import Any
 
 import pandas as pd
 from domains.weather.opportunity import build_weather_opportunity_assessment, derive_opportunity_side
+from ui.surface_truth import (
+    annotate_frame_with_source_truth,
+    build_opportunity_row_source_badge,
+    load_boundary_sidebar_summary,
+    load_primary_score_descriptor,
+)
 
 try:
     import duckdb
@@ -47,6 +53,8 @@ UI_TABLES = {
     "execution_science_summary": "ui.execution_science_summary",
     "market_research_summary": "ui.market_research_summary",
     "calibration_health_summary": "ui.calibration_health_summary",
+    "read_model_catalog": "ui.read_model_catalog",
+    "truth_source_checks": "ui.truth_source_checks",
 }
 
 
@@ -587,9 +595,10 @@ def _sort_market_opportunities(frame: pd.DataFrame) -> pd.DataFrame:
     sortable = frame.copy()
     sortable["_actionability_rank"] = sortable.get("actionability_status", pd.Series(dtype="object")).map(_ACTIONABILITY_ORDER).fillna(9)
     if "ranking_score" in sortable.columns:
-        sortable["_opportunity_score_value"] = pd.to_numeric(sortable.get("ranking_score"), errors="coerce").fillna(-1.0)
+        ranking_values = sortable["ranking_score"]
     else:
-        sortable["_opportunity_score_value"] = pd.to_numeric(sortable.get("opportunity_score"), errors="coerce").fillna(-1.0)
+        ranking_values = sortable.get("opportunity_score", pd.Series(index=sortable.index, dtype="float64"))
+    sortable["_opportunity_score_value"] = pd.to_numeric(ranking_values, errors="coerce").fillna(-1.0)
     sortable["_edge_bps_value"] = pd.to_numeric(sortable.get("edge_bps"), errors="coerce").fillna(-999999.0)
     sortable["_market_close_time_value"] = sortable.get("market_close_time", pd.Series(dtype="object")).fillna("")
     sortable = sortable.sort_values(
@@ -625,6 +634,8 @@ def _build_opportunity_row(
     price_staleness_ms: int = 0,
     spread_bps: int | None = None,
     calibration_health_status: str = "lookup_missing",
+    calibration_bias_quality: str = "lookup_missing",
+    threshold_probability_quality: str = "lookup_missing",
     sample_count: int = 0,
     calibration_multiplier: float | None = None,
     calibration_reason_codes: list[str] | None = None,
@@ -646,11 +657,15 @@ def _build_opportunity_row(
         source_freshness_status=source_freshness_status,
         spread_bps=spread_bps,
         calibration_health_status=calibration_health_status,
+        calibration_bias_quality=calibration_bias_quality,
+        threshold_probability_quality=threshold_probability_quality,
         sample_count=sample_count,
         calibration_multiplier=calibration_multiplier,
         calibration_reason_codes=calibration_reason_codes,
         source_context={
             "calibration_health_status": calibration_health_status,
+            "calibration_bias_quality": calibration_bias_quality,
+            "threshold_probability_quality": threshold_probability_quality,
             "sample_count": sample_count,
             "calibration_multiplier": calibration_multiplier,
             "calibration_reason_codes": calibration_reason_codes,
@@ -687,6 +702,8 @@ def _build_opportunity_row(
         "fill_probability": assessment.fill_probability,
         "depth_proxy": assessment.depth_proxy,
         "calibration_health_status": assessment.calibration_health_status,
+        "calibration_bias_quality": assessment.calibration_bias_quality,
+        "threshold_probability_quality": assessment.threshold_probability_quality,
         "sample_count": assessment.sample_count,
         "uncertainty_multiplier": assessment.uncertainty_multiplier,
         "uncertainty_penalty_bps": assessment.uncertainty_penalty_bps,
@@ -702,7 +719,16 @@ def _build_opportunity_row(
         "ops_readiness_score": assessment.ops_readiness_score,
         "expected_value_score": assessment.expected_value_score,
         "expected_pnl_score": assessment.expected_pnl_score,
+        "expected_dollar_pnl": assessment.expected_dollar_pnl,
+        "capture_probability": assessment.capture_probability,
+        "risk_penalty": assessment.risk_penalty,
+        "capital_efficiency": assessment.capital_efficiency,
+        "feedback_penalty": assessment.feedback_penalty,
+        "feedback_status": assessment.feedback_status,
+        "cohort_prior_version": assessment.cohort_prior_version,
         "ranking_score": assessment.ranking_score,
+        "execution_prior_key": assessment.execution_prior_key,
+        "why_ranked_json": assessment.why_ranked_json,
         "agent_review_status": agent_review_status,
         "live_prereq_status": live_prereq_status,
         "opportunity_bucket": "high_edge" if edge_magnitude >= 1500 else "medium_edge" if edge_magnitude >= 750 else "low_edge" if edge_magnitude > 0 else "negative_edge",
@@ -712,6 +738,10 @@ def _build_opportunity_row(
         "latest_forecast_target_time": latest_forecast_target_time,
         "threshold_bps": threshold_bps,
         "signal_created_at": signal_created_at,
+        "source_badge": "fallback",
+        "source_truth_status": "fallback",
+        "is_degraded_source": True,
+        "primary_score_label": "ranking_score",
     }
 
 
@@ -837,10 +867,19 @@ def _derive_market_opportunities_from_report(report: dict[str, Any] | None) -> p
                     "liquidity_penalty_bps": None,
                     "confidence_score": 85.0 if agent_review_status == "passed" else 60.0 if agent_review_status == "review_required" else 35.0 if agent_review_status == "agent_failure" else 50.0,
                     "confidence_proxy": 85.0 if agent_review_status == "passed" else 60.0 if agent_review_status == "review_required" else 35.0 if agent_review_status == "agent_failure" else 50.0,
-                    "ops_readiness_score": 10.0,
+                    "ops_readiness_score": 0.0,
                     "expected_value_score": 0.0,
                     "expected_pnl_score": 0.0,
+                    "expected_dollar_pnl": 0.0,
+                    "capture_probability": 0.0,
+                    "risk_penalty": 0.0,
+                    "capital_efficiency": 0.0,
+                    "feedback_penalty": 0.0,
+                    "feedback_status": "heuristic_only",
+                    "cohort_prior_version": None,
                     "ranking_score": 0.0,
+                    "execution_prior_key": None,
+                    "why_ranked_json": {},
                     "agent_review_status": agent_review_status,
                     "live_prereq_status": live_prereq_status,
                     "opportunity_bucket": "negative_edge",
@@ -1020,7 +1059,12 @@ def load_readiness_evidence_bundle() -> dict[str, Any]:
 
 def load_predicted_vs_realized_data() -> dict[str, Any]:
     snapshot = load_ui_lite_snapshot()
-    frame = _sort_desc(snapshot["tables"]["predicted_vs_realized_summary"], "latest_fill_at", "latest_resolution_at")
+    frame = annotate_frame_with_source_truth(
+        _sort_desc(snapshot["tables"]["predicted_vs_realized_summary"], "latest_fill_at", "latest_resolution_at"),
+        source_origin="ui_lite",
+        derived=True,
+        freshness_column="forecast_freshness",
+    )
     return {
         "source": "ui_lite" if not frame.empty else ("ui_lite" if snapshot["exists"] else "missing"),
         "frame": frame,
@@ -1036,9 +1080,22 @@ def load_execution_console_data() -> dict[str, pd.DataFrame]:
     live_prereq = _sort_desc(snapshot["tables"]["live_prereq_execution_summary"], "latest_submit_created_at", "latest_sign_attempt_created_at")
     journal = _sort_desc(snapshot["tables"]["paper_run_journal_summary"], "latest_event_at")
     daily_ops = _sort_desc(snapshot["tables"]["daily_ops_summary"], "latest_event_at")
-    predicted_vs_realized = _sort_desc(snapshot["tables"]["predicted_vs_realized_summary"], "latest_fill_at", "latest_resolution_at")
-    watch_only_vs_executed = _sort_desc(snapshot["tables"]["watch_only_vs_executed_summary"], "fill_capture_ratio", "avg_executable_edge_bps")
-    execution_science = _sort_desc(snapshot["tables"]["execution_science_summary"], "resolution_capture_ratio", "fill_capture_ratio", "submission_capture_ratio")
+    predicted_vs_realized = annotate_frame_with_source_truth(
+        _sort_desc(snapshot["tables"]["predicted_vs_realized_summary"], "latest_fill_at", "latest_resolution_at"),
+        source_origin="ui_lite",
+        derived=True,
+        freshness_column="forecast_freshness",
+    )
+    watch_only_vs_executed = annotate_frame_with_source_truth(
+        _sort_desc(snapshot["tables"]["watch_only_vs_executed_summary"], "fill_capture_ratio", "avg_executable_edge_bps"),
+        source_origin="ui_lite",
+        derived=True,
+    )
+    execution_science = annotate_frame_with_source_truth(
+        _sort_desc(snapshot["tables"]["execution_science_summary"], "resolution_capture_ratio", "fill_capture_ratio", "submission_capture_ratio"),
+        source_origin="ui_lite",
+        derived=True,
+    )
     market_research = _sort_desc(snapshot["tables"]["market_research_summary"], "resolution_capture_ratio", "avg_post_trade_error")
     calibration_health = _sort_desc(snapshot["tables"]["calibration_health_summary"], "sample_count", "mean_abs_residual")
     return {
@@ -1071,11 +1128,21 @@ def load_market_watch_data() -> dict[str, Any]:
 
 def load_market_opportunity_data() -> dict[str, Any]:
     snapshot = load_ui_lite_snapshot()
-    frame = _sort_market_opportunities(snapshot["tables"]["market_opportunity_summary"])
+    frame = annotate_frame_with_source_truth(
+        _sort_market_opportunities(snapshot["tables"]["market_opportunity_summary"]),
+        source_origin="ui_lite",
+        derived=False,
+        freshness_column="source_freshness_status",
+    )
     if not frame.empty:
         return {"source": "ui_lite", "frame": frame, "read_error": snapshot.get("read_error")}
     report = load_real_weather_smoke_report()
-    report_frame = _derive_market_opportunities_from_report(report)
+    report_frame = annotate_frame_with_source_truth(
+        _derive_market_opportunities_from_report(report),
+        source_origin="smoke_report",
+        derived=False,
+        freshness_column="source_freshness_status",
+    )
     if not report_frame.empty:
         return {"source": "smoke_report", "frame": report_frame, "read_error": snapshot.get("read_error")}
     if report:
@@ -1084,7 +1151,12 @@ def load_market_opportunity_data() -> dict[str, Any]:
         if chain_status not in {"initializing", "unknown"} and refresh_state != "initializing":
             return {"source": "smoke_report", "frame": report_frame, "read_error": snapshot.get("read_error")}
     runtime_result = _read_weather_market_rows_from_runtime_result(_resolve_real_weather_chain_db_path())
-    runtime_frame = _sort_market_opportunities(runtime_result["frame"])
+    runtime_frame = annotate_frame_with_source_truth(
+        _sort_market_opportunities(runtime_result["frame"]),
+        source_origin="weather_smoke_db",
+        derived=False,
+        freshness_column="source_freshness_status",
+    )
     return {"source": "weather_smoke_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
 
 
@@ -1199,6 +1271,9 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
                 "resolution_lag_hours": latest.get("resolution_lag_hours"),
                 "miss_reason_bucket": latest.get("miss_reason_bucket"),
                 "distortion_reason_codes_json": latest.get("distortion_reason_codes_json"),
+                "source_badge": latest.get("source_badge"),
+                "source_truth_status": latest.get("source_truth_status"),
+                "is_degraded_source": latest.get("is_degraded_source"),
                 "latest_fill_at": latest.get("latest_fill_at"),
                 "latest_resolution_at": latest.get("latest_resolution_at"),
             }
@@ -1240,9 +1315,20 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
             )
             rows.append(payload)
     else:
+        fallback_badge = build_opportunity_row_source_badge(
+            source_origin=opportunity_payload["source"],
+            source_freshness_status="missing",
+            derived=False,
+        )
         rows = [
             {
                 **item,
+                "source_badge": item.get("source_badge") or fallback_badge.source_badge,
+                "source_truth_status": item.get("source_truth_status") or fallback_badge.source_truth_status,
+                "is_degraded_source": item.get("is_degraded_source")
+                if item.get("is_degraded_source") is not None
+                else fallback_badge.is_degraded_source,
+                "primary_score_label": item.get("primary_score_label") or "ranking_score",
                 "executed_evidence": execution_summary_by_market.get(str(item.get("market_id"))) or {"has_executed_evidence": False},
                 "watch_only_vs_executed": watch_only_vs_executed_by_market.get(str(item.get("market_id"))) or {},
                 "market_research": research_by_market.get(str(item.get("market_id"))) or {},
@@ -1269,21 +1355,10 @@ def load_agent_runtime_status() -> dict[str, Any]:
         or os.getenv("QWEN_MODEL", "").strip()
         or "unconfigured"
     )
-    has_qwen_key = bool(os.getenv("QWEN_API_KEY", "").strip())
-    has_alibaba_key = bool(os.getenv("ALIBABA_API_KEY", "").strip())
-    has_compatible_key = bool(os.getenv("ASTERION_OPENAI_COMPATIBLE_API_KEY", "").strip())
-    effective_key_source = "missing"
-    if has_compatible_key:
-        effective_key_source = "ASTERION_OPENAI_COMPATIBLE_API_KEY"
-    elif has_alibaba_key:
-        effective_key_source = "ALIBABA_API_KEY"
-    elif has_qwen_key:
-        effective_key_source = "QWEN_API_KEY"
     return {
         "provider": provider,
         "model": model,
-        "key_source": effective_key_source,
-        "configured": effective_key_source != "missing" and model != "unconfigured",
+        "configured": model != "unconfigured",
         "agents": [
             {
                 "agent_name": "Rule2Spec Agent",
@@ -1345,6 +1420,19 @@ def load_system_runtime_status() -> dict[str, Any]:
         "agent_row_count": int(len(agent_data.index)),
         "agent_read_error": agent_payload.get("read_error"),
         "opportunity_read_error": opportunity_payload.get("read_error"),
+    }
+
+
+def load_boundary_sidebar_truth() -> dict[str, Any]:
+    summary = load_boundary_sidebar_summary()
+    readiness_surface = load_operator_surface_status()["readiness"]
+    return {
+        **summary.as_dict(),
+        "status": readiness_surface["status"],
+        "label": readiness_surface["label"],
+        "detail": readiness_surface["detail"],
+        "source": readiness_surface["source"],
+        "updated_at": readiness_surface["updated_at"],
     }
 
 
@@ -1646,6 +1734,7 @@ def build_ops_console_overview() -> dict[str, Any]:
         "calibration_health_summary": calibration_health,
         "uncaptured_high_edge_markets": uncaptured_high_edge,
         "surface_status": load_operator_surface_status(),
+        "boundary_sidebar_summary": load_boundary_sidebar_truth(),
         "top_opportunities": top_opportunities,
         "degraded_inputs": degraded_inputs,
         "largest_blocker": {"summary": largest_blocker, "source": blocker_source},
@@ -1660,7 +1749,8 @@ def build_ops_console_overview() -> dict[str, Any]:
             "weather_market_question": ((weather_report.get("market_discovery") or {}).get("question") or "未发现实时市场"),
             "weather_market_count": int(len(opportunities.index)),
             "actionable_market_count": int(len(actionable.index)),
-            "top_opportunity_score": float(top_opportunities.iloc[0]["ranking_score"]) if (not top_opportunities.empty and "ranking_score" in top_opportunities.columns) else float(top_opportunities.iloc[0]["opportunity_score"]) if (not top_opportunities.empty and "opportunity_score" in top_opportunities.columns) else 0.0,
+            "top_ranking_score": float(top_opportunities.iloc[0]["ranking_score"]) if (not top_opportunities.empty and "ranking_score" in top_opportunities.columns) else 0.0,
+            "top_opportunity_score": float(top_opportunities.iloc[0]["ranking_score"]) if (not top_opportunities.empty and "ranking_score" in top_opportunities.columns) else 0.0,
             "highest_edge_bps": float(pd.to_numeric(opportunities["edge_bps"], errors="coerce").abs().max()) if ("edge_bps" in opportunities.columns and not opportunities.empty) else 0.0,
             "liquidity_ready_count": int(((pd.to_numeric(opportunities["liquidity_proxy"], errors="coerce").fillna(0) >= 60.0) & (opportunities["accepting_orders"] == True)).sum()) if ({"liquidity_proxy", "accepting_orders"} <= set(opportunities.columns)) else 0,  # noqa: E712
             "weather_locations": sorted({str(value) for value in opportunities["location_name"].dropna().tolist()}) if "location_name" in opportunities.columns else [],
@@ -1676,6 +1766,7 @@ def build_ops_console_overview() -> dict[str, Any]:
             "resolution_capture_ratio": resolution_capture_ratio,
             "execution_capture_ratio": fill_capture_ratio,
             "uncaptured_high_edge_count": int(len(uncaptured_high_edge.index)),
+            "primary_score_label": load_primary_score_descriptor().primary_score_label,
         },
         "wallet_attention": wallet_attention,
     }

@@ -516,6 +516,7 @@ def build_transaction_signer_request(request: ChainTxRequest, account_capability
             signing_purpose=SigningPurpose.TRANSACTION,
             chain_id=request.chain_id,
         ),
+        wallet_id=request.wallet_id,
         payload=_build_unsigned_tx_payload(request),
     )
 

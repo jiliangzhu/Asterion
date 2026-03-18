@@ -1,10 +1,13 @@
 # P4 Controlled Rollout Decision Runbook
 
-**状态**: active  
+**状态**: archived accepted historical runbook
 **阶段**: `P4-12 Readiness / Closeout / Controlled Rollout Decision`  
 **边界**: 这是 rollout decision runbook，不是操作执行 runbook，不替代 `P4_Controlled_Live_Smoke_Runbook.md`。
 
 ---
+
+> Historical accepted record only.
+> 该 runbook 保留为 `P4` rollout decision 的历史 operator 记录，不再作为当前 active runbook 入口。
 
 ## 1. 目的
 

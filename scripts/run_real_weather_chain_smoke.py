@@ -32,8 +32,9 @@ from domains.weather.forecast import (
     OpenMeteoAdapter,
     enqueue_source_health_snapshot_upserts,
 )
-from domains.weather.opportunity import build_source_health_snapshot
+from domains.weather.opportunity import build_source_health_snapshot, load_execution_prior_summary
 from domains.weather.pricing import (
+    build_forecast_calibration_pricing_context,
     build_binary_fair_values,
     build_watch_only_snapshot,
     enqueue_fair_value_upserts,
@@ -426,6 +427,15 @@ def main() -> int:
                     threshold_bps=TARGET_THRESHOLD_BPS,
                     accepting_orders=bool(market.accepting_orders),
                     enable_order_book=market.enable_order_book,
+                    execution_prior_summary=load_execution_prior_summary(
+                        con,
+                        market_id=item.market_id,
+                        side="BUY" if item.fair_value >= market_prices[item.outcome] else "SELL",
+                        forecast_target_time=forecast_run.forecast_target_time,
+                        observation_date=forecast_run.observation_date,
+                        depth_proxy=0.85 if market.enable_order_book and 0.10 <= market_prices[item.outcome] <= 0.90 else 0.55,
+                        spread_bps=None,
+                    ),
                     pricing_context={
                         "calibration_health_status": None if calibration_summary is None else calibration_summary.calibration_health_status,
                         "sample_count": 0 if calibration_summary is None else calibration_summary.sample_count,
@@ -440,6 +450,11 @@ def main() -> int:
                         "source_freshness_status": source_health_snapshot.source_freshness_status,
                         "source_used": forecast_run.source,
                         "source_trace": forecast_run.source_trace,
+                        **build_forecast_calibration_pricing_context(
+                            forecast_run=forecast_run,
+                            outcome=item.outcome,
+                            fair_value=item.fair_value,
+                        ),
                     },
                 )
                 for item in current_fair_values

@@ -1,10 +1,13 @@
 # P4 Real Weather Chain Smoke Runbook
 
-**状态**: active  
+**状态**: archived accepted historical runbook
 **阶段**: `P4`  
 **边界**: 这是 `市场发现 -> 规则解析 -> 预测 -> 定价 -> 机会发现` 的真实数据 smoke，不是 paper execution，也不是 controlled live。
 
 ---
+
+> Historical accepted record only.
+> 该 runbook 保留为 `P4` real weather chain smoke 的历史 operator 记录，不再作为当前 active runbook 入口。
 
 ## 1. 目标
 

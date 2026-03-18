@@ -15,6 +15,7 @@ from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.utils import safe_json_dumps
 from asterion_core.storage.write_queue import WriteQueueConfig
 
+from .calibration import CalibrationProfileV2
 from .service import ForecastDistribution
 
 
@@ -85,6 +86,30 @@ WEATHER_FORECAST_CALIBRATION_SAMPLE_COLUMNS = [
     "created_at",
 ]
 
+WEATHER_FORECAST_CALIBRATION_PROFILE_V2_COLUMNS = [
+    "profile_key",
+    "station_id",
+    "source",
+    "metric",
+    "forecast_horizon_bucket",
+    "season_bucket",
+    "regime_bucket",
+    "sample_count",
+    "mean_bias",
+    "mean_abs_residual",
+    "p90_abs_residual",
+    "empirical_coverage_50",
+    "empirical_coverage_80",
+    "empirical_coverage_95",
+    "regime_stability_score",
+    "residual_quantiles_json",
+    "threshold_probability_profile_json",
+    "calibration_health_status",
+    "window_start",
+    "window_end",
+    "materialized_at",
+]
+
 WEATHER_SOURCE_HEALTH_SNAPSHOT_COLUMNS = [
     "snapshot_id",
     "market_id",
@@ -104,6 +129,7 @@ def build_forecast_run_record(distribution: ForecastDistribution) -> ForecastRun
     payload = {
         "cache_key": distribution.cache_key,
         "condition_id": distribution.condition_id,
+        "distribution_summary_v2": None if distribution.distribution_summary_v2 is None else dict(distribution.distribution_summary_v2),
         "forecast_target_time": distribution.forecast_target_time.isoformat(),
         "metric": distribution.metric,
         "model_run": distribution.model_run,
@@ -131,7 +157,10 @@ def build_forecast_run_record(distribution: ForecastDistribution) -> ForecastRun
         fallback_used=distribution.fallback_used,
         from_cache=distribution.from_cache,
         confidence=distribution.confidence,
-        forecast_payload={"temperature_distribution": dict(distribution.temperature_distribution)},
+        forecast_payload={
+            "temperature_distribution": dict(distribution.temperature_distribution),
+            "distribution_summary_v2": None if distribution.distribution_summary_v2 is None else dict(distribution.distribution_summary_v2),
+        },
         raw_payload=dict(distribution.raw_payload),
     )
 
@@ -209,6 +238,25 @@ def enqueue_forecast_calibration_sample_upserts(
         table="weather.forecast_calibration_samples",
         pk_cols=["sample_id"],
         columns=list(WEATHER_FORECAST_CALIBRATION_SAMPLE_COLUMNS),
+        rows=rows,
+        run_id=run_id,
+    )
+
+
+def enqueue_forecast_calibration_profile_v2_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    profiles: list[CalibrationProfileV2],
+    run_id: str | None = None,
+) -> str | None:
+    if not profiles:
+        return None
+    rows = [forecast_calibration_profile_v2_to_row(item) for item in profiles]
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="weather.forecast_calibration_profiles_v2",
+        pk_cols=["profile_key"],
+        columns=list(WEATHER_FORECAST_CALIBRATION_PROFILE_V2_COLUMNS),
         rows=rows,
         run_id=run_id,
     )
@@ -305,6 +353,32 @@ def forecast_calibration_sample_to_row(record: ForecastCalibrationSampleRecord) 
         record.observed_value,
         record.residual,
         _sql_timestamp(record.created_at),
+    ]
+
+
+def forecast_calibration_profile_v2_to_row(record: CalibrationProfileV2) -> list[Any]:
+    return [
+        record.profile_key,
+        record.station_id,
+        record.source,
+        record.metric,
+        record.forecast_horizon_bucket,
+        record.season_bucket,
+        record.regime_bucket,
+        record.sample_count,
+        record.mean_bias,
+        record.mean_abs_residual,
+        record.p90_abs_residual,
+        record.empirical_coverage_50,
+        record.empirical_coverage_80,
+        record.empirical_coverage_95,
+        record.regime_stability_score,
+        safe_json_dumps(record.residual_quantiles_json),
+        safe_json_dumps(record.threshold_probability_profile_json),
+        record.calibration_health_status,
+        _sql_timestamp(record.window_start),
+        _sql_timestamp(record.window_end),
+        _sql_timestamp(record.materialized_at),
     ]
 
 

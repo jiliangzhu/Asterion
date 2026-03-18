@@ -135,7 +135,7 @@ class PostTradeAnalyticsProjectionTest(unittest.TestCase):
                     """
                     SELECT market_id, opportunity_count, submitted_ticket_count, filled_ticket_count, resolved_ticket_count,
                            submission_capture_ratio, fill_capture_ratio, resolution_capture_ratio,
-                           miss_reason_bucket, distortion_reason_bucket
+                           miss_reason_bucket, distortion_reason_bucket, feedback_status, feedback_penalty
                     FROM ui.watch_only_vs_executed_summary
                     WHERE market_id = 'mkt_1'
                     """
@@ -159,7 +159,7 @@ class PostTradeAnalyticsProjectionTest(unittest.TestCase):
             finally:
                 con.close()
 
-        self.assertEqual(capture, ("mkt_1", 2, 1, 1, 1, 0.5, 0.5, 0.5, "not_submitted", "forecast_distortion"))
+        self.assertEqual(capture, ("mkt_1", 2, 1, 1, 1, 0.5, 0.5, 0.5, "not_submitted", "forecast_distortion", "heuristic_only", 0.0))
         self.assertEqual(research, ("mkt_1", "resolved", 1, 0.5, 0.5, 0.5, "not_submitted", "forecast_distortion"))
         self.assertEqual(calibration, ("KSEA", "openmeteo", 5, "watch"))
 

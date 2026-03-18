@@ -344,6 +344,38 @@ _JOB_SPECS = [
         handler_name="run_weather_resolution_review_job",
         default_schedule_key=None,
     ),
+    ColdPathJobSpec(
+        job_name="weather_execution_priors_refresh",
+        description="Materialize execution feedback cohort priors from canonical execution and settlement facts for ranking suppression.",
+        mode="scheduled",
+        upstream_jobs=["weather_external_execution_reconciliation", "weather_resolution_reconciliation"],
+        input_tables=[
+            "runtime.trade_tickets",
+            "runtime.submit_attempts",
+            "runtime.external_order_observations",
+            "trading.fills",
+            "resolution.settlement_verifications",
+            "weather.weather_market_specs",
+        ],
+        output_tables=["weather.weather_execution_priors", "runtime.execution_feedback_materializations"],
+        handler_name="run_weather_execution_priors_refresh_job",
+        default_schedule_key="weather_execution_priors_nightly",
+    ),
+    ColdPathJobSpec(
+        job_name="weather_forecast_calibration_profiles_v2_refresh",
+        description="Materialize calibration profile v2 rows from canonical forecast, calibration sample, and resolution facts.",
+        mode="manual",
+        upstream_jobs=["weather_forecast_refresh", "weather_resolution_reconciliation"],
+        input_tables=[
+            "weather.forecast_calibration_samples",
+            "weather.weather_forecast_runs",
+            "weather.weather_market_specs",
+            "resolution.settlement_verifications",
+        ],
+        output_tables=["weather.forecast_calibration_profiles_v2"],
+        handler_name="run_weather_forecast_calibration_profiles_v2_refresh_job",
+        default_schedule_key=None,
+    ),
 ]
 
 _SCHEDULE_SPECS = [
@@ -414,6 +446,13 @@ _SCHEDULE_SPECS = [
         schedule_key="weather_resolution_reconciliation_bihourly",
         job_name="weather_resolution_reconciliation",
         cron_schedule="35 */2 * * *",
+        execution_timezone="UTC",
+        enabled_by_default=True,
+    ),
+    ColdPathScheduleSpec(
+        schedule_key="weather_execution_priors_nightly",
+        job_name="weather_execution_priors_refresh",
+        cron_schedule="5 3 * * *",
         execution_timezone="UTC",
         enabled_by_default=True,
     ),

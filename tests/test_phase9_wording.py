@@ -16,10 +16,14 @@ class Phase9WordingBaselineTest(unittest.TestCase):
                 "Closeout pending objective verification",
                 "Exception Review",
                 "Readiness Evidence",
-                "`manual-only`",
-                "`default-off`",
-                "`constrained real submit`",
-                "`not unattended live`",
+                "load_boundary_sidebar_truth",
+            ],
+            ROOT / "ui" / "surface_truth.py": [
+                "manual-only",
+                "default-off",
+                "constrained real submit",
+                "not unattended live",
+                "not unrestricted live",
             ],
             ROOT / "ui" / "pages" / "home.py": [
                 "Decision Console",
@@ -75,32 +79,38 @@ class Phase9WordingBaselineTest(unittest.TestCase):
     def test_entry_docs_share_current_truth_source(self) -> None:
         doc_expectations = {
             ROOT / "README.md": [
-                "post-P4 remediation active (`Phase 0` / `Phase 9` accepted; closeout pending objective verification)",
+                "P4 accepted; post-P4 remediation accepted; v2.0 planning",
+                "V2_Implementation_Plan.md",
                 "operator console + constrained execution infra",
                 "不表示 unattended live",
             ],
             ROOT / "AGENTS.md": [
-                "post-P4 remediation active",
-                "closeout pending objective verification",
+                "v2.0 planning",
+                "V2_Implementation_Plan.md",
                 "operator console + constrained execution infra",
             ],
             ROOT / "docs" / "00-overview" / "Asterion_Project_Plan.md": [
                 "operator console + constrained execution infra",
+                "V2_Implementation_Plan.md",
                 "Post_P4_Remediation_Implementation_Plan.md",
             ],
             ROOT / "docs" / "00-overview" / "DEVELOPMENT_ROADMAP.md": [
-                "Phase 5` 到 `Phase 8` 已作为 post-P4 remediation 的连续收口阶段落地；当前 `Phase 9` 只负责 operator wording / docs truth-source cleanup",
+                "当前 active planning entry",
+                "V2_Implementation_Plan.md",
+                "Post-P4 Phase 10 -> Post-P4 Phase 15 accepted",
             ],
             ROOT / "docs" / "00-overview" / "Documentation_Index.md": [
                 "当前状态与 operator 边界的 truth-source",
+                "V2_Implementation_Plan.md",
             ],
             ROOT / "docs" / "10-implementation" / "Implementation_Index.md": [
-                "accepted `Phase 0` 到 `Phase 9`",
+                "V2_Implementation_Plan.md",
+                "historical accepted remediation record",
             ],
             ROOT / "docs" / "10-implementation" / "phase-plans" / "Post_P4_Remediation_Implementation_Plan.md": [
-                "### 10.7 Phase 9: Operator Surface and Truth-Source Cleanup",
-                "accepted (`2026-03-16`)",
-                "operator console + constrained execution infra",
+                "### 11.4 Post-P4 Phase 11: Operator Truth-Source and Surface Hardening",
+                "archived accepted historical remediation record",
+                "不再承担 active implementation entry 身份",
             ],
         }
         missing: list[str] = []

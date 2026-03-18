@@ -136,6 +136,7 @@ class SignerShellUnitTest(unittest.TestCase):
                 requester="operator",
                 timestamp=datetime(2026, 3, 11, 10, 0, tzinfo=timezone.utc),
                 context=context,
+                wallet_id="wallet_weather_1",
                 payload={},
             )
 
@@ -209,6 +210,7 @@ class SignerShellUnitTest(unittest.TestCase):
             requester="operator",
             timestamp=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
             context=context,
+            wallet_id="wallet_weather_1",
             payload={"tx_kind": "approve_usdc", "amount": "100"},
         )
         left = DeterministicTransactionSignerBackend().sign_transaction(request)
@@ -250,24 +252,53 @@ class SignerShellUnitTest(unittest.TestCase):
             "max_fee_per_gas": 100,
             "max_priority_fee_per_gas": 10,
             "data": "0x095ea7b300000000000000000000000022222222222222222222222222222222222222220000000000000000000000000000000000000000000000000000000005f5e100",
-            "private_key_env_var": "ASTERION_TEST_CONTROLLED_LIVE_PK",
         }
         request = SignerRequest(
             request_id="req_tx_live_1",
             requester="operator",
             timestamp=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
             context=context,
+            wallet_id="wallet_weather_1",
             payload=payload,
         )
         with patch.dict(
             "os.environ",
-            {"ASTERION_TEST_CONTROLLED_LIVE_PK": "0x59c6995e998f97a5a0044966f094538e9dc9e86dae88c7a8412c4f2f8e8ddc5f"},
+            {"ASTERION_CONTROLLED_LIVE_SECRET_PK_WALLET_WEATHER_1": "0x59c6995e998f97a5a0044966f094538e9dc9e86dae88c7a8412c4f2f8e8ddc5f"},
             clear=False,
         ):
             response = EnvPrivateKeyTransactionSignerBackend().sign_transaction(request)
         self.assertEqual(response.status, SignatureAuditStatus.SUCCEEDED.value)
         self.assertIsNotNone(response.signed_payload_json)
         self.assertIn("raw_transaction_hex", response.signed_payload_json)
+
+    def test_env_private_key_tx_rejects_payload_supplied_env_var(self) -> None:
+        context = build_signing_context_from_account_capability(
+            _account_capability(),
+            signing_purpose=SigningPurpose.TRANSACTION,
+            chain_id=137,
+        )
+        request = SignerRequest(
+            request_id="req_tx_live_forbidden",
+            requester="operator",
+            timestamp=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+            context=context,
+            wallet_id="wallet_weather_1",
+            payload={
+                "chain_id": 137,
+                "nonce": 7,
+                "from": "0x3F517a8581fDF9155DCe8D21a158d07CdD7d6419",
+                "to": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+                "value": "0",
+                "gas_limit": 120000,
+                "max_fee_per_gas": 100,
+                "max_priority_fee_per_gas": 10,
+                "data": "0x00",
+                "private_key_env_var": "ASTERION_SHOULD_NOT_BE_USED",
+            },
+        )
+        response = EnvPrivateKeyTransactionSignerBackend().sign_transaction(request)
+        self.assertEqual(response.status, SignatureAuditStatus.REJECTED.value)
+        self.assertEqual(response.error, "controlled_live_private_key_env_var_forbidden")
 
     def test_signature_audit_log_to_row_maps_extended_columns(self) -> None:
         row = signature_audit_log_to_row(

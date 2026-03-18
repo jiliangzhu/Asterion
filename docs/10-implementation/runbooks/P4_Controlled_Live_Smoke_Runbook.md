@@ -1,10 +1,13 @@
 # P4 Controlled Live Smoke Runbook
 
-**状态**: active  
+**状态**: archived accepted historical runbook
 **阶段**: `P4-11 Controlled Live Smoke Boundary`  
 **边界**: 这是 `controlled live smoke` 入口，不是 unattended live。
 
 ---
+
+> Historical accepted record only.
+> 该 runbook 保留为 `P4` controlled-live smoke 的历史 operator 记录，不再作为当前 active runbook 入口。
 
 ## 1. 目标
 

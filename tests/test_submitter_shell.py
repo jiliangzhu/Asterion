@@ -297,6 +297,11 @@ class SubmitterShellUnitTest(unittest.TestCase):
         backend = self._RecordingBackend()
         shell = SubmitterServiceShell(backend)
         with (
+            patch.dict(
+                "os.environ",
+                {"ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY": "phase10-test-secret"},
+                clear=False,
+            ),
             patch("asterion_core.execution.live_submitter_v1.enqueue_journal_event_upserts", return_value="task_journal"),
             patch(
                 "asterion_core.execution.live_submitter_v1.enqueue_live_boundary_attestation_upserts",
@@ -314,6 +319,7 @@ class SubmitterShellUnitTest(unittest.TestCase):
         self.assertTrue(backend.called)
         self.assertIsNotNone(backend.last_attestation)
         self.assertEqual(backend.last_attestation.attestation_status, "approved")
+        self.assertEqual(backend.last_attestation.attestation_kind, "submitter_live_boundary_v2")
 
 
 class SubmitterShellDuckDBTest(unittest.TestCase):
@@ -396,6 +402,7 @@ class SubmitterShellDuckDBTest(unittest.TestCase):
                 "os.environ",
                 {
                     "ASTERION_DB_PATH": db_path,
+                    "ASTERION_CONTROLLED_LIVE_SECRET_ATTESTATION_MAC_KEY": "phase10-test-secret",
                     "ASTERION_WRITERD_ALLOWED_TABLES": "runtime.journal_events,runtime.live_boundary_attestations",
                 },
                 clear=False,
@@ -415,12 +422,13 @@ class SubmitterShellDuckDBTest(unittest.TestCase):
             con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
             try:
                 row = con.execute(
-                    "SELECT attestation_status, reason_codes_json FROM runtime.live_boundary_attestations"
+                    "SELECT attestation_kind, attestation_status, reason_codes_json FROM runtime.live_boundary_attestations"
                 ).fetchone()
             finally:
                 con.close()
-            self.assertEqual(row[0], "blocked")
-            self.assertIn("submitter_backend_not_real_clob_submit", row[1])
+            self.assertEqual(row[0], "submitter_live_boundary_v2")
+            self.assertEqual(row[1], "blocked")
+            self.assertIn("submitter_backend_not_real_clob_submit", row[2])
 
 
 def _live_boundary_inputs(

@@ -1,5 +1,11 @@
 # Asterion 当前代码重审报告（Current Code Reassessment）
 
+> Analysis input only.
+> Not implementation truth-source.
+> Active planning entry: `docs/10-implementation/phase-plans/V2_Implementation_Plan.md`
+
+**状态**: current analysis input (`2026-03-17`)
+
 评审对象：`/mnt/data/Asterion_unzipped/Asterion` 当前代码快照  
 评审方式：重新阅读代码、migrations、tests、runbooks、active implementation docs；不把旧报告当作当前事实。  
 执行验证：本次额外执行了 65 个与 remediation / controlled-live / UI / post-trade analytics 直接相关的 targeted tests，均通过，包括：
@@ -1083,7 +1089,7 @@ Asterion 已经实现了“标准路径 secret minimization”，但还没有实
 - `docs/10-implementation/Implementation_Index.md`
 - `docs/10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md`
 - `docs/10-implementation/runbooks/P4_Controlled_Live_Smoke_Runbook.md`
-- `docs/analysis/Project_Full_Assessment.md`
+- `docs/analysis/11_Project_Full_Assessment.md`
 
 ### 10.2 核心代码与脚本
 

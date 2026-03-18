@@ -176,11 +176,20 @@ start_web() {
     if ! refresh_operator_console_surfaces; then
         echo -e "${YELLOW}⚠ readiness / UI surfaces 刷新失败，将以 degraded 模式继续启动 Web UI${NC}"
     fi
+
+    local bind_address
+    bind_address="${ASTERION_UI_BIND_ADDRESS:-127.0.0.1}"
+    local allow_public_bind
+    allow_public_bind="${ASTERION_UI_ALLOW_PUBLIC_BIND:-false}"
+    if [[ "$bind_address" != "127.0.0.1" && "$bind_address" != "localhost" && "$bind_address" != "::1" && "$allow_public_bind" != "true" ]]; then
+        echo -e "${RED}错误: public bind 需要显式设置 ASTERION_UI_ALLOW_PUBLIC_BIND=true${NC}"
+        exit 1
+    fi
     
     # 启动 Streamlit
     echo "🚀 启动 Streamlit 服务..."
-    echo -e "${GREEN}Operator Console 地址: http://localhost:8501${NC}"
-    streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+    echo -e "${GREEN}Operator Console 地址: http://${bind_address}:8501${NC}"
+    streamlit run ui/app.py --server.port 8501 --server.address "$bind_address"
 }
 
 refresh_operator_console_surfaces() {

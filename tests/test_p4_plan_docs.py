@@ -64,20 +64,18 @@ class P4PlanDocsTest(unittest.TestCase):
         self.assertIn("P4_Closeout_Checklist.md", plan)
         self.assertIn("P4_Controlled_Rollout_Decision_Runbook.md", plan)
 
-    def test_p4_docs_reflect_post_p4_remediation_status(self) -> None:
+    def test_p4_docs_reflect_v2_planning_and_historical_status(self) -> None:
         expected = {
-            ROOT / "README.md": "post-P4 remediation active",
-            ROOT / "docs" / "00-overview" / "DEVELOPMENT_ROADMAP.md": "post-P4 remediation",
-            ROOT / "docs" / "00-overview" / "Asterion_Project_Plan.md": "closeout pending objective verification",
-            ROOT / "docs" / "10-implementation" / "phase-plans" / "Post_P4_Remediation_Implementation_Plan.md": "Phase 9: Operator Surface and Truth-Source Cleanup",
+            ROOT / "README.md": "v2.0 planning",
+            ROOT / "docs" / "00-overview" / "DEVELOPMENT_ROADMAP.md": "v2.0 planning",
+            ROOT / "docs" / "00-overview" / "Asterion_Project_Plan.md": "v2.0 planning",
+            ROOT / "docs" / "10-implementation" / "phase-plans" / "Post_P4_Remediation_Implementation_Plan.md": "archived accepted historical remediation record",
         }
         missing: list[str] = []
         for path, needle in expected.items():
             text = path.read_text(encoding="utf-8")
             if needle not in text:
                 missing.append(f"{path}:{needle}")
-            if "P4 closed" in text:
-                missing.append(f"{path}:P4 closed")
             if "ready for unattended live" in text and "不表示 `ready for unattended live`" not in text:
                 missing.append(f"{path}:ready for unattended live")
         self.assertEqual(missing, [])

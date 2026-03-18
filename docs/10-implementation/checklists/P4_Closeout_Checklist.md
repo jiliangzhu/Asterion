@@ -3,9 +3,13 @@
 **版本**: v1.0  
 **更新日期**: 2026-03-12  
 **阶段**: `P4`  
-**状态**: closeout ready  
+**状态**: archived accepted historical closeout record
 
 ---
+
+> Historical accepted record only.
+> 本清单保留为 `P4` closeout 的历史审查记录，不再是当前 active closeout checklist。
+> 如需重新复核 `P4` readiness 产物，应按 operator runbook 重新生成，而不是要求 repo 静态保留历史 `data/ui/asterion_readiness_p4.json/.md`。
 
 ## 1. 目标与边界
 
@@ -132,12 +136,12 @@ source of truth 顺序：
 
 ## 8. Closeout 交付物
 
-`P4` closeout 至少需要以下交付物存在且可被审查：
+`P4` historical closeout 至少要求以下交付物或其可重新生成的 operator artifacts 可被审查：
 
 - [ ] [P4_Implementation_Plan.md](../phase-plans/P4_Implementation_Plan.md)
 - [ ] [P4_Closeout_Checklist.md](./P4_Closeout_Checklist.md)
 - [ ] [P4_Controlled_Live_Smoke_Runbook.md](../runbooks/P4_Controlled_Live_Smoke_Runbook.md)
 - [ ] [P4_Controlled_Rollout_Decision_Runbook.md](../runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
-- [ ] 最新 `asterion_readiness_p4.json`
-- [ ] 最新 `asterion_readiness_p4.md`
+- [ ] 最新 `asterion_readiness_p4.json`，或按 operator artifact 重新生成的等价报告
+- [ ] 最新 `asterion_readiness_p4.md`，或按 operator artifact 重新生成的等价报告
 - [ ] `README.md`、`Implementation_Index.md`、`Documentation_Index.md`、`DEVELOPMENT_ROADMAP.md` 已指向 closeout 文档入口

@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS weather.weather_execution_priors (
+    prior_key TEXT PRIMARY KEY,
+    market_id TEXT NOT NULL,
+    strategy_id TEXT,
+    wallet_id TEXT,
+    side TEXT NOT NULL,
+    horizon_bucket TEXT NOT NULL,
+    liquidity_bucket TEXT NOT NULL,
+    sample_count BIGINT NOT NULL,
+    submit_ack_rate DOUBLE NOT NULL,
+    fill_rate DOUBLE NOT NULL,
+    resolution_rate DOUBLE NOT NULL,
+    partial_fill_rate DOUBLE NOT NULL,
+    cancel_rate DOUBLE NOT NULL,
+    adverse_fill_slippage_bps_p50 DOUBLE,
+    adverse_fill_slippage_bps_p90 DOUBLE,
+    avg_realized_pnl DOUBLE,
+    avg_post_trade_error DOUBLE,
+    prior_quality_status TEXT NOT NULL,
+    source_window_start TIMESTAMP NOT NULL,
+    source_window_end TIMESTAMP NOT NULL,
+    materialized_at TIMESTAMP NOT NULL
+);

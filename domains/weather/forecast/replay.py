@@ -17,6 +17,7 @@ from asterion_core.contracts import (
 )
 from asterion_core.storage.utils import safe_json_dumps
 from domains.weather.pricing.engine import (
+    build_forecast_calibration_pricing_context,
     build_binary_fair_values,
     build_watch_only_snapshot,
     load_weather_market,
@@ -174,6 +175,11 @@ def recompute_pricing_outputs(
                     "source_trace": forecast_run.source_trace,
                     "source_used": forecast_run.source,
                     "spread_bps": (original.pricing_context or {}).get("spread_bps"),
+                    **build_forecast_calibration_pricing_context(
+                        forecast_run=forecast_run,
+                        outcome=fair_value.outcome,
+                        fair_value=fair_value.fair_value,
+                    ),
                 },
             )
         )
@@ -326,6 +332,12 @@ def _build_forecast_run_diff(
         "temperature_distribution",
         original.forecast_payload.get("temperature_distribution") or {},
         replayed.forecast_payload.get("temperature_distribution") or {},
+    )
+    _compare_json(
+        changed_fields,
+        "distribution_summary_v2",
+        original.forecast_payload.get("distribution_summary_v2") or {},
+        replayed.forecast_payload.get("distribution_summary_v2") or {},
     )
     _compare_float(changed_fields, "confidence", original.confidence, replayed.confidence)
     _compare_json(changed_fields, "source_trace", original.source_trace, replayed.source_trace)

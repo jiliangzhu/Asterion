@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import streamlit as st
 
@@ -12,6 +14,18 @@ def _format_metric_value(value: object) -> str:
     if isinstance(value, float):
         return f"{value:.2f}".rstrip("0").rstrip(".")
     return str(value)
+
+
+def _json_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if value in {None, ""}:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except Exception:  # noqa: BLE001
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def show() -> None:
@@ -48,7 +62,7 @@ def show() -> None:
     with top2:
         st.metric("Actionable Markets", metrics.get("actionable_market_count", 0), delta=f"open={metrics.get('weather_market_count', 0)}")
     with top3:
-        st.metric("Top Opportunity Score", _format_metric_value(metrics.get("top_opportunity_score")), delta="opportunity-first")
+        st.metric("Ranking Score", _format_metric_value(metrics.get("top_ranking_score", metrics.get("top_opportunity_score"))), delta="primary score")
     with top4:
         st.metric("Largest Current Blocker", largest_blocker["source"], delta=largest_blocker["summary"])
 
@@ -89,8 +103,11 @@ def show() -> None:
                     "best_side",
                     "edge_bps",
                     "edge_bps_model",
-                    "opportunity_score",
                     "ranking_score",
+                    "expected_dollar_pnl",
+                    "capture_probability",
+                    "source_badge",
+                    "source_truth_status",
                     "mapping_confidence",
                     "source_freshness_status",
                     "market_quality_status",
@@ -100,6 +117,17 @@ def show() -> None:
                 if column in top_opportunities.columns
             ]
             st.dataframe(top_opportunities[columns].head(5), width="stretch", hide_index=True)
+            top_row = top_opportunities.iloc[0].to_dict()
+            why_ranked = _json_dict(top_row.get("why_ranked_json"))
+            if why_ranked:
+                st.caption(
+                    "why-ranked: "
+                    f"mode={why_ranked.get('mode')}, "
+                    f"capture={_format_metric_value(why_ranked.get('capture_probability'))}, "
+                    f"ev={_format_metric_value(why_ranked.get('expected_dollar_pnl'))}, "
+                    f"risk={_format_metric_value(why_ranked.get('risk_penalty'))}, "
+                    f"feedback={_format_metric_value(why_ranked.get('feedback_penalty'))}"
+                )
 
     with row2_right:
         st.markdown("#### Predicted vs Realized Snapshot")
@@ -107,7 +135,7 @@ def show() -> None:
         st.write(f"avg predicted edge: `{_format_metric_value(metrics.get('avg_predicted_edge_bps'))} bps`")
         st.write(f"avg realized pnl: `{_format_metric_value(metrics.get('avg_realized_pnl'))}`")
         if predicted_vs_realized.empty:
-            st.info("当前还没有 executed-only predicted-vs-realized rows。")
+            st.info("当前还没有 execution-path evidence rows。")
         else:
             columns = [
                 column
@@ -150,6 +178,7 @@ def show() -> None:
                     "submission_capture_ratio",
                     "fill_capture_ratio",
                     "resolution_capture_ratio",
+                    "source_badge",
                     "miss_reason_bucket",
                     "distortion_reason_bucket",
                 ]

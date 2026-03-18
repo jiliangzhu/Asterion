@@ -258,6 +258,30 @@ class WeatherOpportunityServiceTest(unittest.TestCase):
         self.assertIn("freshness_stale", assessment.ranking_penalty_reasons)
         self.assertIn("mapping_confidence_reduced", assessment.ranking_penalty_reasons)
         self.assertEqual(assessment.assessment_context_json["uncertainty_multiplier"], assessment.uncertainty_multiplier)
+
+    def test_phase13_quality_statuses_enter_assessment(self) -> None:
+        assessment = build_weather_opportunity_assessment(
+            market_id="mkt_phase13_context",
+            token_id="tok_yes",
+            outcome="YES",
+            reference_price=0.40,
+            model_fair_value=0.69,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=400,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+            calibration_health_status="healthy",
+            calibration_bias_quality="watch",
+            threshold_probability_quality="degraded",
+            sample_count=18,
+            forecast_distribution_summary_v2={"regime_stability_score": 0.58},
+        )
+        self.assertEqual(assessment.calibration_bias_quality, "watch")
+        self.assertEqual(assessment.threshold_probability_quality, "degraded")
+        self.assertEqual(assessment.assessment_context_json["calibration_bias_quality"], "watch")
+        self.assertEqual(assessment.assessment_context_json["threshold_probability_quality"], "degraded")
+        self.assertLess(assessment.uncertainty_multiplier, 1.0)
         self.assertEqual(assessment.assessment_context_json["ranking_penalty_reasons"], assessment.ranking_penalty_reasons)
 
 

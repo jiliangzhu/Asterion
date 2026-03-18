@@ -21,6 +21,7 @@ def _mock_distribution(market_id: str = "test") -> ForecastDistribution:
         timezone="America/New_York",
         spec_version="v1",
         temperature_distribution={65: 1.0},
+        distribution_summary_v2=None,
         source_trace=["test"],
         raw_payload={},
         from_cache=False,

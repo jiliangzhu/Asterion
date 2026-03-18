@@ -3,7 +3,14 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime
 
-from asterion_core.contracts import SubmitterBoundaryInputs, evaluate_submitter_boundary
+from asterion_core.contracts import (
+    SUBMITTER_BOUNDARY_ATTESTATION_KIND_V2,
+    SubmitterBoundaryInputs,
+    compute_boundary_attestation_mac,
+    compute_boundary_decision_fingerprint,
+    evaluate_submitter_boundary,
+    mint_submitter_boundary_attestation_v2,
+)
 
 
 def _inputs(**overrides) -> SubmitterBoundaryInputs:
@@ -39,9 +46,15 @@ def _inputs(**overrides) -> SubmitterBoundaryInputs:
 
 class SubmitterBoundaryAttestationTest(unittest.TestCase):
     def test_approved_path(self) -> None:
-        attestation = evaluate_submitter_boundary(_inputs())
+        attestation = mint_submitter_boundary_attestation_v2(
+            evaluate_submitter_boundary(_inputs()),
+            attestation_secret="phase10-test-secret",
+            issued_at=datetime(2026, 3, 16, 10, 0, tzinfo=UTC),
+        )
         self.assertEqual(attestation.attestation_status, "approved")
         self.assertEqual(attestation.reason_codes, [])
+        self.assertEqual(attestation.attestation_kind, SUBMITTER_BOUNDARY_ATTESTATION_KIND_V2)
+        self.assertIsNotNone(attestation.attestation_mac)
 
     def test_manifest_missing(self) -> None:
         attestation = evaluate_submitter_boundary(_inputs(manifest_payload=None))
@@ -77,6 +90,38 @@ class SubmitterBoundaryAttestationTest(unittest.TestCase):
         attestation = evaluate_submitter_boundary(_inputs(submitter_endpoint_fingerprint=None))
         self.assertEqual(attestation.attestation_status, "blocked")
         self.assertIn("submitter_endpoint_fingerprint_mismatch", attestation.reason_codes)
+
+    def test_v2_attestation_uses_decision_fingerprint_and_mac(self) -> None:
+        attestation = mint_submitter_boundary_attestation_v2(
+            evaluate_submitter_boundary(_inputs()),
+            attestation_secret="phase10-test-secret",
+            issued_at=datetime(2026, 3, 16, 10, 0, tzinfo=UTC),
+        )
+        self.assertEqual(
+            attestation.decision_fingerprint,
+            compute_boundary_decision_fingerprint(attestation.attestation_payload_json),
+        )
+        self.assertEqual(
+            attestation.attestation_mac,
+            compute_boundary_attestation_mac(
+                secret="phase10-test-secret",
+                issuer=str(attestation.issuer),
+                attestation_id=attestation.attestation_id,
+                nonce=str(attestation.nonce),
+                issued_at=attestation.issued_at,
+                expires_at=attestation.expires_at,
+                decision_fingerprint=str(attestation.decision_fingerprint),
+            ),
+        )
+
+    def test_v2_attestation_blocks_when_secret_missing(self) -> None:
+        attestation = mint_submitter_boundary_attestation_v2(
+            evaluate_submitter_boundary(_inputs()),
+            attestation_secret="",
+            issued_at=datetime(2026, 3, 16, 10, 0, tzinfo=UTC),
+        )
+        self.assertEqual(attestation.attestation_status, "blocked")
+        self.assertIn("attestation_secret_missing", attestation.reason_codes)
 
 
 if __name__ == "__main__":

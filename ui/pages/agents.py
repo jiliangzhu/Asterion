@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 import pandas as pd
 import streamlit as st
 
@@ -43,7 +41,7 @@ def show() -> None:
         failure_count = int((review_frame["invocation_status"] == "failure").sum()) if ("invocation_status" in review_frame.columns and not review_frame.empty) else 0
         st.metric("Latest Exceptions", failure_count, delta="invocation_status=failure")
     with top3:
-        st.metric("Configured Runtime", "yes" if status["configured"] else "no", delta=status["provider"])
+        st.metric("Declared Runtime", status["provider"], delta=status["model"])
 
     st.markdown("#### Human Review Queue")
     if human_review_queue.empty:
@@ -116,12 +114,11 @@ def show() -> None:
     )
 
     with st.expander("Runtime Configuration", expanded=False):
-        st.caption("这里展示的是 runtime visibility，不是 operator 决策主面。")
-        env_rows = [
-            {"键": "QWEN_MODEL", "值": os.getenv("QWEN_MODEL", "") or "未配置"},
-            {"键": "QWEN_API_KEY", "值": "已配置" if os.getenv("QWEN_API_KEY") else "未配置"},
-            {"键": "ALIBABA_API_KEY", "值": "已配置" if os.getenv("ALIBABA_API_KEY") else "未配置"},
-            {"键": "ASTERION_AGENT_PROVIDER", "值": os.getenv("ASTERION_AGENT_PROVIDER", "") or "默认自动选择"},
+        st.caption("这里只保留 declared runtime visibility，不暴露 key presence 或 secret-adjacent 配置。")
+        runtime_rows = [
+            {"字段": "provider", "值": status["provider"]},
+            {"字段": "model", "值": status["model"]},
+            {"字段": "configured", "值": "yes" if status["configured"] else "no"},
         ]
-        st.dataframe(pd.DataFrame(env_rows), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(runtime_rows), width="stretch", hide_index=True)
         st.dataframe(pd.DataFrame(status["agents"]), width="stretch", hide_index=True)

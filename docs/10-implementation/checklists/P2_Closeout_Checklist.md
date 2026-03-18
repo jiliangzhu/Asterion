@@ -103,4 +103,5 @@
 - `P2` 关闭依据：本文件
 - `P2` 实施计划：[P2_Implementation_Plan.md](../phase-plans/P2_Implementation_Plan.md)
 - `P2` orchestration 入口：[P2_Cold_Path_Orchestration_Job_Map_Runbook.md](../runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
-- AlphaDesk Exit Gate 收口依据：[P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)
+- AlphaDesk Exit Gate 收口依据：[AlphaDesk_Migration_Ledger.md](../migration-ledger/AlphaDesk_Migration_Ledger.md)
+- archive redirect note 仍保留在：[P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./P1_P2_AlphaDesk_Remaining_Migration_Checklist.md)

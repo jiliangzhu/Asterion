@@ -148,6 +148,7 @@ class ForecastCalibrationPersistenceTest(unittest.TestCase):
                 timezone="America/Los_Angeles",
                 spec_version="spec_v1",
                 temperature_distribution={55: 1.0},
+                distribution_summary_v2=None,
                 source_trace=["openmeteo"],
                 raw_payload={},
                 from_cache=False,

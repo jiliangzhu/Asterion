@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import json
 import os
@@ -162,6 +162,7 @@ from domains.weather.forecast import (
     AdapterRouter,
     ForecastService,
     build_forecast_calibration_sample,
+    enqueue_forecast_calibration_profile_v2_upserts,
     build_forecast_replay_diff_records,
     build_forecast_replay_record,
     build_forecast_run_record,
@@ -170,10 +171,18 @@ from domains.weather.forecast import (
     enqueue_forecast_replay_upserts,
     enqueue_forecast_run_upserts,
     load_original_pricing_outputs,
+    materialize_forecast_calibration_profiles_v2,
     load_replay_inputs,
     run_forecast_replay,
 )
 from domains.weather.forecast.service import ForecastCache
+from domains.weather.opportunity import (
+    build_execution_feedback_materialization_status,
+    build_feedback_materialization_id,
+    enqueue_execution_feedback_materialization_upserts,
+    enqueue_execution_prior_upserts,
+    materialize_execution_priors,
+)
 from domains.weather.pricing import (
     enqueue_fair_value_upserts,
     enqueue_watch_only_snapshot_upserts,
@@ -582,6 +591,7 @@ def run_weather_signer_audit_smoke_job(
         requester=normalized_request.requester,
         timestamp=normalized_observed_at,
         context=signing_context,
+        wallet_id=normalized_request.wallet_id,
         payload=normalized_request.payload_json,
     )
     if normalized_request.signing_purpose is SigningPurpose.TRANSACTION:
@@ -1198,9 +1208,9 @@ def run_weather_controlled_live_smoke_job(
         requester=signer_request.requester,
         timestamp=signer_request.timestamp,
         context=signer_request.context,
+        wallet_id=signer_request.wallet_id,
         payload={
             **signer_request.payload,
-            "private_key_env_var": private_key_env_var,
             "approval_id": normalized_request.approval_id,
             "approval_reason": normalized_request.approval_reason,
         },
@@ -1740,6 +1750,150 @@ def run_weather_resolution_reconciliation(
             "proposal_count": len(proposals),
             "verification_count": len(verifications),
             "calibration_sample_count": len(calibration_samples),
+        },
+    )
+
+
+def run_weather_execution_priors_refresh_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    lookback_days: int = 90,
+    as_of: datetime | None = None,
+    run_id: str | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    effective_as_of = (as_of or datetime.now(UTC)).astimezone(UTC).replace(tzinfo=None, microsecond=0)
+    source_window_start = effective_as_of - timedelta(days=max(1, int(lookback_days)))
+    source_window_end = effective_as_of
+    prior_version = "feedback_v1"
+    materialization_id = build_feedback_materialization_id(
+        run_id=request_id,
+        as_of=effective_as_of,
+        prior_version=prior_version,
+    )
+    input_ticket_count = int(
+        (
+            con.execute(
+                "SELECT COUNT(*) FROM runtime.trade_tickets WHERE created_at >= ?",
+                [source_window_start],
+            ).fetchone()
+            or [0]
+        )[0]
+    )
+    task_ids: list[str] = []
+    try:
+        materialized = materialize_execution_priors(
+            con,
+            as_of=effective_as_of,
+            lookback_days=lookback_days,
+            materialization_id=materialization_id,
+            prior_version=prior_version,
+        )
+        degraded_prior_count = sum(1 for item in materialized if item.feedback_status == "degraded")
+        task_ids.extend(
+            _append_task_id(
+                enqueue_execution_prior_upserts(
+                    queue_cfg,
+                    priors=materialized,
+                    run_id=request_id,
+                )
+            )
+        )
+        task_ids.extend(
+            _append_task_id(
+                enqueue_execution_feedback_materialization_upserts(
+                    queue_cfg,
+                    records=[
+                        build_execution_feedback_materialization_status(
+                            materialization_id=materialization_id,
+                            run_id=request_id,
+                            job_name="weather_execution_priors_refresh",
+                            prior_version=prior_version,
+                            status="ok",
+                            lookback_days=lookback_days,
+                            source_window_start=source_window_start,
+                            source_window_end=source_window_end,
+                            input_ticket_count=input_ticket_count,
+                            output_prior_count=len(materialized),
+                            degraded_prior_count=degraded_prior_count,
+                            materialized_at=effective_as_of,
+                        )
+                    ],
+                    run_id=request_id,
+                )
+            )
+        )
+    except Exception as exc:
+        task_ids.extend(
+            _append_task_id(
+                enqueue_execution_feedback_materialization_upserts(
+                    queue_cfg,
+                    records=[
+                        build_execution_feedback_materialization_status(
+                            materialization_id=materialization_id,
+                            run_id=request_id,
+                            job_name="weather_execution_priors_refresh",
+                            prior_version=prior_version,
+                            status="error",
+                            lookback_days=lookback_days,
+                            source_window_start=source_window_start,
+                            source_window_end=source_window_end,
+                            input_ticket_count=input_ticket_count,
+                            output_prior_count=0,
+                            degraded_prior_count=0,
+                            materialized_at=effective_as_of,
+                            error=str(exc),
+                        )
+                    ],
+                    run_id=request_id,
+                )
+            )
+        )
+        raise
+    return ColdPathHandlerResult(
+        job_name="weather_execution_priors_refresh",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=len(materialized),
+        metadata={
+            "lookback_days": int(lookback_days),
+            "prior_count": len(materialized),
+            "degraded_prior_count": degraded_prior_count,
+            "materialization_id": materialization_id,
+        },
+    )
+
+
+def run_weather_forecast_calibration_profiles_v2_refresh_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    lookback_days: int = 180,
+    as_of: datetime | None = None,
+    run_id: str | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    materialized = materialize_forecast_calibration_profiles_v2(
+        con,
+        as_of=as_of or datetime.now(UTC),
+        lookback_days=lookback_days,
+    )
+    task_ids = _append_task_id(
+        enqueue_forecast_calibration_profile_v2_upserts(
+            queue_cfg,
+            profiles=materialized,
+            run_id=request_id,
+        )
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_forecast_calibration_profiles_v2_refresh",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=len(materialized),
+        metadata={
+            "lookback_days": int(lookback_days),
+            "profile_count": len(materialized),
         },
     )
 

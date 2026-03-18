@@ -5,6 +5,9 @@
 **阶段**: `P2-21 closeout`  
 **目标**: 把 AlphaDesk -> Asterion 的复用范围、迁移顺序、目标路径和适配动作固定成显式台账。
 
+> 当前 AlphaDesk 迁移与 exit gate 的 canonical 入口是本台账 + [P2_Closeout_Checklist.md](../checklists/P2_Closeout_Checklist.md)。
+> [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](../checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md) 现在只保留为 archive redirect note。
+
 ---
 
 ## 1. 使用规则

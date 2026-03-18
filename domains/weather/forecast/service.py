@@ -22,6 +22,7 @@ class ForecastDistribution:
     timezone: str
     spec_version: str
     temperature_distribution: dict[int, float]
+    distribution_summary_v2: dict[str, Any] | None
     source_trace: list[str]
     raw_payload: dict[str, Any]
     from_cache: bool
@@ -102,6 +103,7 @@ class AdapterRouter:
                     timezone=distribution.timezone,
                     spec_version=distribution.spec_version,
                     temperature_distribution=dict(distribution.temperature_distribution),
+                    distribution_summary_v2=None if distribution.distribution_summary_v2 is None else dict(distribution.distribution_summary_v2),
                     source_trace=attempted,
                     raw_payload=dict(distribution.raw_payload),
                     from_cache=distribution.from_cache,
@@ -179,6 +181,7 @@ class ForecastService:
                 timezone=cached.timezone,
                 spec_version=cached.spec_version,
                 temperature_distribution=dict(cached.temperature_distribution),
+                distribution_summary_v2=None if cached.distribution_summary_v2 is None else dict(cached.distribution_summary_v2),
                 source_trace=list(cached.source_trace),
                 raw_payload=dict(cached.raw_payload),
                 from_cache=True,
@@ -204,6 +207,7 @@ class ForecastService:
             timezone=distribution.timezone,
             spec_version=distribution.spec_version,
             temperature_distribution=_normalize_distribution(distribution.temperature_distribution),
+            distribution_summary_v2=None if distribution.distribution_summary_v2 is None else dict(distribution.distribution_summary_v2),
             source_trace=list(distribution.source_trace or [distribution.source]),
             raw_payload=dict(distribution.raw_payload),
             from_cache=False,

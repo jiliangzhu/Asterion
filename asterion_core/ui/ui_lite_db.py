@@ -12,8 +12,15 @@ from typing import Any
 
 import pandas as pd
 
+from asterion_core.ui.builders.catalog_builder import build_catalog_tables
+from asterion_core.ui.read_model_registry import get_read_model_catalog_record, required_ui_tables
+from asterion_core.ui.surface_truth_shared import annotate_frame_with_source_truth, ensure_primary_score_fields
 from asterion_core.storage.logger import get_logger
-from domains.weather.opportunity import build_weather_opportunity_assessment, derive_opportunity_side
+from domains.weather.opportunity import (
+    build_execution_science_cohort_summaries,
+    build_weather_opportunity_assessment,
+    derive_opportunity_side,
+)
 
 
 log = get_logger(__name__)
@@ -23,27 +30,7 @@ DEFAULT_UI_DB_REPLICA_SOURCE_PATH = "data/ui/asterion_ui.duckdb"
 DEFAULT_READINESS_REPORT_JSON_PATH = "data/ui/asterion_readiness_p3.json"
 DEFAULT_READINESS_EVIDENCE_JSON_PATH = "data/ui/asterion_readiness_evidence_p4.json"
 
-_REQUIRED_UI_TABLES = [
-    "ui.market_watch_summary",
-    "ui.market_opportunity_summary",
-    "ui.proposal_resolution_summary",
-    "ui.execution_ticket_summary",
-    "ui.execution_run_summary",
-    "ui.execution_exception_summary",
-    "ui.live_prereq_execution_summary",
-    "ui.live_prereq_wallet_summary",
-    "ui.paper_run_journal_summary",
-    "ui.daily_ops_summary",
-    "ui.daily_review_input",
-    "ui.agent_review_summary",
-    "ui.phase_readiness_summary",
-    "ui.readiness_evidence_summary",
-    "ui.predicted_vs_realized_summary",
-    "ui.watch_only_vs_executed_summary",
-    "ui.execution_science_summary",
-    "ui.market_research_summary",
-    "ui.calibration_health_summary",
-]
+_REQUIRED_UI_TABLES = list(required_ui_tables())
 
 
 def default_ui_lite_db_path() -> str:
@@ -208,6 +195,26 @@ def validate_ui_lite_db(db_path: str) -> dict[str, int]:
                 raise RuntimeError(f"missing required UI lite table: {table}")
             row = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
             row_counts[table] = int(row[0]) if row is not None else 0
+        catalog = con.execute("SELECT table_name, required_columns_json FROM ui.read_model_catalog").fetchall()
+        for table_name, required_columns_json in catalog:
+            actual_columns = _table_columns(con, str(table_name))
+            try:
+                required_columns = json.loads(str(required_columns_json or "[]"))
+            except Exception:  # noqa: BLE001
+                required_columns = []
+            missing = [column for column in required_columns if column not in actual_columns]
+            if missing:
+                raise RuntimeError(f"ui lite table {table_name} missing required columns: {','.join(missing)}")
+            record = get_read_model_catalog_record(str(table_name))
+            if record is not None and record.primary_score_column == "ranking_score":
+                if "ranking_score" not in actual_columns or "primary_score_label" not in actual_columns:
+                    raise RuntimeError(f"ui lite primary score contract incomplete for {table_name}")
+        failed_checks = con.execute(
+            "SELECT surface_id, table_name FROM ui.truth_source_checks WHERE check_status = 'fail'"
+        ).fetchall()
+        if failed_checks:
+            rendered = ", ".join(f"{surface}:{table}" for surface, table in failed_checks)
+            raise RuntimeError(f"ui truth source checks failed: {rendered}")
         return row_counts
     finally:
         con.close()
@@ -1444,6 +1451,7 @@ def _build_ui_lite_contract(
             """,
             table_row_counts=table_row_counts,
         )
+        build_catalog_tables(con, table_row_counts=table_row_counts)
         return table_row_counts
     finally:
         con.close()
@@ -1594,6 +1602,10 @@ def _empty_predicted_vs_realized_frame() -> pd.DataFrame:
             "resolution_lag_hours",
             "miss_reason_bucket",
             "distortion_reason_codes_json",
+            "source_badge",
+            "source_truth_status",
+            "is_degraded_source",
+            "primary_score_label",
         ]
     )
 
@@ -1797,12 +1809,136 @@ def _build_execution_path_frame(con) -> pd.DataFrame:
     return frame
 
 
+def _load_latest_execution_feedback_priors(con) -> pd.DataFrame:
+    if not _table_exists(con, "src.weather.weather_execution_priors"):
+        return pd.DataFrame(
+            columns=[
+                "cohort_type",
+                "cohort_key",
+                "feedback_status",
+                "feedback_penalty",
+                "cohort_prior_version",
+            ]
+        )
+    return con.execute(
+        """
+        SELECT
+            cohort_type,
+            cohort_key,
+            feedback_status,
+            feedback_penalty,
+            cohort_prior_version
+        FROM (
+            SELECT
+                cohort_type,
+                cohort_key,
+                feedback_status,
+                feedback_penalty,
+                cohort_prior_version,
+                ROW_NUMBER() OVER (
+                    PARTITION BY cohort_type, cohort_key
+                    ORDER BY materialized_at DESC, feedback_penalty DESC, sample_count DESC, prior_key DESC
+                ) AS rn
+            FROM src.weather.weather_execution_priors
+        )
+        WHERE rn = 1
+        """
+    ).df()
+
+
+def _merge_feedback_prior_fields(
+    frame: pd.DataFrame,
+    *,
+    feedback_priors: pd.DataFrame,
+    cohort_type: str,
+    key_column: str,
+) -> pd.DataFrame:
+    out = frame.copy()
+    if out.empty:
+        if "feedback_status" not in out.columns:
+            out["feedback_status"] = pd.Series(dtype="string")
+        if "feedback_penalty" not in out.columns:
+            out["feedback_penalty"] = pd.Series(dtype="float64")
+        if "cohort_prior_version" not in out.columns:
+            out["cohort_prior_version"] = pd.Series(dtype="string")
+        return out
+    if feedback_priors.empty or key_column not in out.columns:
+        out["feedback_status"] = out.get("feedback_status", pd.Series(index=out.index, dtype="string")).fillna("heuristic_only")
+        out["feedback_penalty"] = pd.to_numeric(
+            out.get("feedback_penalty", pd.Series(index=out.index, dtype="float64")),
+            errors="coerce",
+        ).fillna(0.0)
+        out["cohort_prior_version"] = out.get("cohort_prior_version", pd.Series(index=out.index, dtype="string"))
+        return out
+    prior_frame = feedback_priors[feedback_priors["cohort_type"] == cohort_type].copy()
+    if prior_frame.empty:
+        out["feedback_status"] = "heuristic_only"
+        out["feedback_penalty"] = 0.0
+        out["cohort_prior_version"] = None
+        return out
+    prior_frame["cohort_key"] = prior_frame["cohort_key"].astype("string")
+    out[key_column] = out[key_column].astype("string")
+    merged = out.merge(
+        prior_frame[["cohort_key", "feedback_status", "feedback_penalty", "cohort_prior_version"]],
+        how="left",
+        left_on=key_column,
+        right_on="cohort_key",
+    )
+    if "cohort_key_y" in merged.columns:
+        merged = merged.drop(columns=["cohort_key_y"])
+    if "cohort_key_x" in merged.columns and key_column != "cohort_key":
+        merged = merged.rename(columns={"cohort_key_x": key_column})
+    merged["feedback_status"] = merged["feedback_status"].fillna("heuristic_only").astype("string")
+    merged["feedback_penalty"] = pd.to_numeric(merged["feedback_penalty"], errors="coerce").fillna(0.0)
+    if "cohort_prior_version" in merged.columns:
+        merged["cohort_prior_version"] = merged["cohort_prior_version"].astype("string")
+    return merged
+
+
+def _merge_feedback_prior_fields_by_cohort(frame: pd.DataFrame, *, feedback_priors: pd.DataFrame) -> pd.DataFrame:
+    out = frame.copy()
+    if out.empty:
+        if "feedback_status" not in out.columns:
+            out["feedback_status"] = pd.Series(dtype="string")
+        if "feedback_penalty" not in out.columns:
+            out["feedback_penalty"] = pd.Series(dtype="float64")
+        if "cohort_prior_version" not in out.columns:
+            out["cohort_prior_version"] = pd.Series(dtype="string")
+        return out
+    if feedback_priors.empty:
+        out["feedback_status"] = "heuristic_only"
+        out["feedback_penalty"] = 0.0
+        out["cohort_prior_version"] = None
+        return out
+    base = out.copy()
+    base["cohort_type"] = base["cohort_type"].astype("string")
+    base["cohort_key"] = base["cohort_key"].astype("string")
+    priors = feedback_priors.copy()
+    priors["cohort_type"] = priors["cohort_type"].astype("string")
+    priors["cohort_key"] = priors["cohort_key"].astype("string")
+    merged = base.merge(
+        priors[["cohort_type", "cohort_key", "feedback_status", "feedback_penalty", "cohort_prior_version"]],
+        how="left",
+        on=["cohort_type", "cohort_key"],
+    )
+    merged["feedback_status"] = merged["feedback_status"].fillna("heuristic_only").astype("string")
+    merged["feedback_penalty"] = pd.to_numeric(merged["feedback_penalty"], errors="coerce").fillna(0.0)
+    merged["cohort_prior_version"] = merged["cohort_prior_version"].astype("string")
+    return merged
+
+
 def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, int]) -> None:
     con.execute("DROP TABLE IF EXISTS ui.predicted_vs_realized_summary")
     frame = _build_execution_path_frame(con)
     if frame.empty:
         con.register("predicted_vs_realized_df", _empty_predicted_vs_realized_frame())
     else:
+        frame = annotate_frame_with_source_truth(
+            frame,
+            source_origin="ui_lite",
+            derived=True,
+            freshness_column="forecast_freshness",
+        )
         con.register(
             "predicted_vs_realized_df",
             frame[
@@ -1833,6 +1969,10 @@ def _create_predicted_vs_realized_summary(con, *, table_row_counts: dict[str, in
                     "resolution_lag_hours",
                     "miss_reason_bucket",
                     "distortion_reason_codes_json",
+                    "source_badge",
+                    "source_truth_status",
+                    "is_degraded_source",
+                    "primary_score_label",
                 ]
             ],
         )
@@ -1862,7 +2002,14 @@ def _create_watch_only_vs_executed_summary(con, *, table_row_counts: dict[str, i
                 execution_capture_ratio DOUBLE,
                 dominant_lifecycle_stage TEXT,
                 miss_reason_bucket TEXT,
-                distortion_reason_bucket TEXT
+                distortion_reason_bucket TEXT,
+                feedback_status TEXT,
+                feedback_penalty DOUBLE,
+                cohort_prior_version TEXT,
+                source_badge TEXT,
+                source_truth_status TEXT,
+                is_degraded_source BOOLEAN,
+                primary_score_label TEXT
             )
             """
         )
@@ -1898,7 +2045,14 @@ def _create_watch_only_vs_executed_summary(con, *, table_row_counts: dict[str, i
                 execution_capture_ratio DOUBLE,
                 dominant_lifecycle_stage TEXT,
                 miss_reason_bucket TEXT,
-                distortion_reason_bucket TEXT
+                distortion_reason_bucket TEXT,
+                feedback_status TEXT,
+                feedback_penalty DOUBLE,
+                cohort_prior_version TEXT,
+                source_badge TEXT,
+                source_truth_status TEXT,
+                is_degraded_source BOOLEAN,
+                primary_score_label TEXT
             )
             """
         )
@@ -2014,7 +2168,18 @@ def _create_watch_only_vs_executed_summary(con, *, table_row_counts: dict[str, i
                 "distortion_reason_bucket": distortion_reason_bucket,
             }
         )
-    frame = pd.DataFrame(rows)
+    feedback_priors = _load_latest_execution_feedback_priors(con)
+    frame = _merge_feedback_prior_fields(
+        pd.DataFrame(rows),
+        feedback_priors=feedback_priors,
+        cohort_type="market",
+        key_column="market_id",
+    )
+    frame = annotate_frame_with_source_truth(
+        frame,
+        source_origin="ui_lite",
+        derived=True,
+    )
     if "market_id" in frame.columns:
         frame["market_id"] = frame["market_id"].astype("string")
     con.register("watch_only_vs_executed_df", frame)
@@ -2048,93 +2213,79 @@ def _create_execution_science_summary(con, *, table_row_counts: dict[str, int]) 
                 fill_capture_ratio DOUBLE,
                 resolution_capture_ratio DOUBLE,
                 dominant_miss_reason_bucket TEXT,
-                dominant_distortion_reason_bucket TEXT
+                dominant_distortion_reason_bucket TEXT,
+                feedback_status TEXT,
+                feedback_penalty DOUBLE,
+                cohort_prior_version TEXT,
+                source_badge TEXT,
+                source_truth_status TEXT,
+                is_degraded_source BOOLEAN,
+                primary_score_label TEXT
             )
             """
         )
         table_row_counts["ui.execution_science_summary"] = 0
         return
 
+    summaries = build_execution_science_cohort_summaries(frame)
+    feedback_priors = _load_latest_execution_feedback_priors(con)
     rows: list[dict[str, Any]] = []
-    submitted_ack_stages = {"submitted_ack", "working_unfilled", "partially_filled", "filled_unresolved", "resolved", "cancelled"}
-    rejected_stages = {"submit_rejected", "sign_rejected", "gate_rejected"}
-    for cohort_type, key_column in [("market", "market_id"), ("strategy", "strategy_id"), ("wallet", "wallet_id")]:
-        grouped = frame.groupby(key_column, dropna=False)
-        for cohort_key, cohort_frame in grouped:
-            ticket_count = int(len(cohort_frame.index))
-            submitted_ack_count = int(cohort_frame["execution_lifecycle_stage"].isin(list(submitted_ack_stages)).sum())
-            filled_ticket_count = int((pd.to_numeric(cohort_frame["filled_quantity"], errors="coerce").fillna(0) > 0).sum())
-            resolved_ticket_count = int((cohort_frame["evaluation_status"] == "resolved").sum())
-            partial_fill_count = int((cohort_frame["execution_lifecycle_stage"] == "partially_filled").sum())
-            cancelled_count = int((cohort_frame["execution_lifecycle_stage"] == "cancelled").sum())
-            rejected_count = int(cohort_frame["execution_lifecycle_stage"].isin(list(rejected_stages)).sum())
-            working_unfilled_count = int((cohort_frame["execution_lifecycle_stage"] == "working_unfilled").sum())
-            distortion_buckets: list[str] = []
-            for _, ticket_row in cohort_frame.iterrows():
-                stage = str(ticket_row.get("execution_lifecycle_stage") or "")
-                values = json.loads(str(ticket_row.get("distortion_reason_codes_json") or "[]"))
-                if stage in {"working_unfilled", "partially_filled", "cancelled", "submit_rejected"}:
-                    distortion_buckets.append("execution_distortion")
-                elif any(str(item).startswith("execution_") for item in values):
-                    distortion_buckets.append("execution_distortion")
-                elif any(str(item).startswith("forecast_") for item in values):
-                    distortion_buckets.append("forecast_distortion")
-                else:
-                    distortion_buckets.append("none")
-            rows.append(
-                {
-                    "cohort_type": cohort_type,
-                    "cohort_key": str(cohort_key),
-                    "ticket_count": ticket_count,
-                    "submitted_ack_count": submitted_ack_count,
-                    "filled_ticket_count": filled_ticket_count,
-                    "resolved_ticket_count": resolved_ticket_count,
-                    "partial_fill_count": partial_fill_count,
-                    "cancelled_count": cancelled_count,
-                    "rejected_count": rejected_count,
-                    "working_unfilled_count": working_unfilled_count,
-                    "avg_predicted_edge_bps": float(pd.to_numeric(cohort_frame["predicted_edge_bps"], errors="coerce").dropna().mean()) if "predicted_edge_bps" in cohort_frame.columns else None,
-                    "avg_realized_pnl": float(pd.to_numeric(cohort_frame["realized_pnl"], errors="coerce").dropna().mean()) if "realized_pnl" in cohort_frame.columns else None,
-                    "avg_post_trade_error": float(pd.to_numeric(cohort_frame["post_trade_error"], errors="coerce").dropna().mean()) if "post_trade_error" in cohort_frame.columns else None,
-                    "avg_adverse_fill_slippage_bps": float(pd.to_numeric(cohort_frame["adverse_fill_slippage_bps"], errors="coerce").dropna().mean()) if "adverse_fill_slippage_bps" in cohort_frame.columns else None,
-                    "submission_capture_ratio": float(submitted_ack_count / ticket_count) if ticket_count > 0 else 0.0,
-                    "fill_capture_ratio": float(filled_ticket_count / ticket_count) if ticket_count > 0 else 0.0,
-                    "resolution_capture_ratio": float(resolved_ticket_count / ticket_count) if ticket_count > 0 else 0.0,
-                    "dominant_miss_reason_bucket": _dominant_bucket(
-                        [str(value) for value in cohort_frame["miss_reason_bucket"].dropna().tolist()],
-                        priority={**_MARKET_MISS_PRIORITY, "captured_resolved": 8, "not_submitted": 3},
-                        default="not_submitted",
-                    ),
-                    "dominant_distortion_reason_bucket": _dominant_bucket(
-                        distortion_buckets,
-                        priority={"execution_distortion": 0, "forecast_distortion": 1, "ranking_distortion": 2, "none": 3},
-                        default="none",
-                    ),
-                }
-            )
-    science = pd.DataFrame(
-        rows,
-        columns=[
-            "cohort_type",
-            "cohort_key",
-            "ticket_count",
-            "submitted_ack_count",
-            "filled_ticket_count",
-            "resolved_ticket_count",
-            "partial_fill_count",
-            "cancelled_count",
-            "rejected_count",
-            "working_unfilled_count",
-            "avg_predicted_edge_bps",
-            "avg_realized_pnl",
-            "avg_post_trade_error",
-            "avg_adverse_fill_slippage_bps",
-            "submission_capture_ratio",
-            "fill_capture_ratio",
-            "resolution_capture_ratio",
-            "dominant_miss_reason_bucket",
-            "dominant_distortion_reason_bucket",
-        ],
+    for summary in summaries:
+        cohort_frame = frame[frame[f"{summary.cohort_type}_id" if summary.cohort_type != "market" else "market_id"] == summary.cohort_key]
+        rows.append(
+            {
+                "cohort_type": summary.cohort_type,
+                "cohort_key": summary.cohort_key,
+                "ticket_count": summary.ticket_count,
+                "submitted_ack_count": summary.submitted_ack_count,
+                "filled_ticket_count": summary.filled_ticket_count,
+                "resolved_ticket_count": summary.resolved_ticket_count,
+                "partial_fill_count": summary.partial_fill_count,
+                "cancelled_count": summary.cancelled_count,
+                "rejected_count": summary.rejected_count,
+                "working_unfilled_count": summary.working_unfilled_count,
+                "avg_predicted_edge_bps": float(pd.to_numeric(cohort_frame["predicted_edge_bps"], errors="coerce").dropna().mean()) if ("predicted_edge_bps" in cohort_frame.columns and not cohort_frame.empty) else None,
+                "avg_realized_pnl": float(pd.to_numeric(cohort_frame["realized_pnl"], errors="coerce").dropna().mean()) if ("realized_pnl" in cohort_frame.columns and not cohort_frame.empty) else None,
+                "avg_post_trade_error": float(pd.to_numeric(cohort_frame["post_trade_error"], errors="coerce").dropna().mean()) if ("post_trade_error" in cohort_frame.columns and not cohort_frame.empty) else None,
+                "avg_adverse_fill_slippage_bps": float(pd.to_numeric(cohort_frame["adverse_fill_slippage_bps"], errors="coerce").dropna().mean()) if ("adverse_fill_slippage_bps" in cohort_frame.columns and not cohort_frame.empty) else None,
+                "submission_capture_ratio": float(summary.submitted_ack_count / summary.ticket_count) if summary.ticket_count > 0 else 0.0,
+                "fill_capture_ratio": float(summary.filled_ticket_count / summary.ticket_count) if summary.ticket_count > 0 else 0.0,
+                "resolution_capture_ratio": float(summary.resolved_ticket_count / summary.ticket_count) if summary.ticket_count > 0 else 0.0,
+                "dominant_miss_reason_bucket": summary.dominant_miss_reason_bucket,
+                "dominant_distortion_reason_bucket": summary.dominant_distortion_reason_bucket,
+            }
+        )
+    science = _merge_feedback_prior_fields_by_cohort(
+        pd.DataFrame(
+            rows,
+            columns=[
+                "cohort_type",
+                "cohort_key",
+                "ticket_count",
+                "submitted_ack_count",
+                "filled_ticket_count",
+                "resolved_ticket_count",
+                "partial_fill_count",
+                "cancelled_count",
+                "rejected_count",
+                "working_unfilled_count",
+                "avg_predicted_edge_bps",
+                "avg_realized_pnl",
+                "avg_post_trade_error",
+                "avg_adverse_fill_slippage_bps",
+                "submission_capture_ratio",
+                "fill_capture_ratio",
+                "resolution_capture_ratio",
+                "dominant_miss_reason_bucket",
+                "dominant_distortion_reason_bucket",
+            ],
+        ),
+        feedback_priors=feedback_priors,
+    )
+    science = annotate_frame_with_source_truth(
+        science,
+        source_origin="ui_lite",
+        derived=True,
     )
     for column in ["cohort_type", "cohort_key", "dominant_miss_reason_bucket", "dominant_distortion_reason_bucket"]:
         if column in science.columns:
@@ -2470,6 +2621,16 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
         price_staleness_ms = int(_coerce_float(pricing_context.get("price_staleness_ms")) or 0)
         market_quality_status = str(pricing_context.get("market_quality_status") or "review_required")
         calibration_health_status = str(pricing_context.get("calibration_health_status") or "lookup_missing")
+        calibration_bias_quality = str(
+            pricing_context.get("calibration_bias_quality")
+            or pricing_context.get("bias_quality_status")
+            or "lookup_missing"
+        )
+        threshold_probability_quality = str(
+            pricing_context.get("threshold_probability_quality")
+            or pricing_context.get("threshold_probability_quality_status")
+            or "lookup_missing"
+        )
         sample_count = int(_coerce_float(pricing_context.get("sample_count")) or 0)
         calibration_multiplier = _coerce_float(pricing_context.get("calibration_multiplier"))
         calibration_reason_codes = pricing_context.get("calibration_reason_codes")
@@ -2506,6 +2667,8 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                     "fill_probability": None,
                     "depth_proxy": None,
                     "calibration_health_status": calibration_health_status,
+                    "calibration_bias_quality": calibration_bias_quality,
+                    "threshold_probability_quality": threshold_probability_quality,
                     "sample_count": sample_count,
                     "uncertainty_multiplier": 0.0,
                     "uncertainty_penalty_bps": 0,
@@ -2521,7 +2684,16 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                     "ops_readiness_score": 0.0,
                     "expected_value_score": 0.0,
                     "expected_pnl_score": 0.0,
+                    "expected_dollar_pnl": 0.0,
+                    "capture_probability": 0.0,
+                    "risk_penalty": 0.0,
+                    "capital_efficiency": 0.0,
+                    "feedback_penalty": 0.0,
+                    "feedback_status": "heuristic_only",
+                    "cohort_prior_version": None,
                     "ranking_score": 0.0,
+                    "execution_prior_key": None,
+                    "why_ranked_json": json.dumps({}, ensure_ascii=True, sort_keys=True),
                     "agent_review_status": row.get("agent_review_status"),
                     "live_prereq_status": row.get("live_prereq_status"),
                     "opportunity_bucket": "negative_edge",
@@ -2554,11 +2726,19 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
             source_freshness_status=source_freshness_status,
             spread_bps=int(_coerce_float(pricing_context.get("spread_bps")) or 0) or None,
             calibration_health_status=calibration_health_status,
+            calibration_bias_quality=calibration_bias_quality,
+            threshold_probability_quality=threshold_probability_quality,
             sample_count=sample_count,
             calibration_multiplier=calibration_multiplier,
             calibration_reason_codes=calibration_reason_codes,
+            forecast_distribution_summary_v2=pricing_context.get("distribution_summary_v2")
+            if isinstance(pricing_context.get("distribution_summary_v2"), dict)
+            else None,
             source_context={
+                **pricing_context,
                 "calibration_health_status": calibration_health_status,
+                "calibration_bias_quality": calibration_bias_quality,
+                "threshold_probability_quality": threshold_probability_quality,
                 "sample_count": sample_count,
                 "calibration_multiplier": calibration_multiplier,
                 "calibration_reason_codes": calibration_reason_codes,
@@ -2596,6 +2776,8 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                 "fill_probability": assessment.fill_probability,
                 "depth_proxy": assessment.depth_proxy,
                 "calibration_health_status": assessment.calibration_health_status,
+                "calibration_bias_quality": assessment.calibration_bias_quality,
+                "threshold_probability_quality": assessment.threshold_probability_quality,
                 "sample_count": assessment.sample_count,
                 "uncertainty_multiplier": assessment.uncertainty_multiplier,
                 "uncertainty_penalty_bps": assessment.uncertainty_penalty_bps,
@@ -2611,7 +2793,16 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                 "ops_readiness_score": assessment.ops_readiness_score,
                 "expected_value_score": assessment.expected_value_score,
                 "expected_pnl_score": assessment.expected_pnl_score,
+                "expected_dollar_pnl": assessment.expected_dollar_pnl,
+                "capture_probability": assessment.capture_probability,
+                "risk_penalty": assessment.risk_penalty,
+                "capital_efficiency": assessment.capital_efficiency,
+                "feedback_penalty": assessment.feedback_penalty,
+                "feedback_status": assessment.feedback_status,
+                "cohort_prior_version": assessment.cohort_prior_version,
                 "ranking_score": assessment.ranking_score,
+                "execution_prior_key": assessment.execution_prior_key,
+                "why_ranked_json": json.dumps(assessment.why_ranked_json, ensure_ascii=True, sort_keys=True),
                 "agent_review_status": row.get("agent_review_status"),
                 "live_prereq_status": row.get("live_prereq_status"),
                 "opportunity_bucket": _opportunity_bucket(assessment.edge_bps_executable),
@@ -2662,7 +2853,16 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
         "ops_readiness_score",
         "expected_value_score",
         "expected_pnl_score",
+        "expected_dollar_pnl",
+        "capture_probability",
+        "risk_penalty",
+        "capital_efficiency",
+        "feedback_penalty",
+        "feedback_status",
+        "cohort_prior_version",
         "ranking_score",
+        "execution_prior_key",
+        "why_ranked_json",
         "agent_review_status",
         "live_prereq_status",
         "opportunity_bucket",
@@ -2675,6 +2875,13 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
         "agent_updated_at",
         "live_updated_at",
     ])
+    result = ensure_primary_score_fields(result)
+    result = annotate_frame_with_source_truth(
+        result,
+        source_origin="ui_lite",
+        derived=False,
+        freshness_column="source_freshness_status",
+    )
     con.register("market_opportunity_summary_df", result)
     con.execute("CREATE OR REPLACE TABLE ui.market_opportunity_summary AS SELECT * FROM market_opportunity_summary_df")
     row = con.execute("SELECT COUNT(*) FROM ui.market_opportunity_summary").fetchone()
@@ -2926,6 +3133,10 @@ def _table_exists(con, table_name: str) -> bool:
         [schema, table],
     ).fetchone()
     return bool(row and int(row[0]) > 0)
+
+
+def _table_columns(con, table_name: str) -> set[str]:
+    return {str(row[1]) for row in con.execute(f"PRAGMA table_info('{table_name}')").fetchall()}
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:

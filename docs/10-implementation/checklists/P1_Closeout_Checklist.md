@@ -92,7 +92,7 @@
 
 说明：
 
-- 这些项已在 [P1_P2_AlphaDesk_Remaining_Migration_Checklist.md](./P1_P2_AlphaDesk_Remaining_Migration_Checklist.md) 中归为 `P2` 或 Exit Gate 工作
+- 这些项后续已统一收口到 [P2_Closeout_Checklist.md](./P2_Closeout_Checklist.md) 与 [AlphaDesk_Migration_Ledger.md](../migration-ledger/AlphaDesk_Migration_Ledger.md)
 - 当前不影响 Weather MVP 的 `watch-only / replay / cold path` 基础开发
 
 ---

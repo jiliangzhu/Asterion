@@ -1,5 +1,11 @@
 # Asterion 项目深度评估报告
 
+> Analysis input only.
+> Not implementation truth-source.
+> Active planning entry: `docs/10-implementation/phase-plans/V2_Implementation_Plan.md`
+
+**状态**: historical assessment snapshot (`2026-03-13`)
+
 **评估日期**: 2026-03-13
 **评估模型**: Claude Opus 4.6
 **仓库快照**: main branch, commit 2ffb808 (P4-12 closeout)

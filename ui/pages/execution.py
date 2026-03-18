@@ -41,7 +41,7 @@ def show() -> None:
         st.metric("Pending Resolution", pending_resolution_count, delta="lifecycle open")
     with top3:
         avg_predicted_edge = float(pd.to_numeric(predicted_vs_realized["predicted_edge_bps"], errors="coerce").dropna().mean()) if ("predicted_edge_bps" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0.0
-        st.metric("Avg Predicted Edge", f"{avg_predicted_edge:.1f}", delta="bps")
+        st.metric("Avg Predicted Edge", f"{avg_predicted_edge:.1f}", delta="bps diagnostic")
     with top4:
         resolved_frame = predicted_vs_realized[predicted_vs_realized["evaluation_status"] == "resolved"] if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else predicted_vs_realized.iloc[0:0]
         avg_realized_pnl = float(pd.to_numeric(resolved_frame["realized_pnl"], errors="coerce").dropna().mean()) if ("realized_pnl" in resolved_frame.columns and not resolved_frame.empty) else 0.0
@@ -125,13 +125,16 @@ def show() -> None:
                 "realized_fill_price",
                 "realized_pnl",
                 "resolution_value",
+                "source_badge",
                 "post_trade_error",
-                "source_disagreement",
-                "evaluation_status",
-                "latest_fill_at",
+                    "source_disagreement",
+                    "evaluation_status",
+                    "latest_fill_at",
+                    "feedback_status",
+                    "feedback_penalty",
+                ]
+                if column in filtered_pvr.columns
             ]
-            if column in filtered_pvr.columns
-        ]
         st.dataframe(filtered_pvr[columns], width="stretch", hide_index=True)
 
     st.markdown("#### Attention Queue")
@@ -237,10 +240,13 @@ def show() -> None:
                 column
                 for column in [
                     "cohort_key",
+                    "source_badge",
                     "ticket_count",
                     "submission_capture_ratio",
                     "fill_capture_ratio",
                     "resolution_capture_ratio",
+                    "feedback_status",
+                    "feedback_penalty",
                     "dominant_miss_reason_bucket",
                     "dominant_distortion_reason_bucket",
                 ]
@@ -263,10 +269,13 @@ def show() -> None:
                 column
                 for column in [
                     "market_id",
+                    "source_badge",
                     "avg_executable_edge_bps",
                     "submission_capture_ratio",
                     "fill_capture_ratio",
                     "resolution_capture_ratio",
+                    "feedback_status",
+                    "feedback_penalty",
                     "executed_ticket_count",
                     "dominant_lifecycle_stage",
                     "miss_reason_bucket",

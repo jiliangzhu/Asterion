@@ -279,7 +279,10 @@ class SubmitterRuntimeResource:
             return SubmitterServiceShell(ShadowSubmitterBackend())
         if self.settings.submitter_backend_kind == "real_clob_submit":
             return SubmitterServiceShell(
-                RealClobSubmitterBackend(api_base_url=self.settings.submitter_api_base_url or "")
+                RealClobSubmitterBackend(
+                    api_base_url=self.settings.submitter_api_base_url or "",
+                    db_path=self.settings.db_path,
+                )
             )
         raise ValueError(f"unsupported submitter_backend_kind={self.settings.submitter_backend_kind!r}")
 

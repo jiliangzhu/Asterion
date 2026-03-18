@@ -29,10 +29,17 @@ from .ids import (
     stable_object_id,
 )
 from .live_boundary import (
+    SUBMITTER_BOUNDARY_ATTESTATION_KIND_V1,
+    SUBMITTER_BOUNDARY_ATTESTATION_KIND_V2,
+    SUBMITTER_BOUNDARY_ATTESTATION_V2_ISSUER,
+    SUBMITTER_BOUNDARY_ATTESTATION_V2_TTL_SECONDS,
     SubmitterBoundaryAttestation,
     SubmitterBoundaryInputs,
     build_submitter_boundary_attestation,
+    compute_boundary_attestation_mac,
+    compute_boundary_decision_fingerprint,
     evaluate_submitter_boundary,
+    mint_submitter_boundary_attestation_v2,
 )
 from .inventory import (
     BalanceType,
@@ -56,7 +63,16 @@ from .observations import (
     ExternalFillObservation,
     ExternalFillObservationKind,
 )
-from .opportunity import MarketQualityAssessment, OpportunityAssessment
+from .opportunity import (
+    CohortDistortionSummary,
+    ExecutionPriorKey,
+    ExecutionFeedbackMaterializationStatus,
+    ExecutionFeedbackPrior,
+    ExecutionPriorSummary,
+    MarketQualityAssessment,
+    OpportunityAssessment,
+    RankingScoreV2Decomposition,
+)
 from .weather import (
     CalibrationLookupKey,
     EvidencePackageLinkRecord,
@@ -94,7 +110,12 @@ __all__ = [
     "BalanceType",
     "CanonicalOrderContract",
     "CalibrationLookupKey",
+    "CohortDistortionSummary",
     "ExecutionContext",
+    "ExecutionFeedbackMaterializationStatus",
+    "ExecutionFeedbackPrior",
+    "ExecutionPriorKey",
+    "ExecutionPriorSummary",
     "EvidencePackageLinkRecord",
     "ExposureSnapshot",
     "ExternalBalanceObservation",
@@ -122,6 +143,7 @@ __all__ = [
     "OrderStatus",
     "OpportunityAssessment",
     "ProposalStatus",
+    "RankingScoreV2Decomposition",
     "ReconciliationResult",
     "ReconciliationStatus",
     "RedeemDecision",
@@ -137,6 +159,10 @@ __all__ = [
     "RouteAction",
     "RouteActionCLOBMapping",
     "SignalOrderIntent",
+    "SUBMITTER_BOUNDARY_ATTESTATION_KIND_V1",
+    "SUBMITTER_BOUNDARY_ATTESTATION_KIND_V2",
+    "SUBMITTER_BOUNDARY_ATTESTATION_V2_ISSUER",
+    "SUBMITTER_BOUNDARY_ATTESTATION_V2_TTL_SECONDS",
     "SubmitterBoundaryAttestation",
     "SubmitterBoundaryInputs",
     "StateTransition",
@@ -155,6 +181,8 @@ __all__ = [
     "WeatherMarketSpecRecord",
     "build_forecast_cache_key",
     "clob_mapping_for_route_action",
+    "compute_boundary_attestation_mac",
+    "compute_boundary_decision_fingerprint",
     "inventory_position_key",
     "new_client_order_id",
     "new_event_id",
@@ -166,5 +194,6 @@ __all__ = [
     "stable_object_id",
     "build_submitter_boundary_attestation",
     "evaluate_submitter_boundary",
+    "mint_submitter_boundary_attestation_v2",
     "time_in_force_for_route_action",
 ]

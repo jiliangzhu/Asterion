@@ -3,10 +3,13 @@
 **版本**: v1.0
 **更新日期**: 2026-03-12
 **阶段**: `P4`
-**状态**: closed（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` / `P4-12` 已完成；ready for controlled live rollout decision）
+**状态**: archived accepted historical phase record（`P4-01` / `P4-02` / `P4-03` / `P4-04` / `P4-05` / `P4-06` / `P4-07` / `P4-08` / `P4-09` / `P4-10` / `P4-11` / `P4-12` 已完成；ready for controlled live rollout decision）
 **目标**: 在 `P3 paper execution` 已关闭的基础上，补齐 `live prerequisites`：真实外部只读数据、capability refresh、signer boundary、submitter dry-run/shadow path、chain transaction scaffolding、external reconciliation、operator/readiness/ops hardening，并保持默认安全边界。
 
 ---
+
+> Historical accepted record only.
+> 该文档保留为 `P4 live prerequisites` 的历史 phase 记录，不再是当前 active implementation entry。
 
 ## 1. Phase Summary
 

@@ -3,10 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
+import hmac
 import json
+import secrets
+from datetime import timedelta
 from typing import Any
 
 from .ids import stable_object_id
+
+
+SUBMITTER_BOUNDARY_ATTESTATION_KIND_V1 = "submitter_live_boundary_v1"
+SUBMITTER_BOUNDARY_ATTESTATION_KIND_V2 = "submitter_live_boundary_v2"
+SUBMITTER_BOUNDARY_ATTESTATION_V2_ISSUER = "submitter_service_shell_v2"
+SUBMITTER_BOUNDARY_ATTESTATION_V2_TTL_SECONDS = 300
 
 
 def _normalize_timestamp(value: datetime) -> datetime:
@@ -20,6 +29,10 @@ def _stable_payload_hash(payload: dict[str, Any] | None) -> str | None:
         return None
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _canonical_json(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 @dataclass(frozen=True)
@@ -46,6 +59,7 @@ class SubmitterBoundaryInputs:
 @dataclass(frozen=True)
 class SubmitterBoundaryAttestation:
     attestation_id: str
+    attestation_kind: str
     request_id: str
     wallet_id: str
     submit_mode: str
@@ -57,6 +71,12 @@ class SubmitterBoundaryAttestation:
     reason_codes: list[str]
     attestation_payload_json: dict[str, Any]
     created_at: datetime
+    issuer: str | None = None
+    issued_at: datetime | None = None
+    expires_at: datetime | None = None
+    nonce: str | None = None
+    decision_fingerprint: str | None = None
+    attestation_mac: str | None = None
 
     def __post_init__(self) -> None:
         if self.attestation_status not in {"approved", "blocked"}:
@@ -75,6 +95,14 @@ def build_submitter_boundary_attestation(
     reason_codes: list[str],
     created_at: datetime,
     extra_payload: dict[str, Any] | None = None,
+    attestation_kind: str = SUBMITTER_BOUNDARY_ATTESTATION_KIND_V1,
+    issuer: str | None = None,
+    issued_at: datetime | None = None,
+    expires_at: datetime | None = None,
+    nonce: str | None = None,
+    decision_fingerprint: str | None = None,
+    attestation_mac: str | None = None,
+    attestation_id: str | None = None,
 ) -> SubmitterBoundaryAttestation:
     normalized_created_at = _normalize_timestamp(created_at)
     status = "approved" if not reason_codes else "blocked"
@@ -91,7 +119,8 @@ def build_submitter_boundary_attestation(
     if extra_payload:
         payload.update(extra_payload)
     return SubmitterBoundaryAttestation(
-        attestation_id=stable_object_id(
+        attestation_id=attestation_id
+        or stable_object_id(
             "sbatt",
             {
                 "request_id": request_id,
@@ -99,8 +128,10 @@ def build_submitter_boundary_attestation(
                 "submit_mode": submit_mode,
                 "target_backend_kind": target_backend_kind,
                 "reason_codes": list(reason_codes),
+                "attestation_kind": attestation_kind,
             },
         ),
+        attestation_kind=attestation_kind,
         request_id=request_id,
         wallet_id=wallet_id,
         submit_mode=submit_mode,
@@ -112,6 +143,103 @@ def build_submitter_boundary_attestation(
         reason_codes=list(reason_codes),
         attestation_payload_json=payload,
         created_at=normalized_created_at,
+        issuer=issuer,
+        issued_at=_normalize_timestamp(issued_at) if issued_at is not None else None,
+        expires_at=_normalize_timestamp(expires_at) if expires_at is not None else None,
+        nonce=nonce,
+        decision_fingerprint=decision_fingerprint,
+        attestation_mac=attestation_mac,
+    )
+
+
+def compute_boundary_decision_fingerprint(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def compute_boundary_attestation_mac(
+    *,
+    secret: str,
+    issuer: str,
+    attestation_id: str,
+    nonce: str,
+    issued_at: datetime,
+    expires_at: datetime,
+    decision_fingerprint: str,
+) -> str:
+    message = "|".join(
+        [
+            issuer,
+            attestation_id,
+            nonce,
+            _normalize_timestamp(issued_at).isoformat(timespec="seconds"),
+            _normalize_timestamp(expires_at).isoformat(timespec="seconds"),
+            decision_fingerprint,
+        ]
+    )
+    return hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def mint_submitter_boundary_attestation_v2(
+    attestation: SubmitterBoundaryAttestation,
+    *,
+    attestation_secret: str | None,
+    issued_at: datetime | None = None,
+    ttl_seconds: int = SUBMITTER_BOUNDARY_ATTESTATION_V2_TTL_SECONDS,
+    issuer: str = SUBMITTER_BOUNDARY_ATTESTATION_V2_ISSUER,
+) -> SubmitterBoundaryAttestation:
+    normalized_issued_at = _normalize_timestamp(issued_at or attestation.created_at)
+    expires_at = normalized_issued_at + timedelta(seconds=ttl_seconds)
+    nonce = secrets.token_hex(16)
+    decision_fingerprint = compute_boundary_decision_fingerprint(attestation.attestation_payload_json)
+    reason_codes = list(attestation.reason_codes)
+    attestation_status = attestation.attestation_status
+    if not str(attestation_secret or "").strip():
+        if "attestation_secret_missing" not in reason_codes:
+            reason_codes.append("attestation_secret_missing")
+        attestation_status = "blocked"
+    attestation_id = stable_object_id(
+        "sbatt",
+        {
+            "request_id": attestation.request_id,
+            "wallet_id": attestation.wallet_id,
+            "submit_mode": attestation.submit_mode,
+            "target_backend_kind": attestation.target_backend_kind,
+            "attestation_kind": SUBMITTER_BOUNDARY_ATTESTATION_KIND_V2,
+            "nonce": nonce,
+            "issued_at": normalized_issued_at.isoformat(timespec="seconds"),
+        },
+    )
+    attestation_mac = None
+    if attestation_status == "approved":
+        attestation_mac = compute_boundary_attestation_mac(
+            secret=str(attestation_secret),
+            issuer=issuer,
+            attestation_id=attestation_id,
+            nonce=nonce,
+            issued_at=normalized_issued_at,
+            expires_at=expires_at,
+            decision_fingerprint=decision_fingerprint,
+        )
+    return SubmitterBoundaryAttestation(
+        attestation_id=attestation_id,
+        attestation_kind=SUBMITTER_BOUNDARY_ATTESTATION_KIND_V2,
+        request_id=attestation.request_id,
+        wallet_id=attestation.wallet_id,
+        submit_mode=attestation.submit_mode,
+        target_backend_kind=attestation.target_backend_kind,
+        manifest_hash=attestation.manifest_hash,
+        readiness_hash=attestation.readiness_hash,
+        submitter_endpoint_fingerprint=attestation.submitter_endpoint_fingerprint,
+        attestation_status=attestation_status,
+        reason_codes=reason_codes,
+        attestation_payload_json=dict(attestation.attestation_payload_json),
+        created_at=attestation.created_at,
+        issuer=issuer,
+        issued_at=normalized_issued_at,
+        expires_at=expires_at,
+        nonce=nonce,
+        decision_fingerprint=decision_fingerprint,
+        attestation_mac=attestation_mac,
     )
 
 
@@ -182,8 +310,15 @@ def evaluate_submitter_boundary(inputs: SubmitterBoundaryInputs) -> SubmitterBou
 
 
 __all__ = [
+    "SUBMITTER_BOUNDARY_ATTESTATION_KIND_V1",
+    "SUBMITTER_BOUNDARY_ATTESTATION_KIND_V2",
+    "SUBMITTER_BOUNDARY_ATTESTATION_V2_ISSUER",
+    "SUBMITTER_BOUNDARY_ATTESTATION_V2_TTL_SECONDS",
     "SubmitterBoundaryAttestation",
     "SubmitterBoundaryInputs",
     "build_submitter_boundary_attestation",
+    "compute_boundary_attestation_mac",
+    "compute_boundary_decision_fingerprint",
     "evaluate_submitter_boundary",
+    "mint_submitter_boundary_attestation_v2",
 ]

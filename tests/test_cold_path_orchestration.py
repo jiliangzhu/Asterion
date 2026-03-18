@@ -190,6 +190,7 @@ def _forecast_distribution() -> ForecastDistribution:
         timezone="America/New_York",
         spec_version="spec_123",
         temperature_distribution={55: 1.0},
+        distribution_summary_v2=None,
         source_trace=["openmeteo"],
         raw_payload={"source": "stub"},
         from_cache=False,
@@ -316,6 +317,8 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_paper_execution",
             "weather_watcher_backfill",
             "weather_resolution_reconciliation",
+            "weather_execution_priors_refresh",
+            "weather_forecast_calibration_profiles_v2_refresh",
             "weather_rule2spec_review",
             "weather_data_qa_review",
             "weather_resolution_review",
@@ -350,6 +353,9 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_chain_tx_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_live_prereq_readiness"].mode, "scheduled")
         self.assertEqual(jobs["weather_controlled_live_smoke"].mode, "manual")
+        self.assertEqual(jobs["weather_execution_priors_refresh"].mode, "scheduled")
+        self.assertEqual(jobs["weather_execution_priors_refresh"].default_schedule_key, "weather_execution_priors_nightly")
+        self.assertIn("runtime.execution_feedback_materializations", jobs["weather_execution_priors_refresh"].output_tables)
         self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
         self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
         self.assertEqual(jobs["weather_data_qa_review"].upstream_jobs, ["weather_forecast_replay"])
@@ -369,7 +375,10 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_live_prereq_readiness_hourly",
             "weather_watcher_backfill_bihourly",
             "weather_resolution_reconciliation_bihourly",
+            "weather_execution_priors_nightly",
         ])
+        self.assertEqual(schedules["weather_execution_priors_nightly"].cron_schedule, "5 3 * * *")
+        self.assertTrue(schedules["weather_execution_priors_nightly"].enabled_by_default)
 
 
 class ColdPathResourcesTest(unittest.TestCase):

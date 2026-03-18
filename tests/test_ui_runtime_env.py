@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ui.runtime_env import export_ui_runtime_env_shell, resolve_ui_runtime_env
+from ui.runtime_env import export_ui_runtime_env_shell, load_ui_runtime_boundary_status, resolve_ui_runtime_env
 
 
 class UiRuntimeEnvTest(unittest.TestCase):
@@ -58,6 +58,46 @@ class UiRuntimeEnvTest(unittest.TestCase):
         self.assertNotIn("ASTERION_CONTROLLED_LIVE_SECRET_PK_WALLET_WEATHER_1", payload)
         self.assertIn("export ASTERION_UI_USERNAME='env-user'", exported)
         self.assertNotIn("CONTROLLED_LIVE_SECRET", exported)
+
+    def test_banned_env_detection_blocks_ui_boundary(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ASTERION_UI_USERNAME": "operator",
+                "ASTERION_CONTROLLED_LIVE_SECRET_APPROVAL_TOKEN": "secret-token",
+            },
+            clear=True,
+        ):
+            status = load_ui_runtime_boundary_status()
+        self.assertEqual(status.status, "blocked")
+        self.assertIn("controlled_live_secrets_present", status.banned_env_categories)
+
+    def test_public_bind_requires_explicit_opt_in(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ASTERION_UI_BIND_ADDRESS": "0.0.0.0",
+                "ASTERION_UI_USERNAME": "operator",
+            },
+            clear=True,
+        ):
+            status = load_ui_runtime_boundary_status()
+        self.assertEqual(status.status, "blocked")
+        self.assertIn("public_bind_requires_opt_in", status.reason_codes)
+
+    def test_public_bind_allows_explicit_opt_in(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ASTERION_UI_BIND_ADDRESS": "0.0.0.0",
+                "ASTERION_UI_ALLOW_PUBLIC_BIND": "true",
+                "ASTERION_UI_USERNAME": "operator",
+            },
+            clear=True,
+        ):
+            status = load_ui_runtime_boundary_status()
+        self.assertEqual(status.status, "ok")
+        self.assertEqual(status.bind_scope, "public")
 
 
 if __name__ == "__main__":

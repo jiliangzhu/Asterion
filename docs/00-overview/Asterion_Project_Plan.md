@@ -4,12 +4,14 @@
 
 > 一个源于 AlphaDesk 设计 lineage、但当前运行时代码已独立于 AlphaDesk 的 Polymarket 多领域事件市场统一平台
 
-**文档版本**: v1.2
+**文档版本**: v1.3
 **创建日期**: 2026-03-07
-**更新日期**: 2026-03-12
-**状态**: 详细设计完成，`P0` 到 `P4` scaffold 已落地；当前 active 状态为 `post-P4 remediation`（closeout pending objective verification）
+**更新日期**: 2026-03-17
+**状态**: 详细设计完成，`P0` 到 `P4` 已 accepted，post-P4 remediation 已 accepted；当前阶段状态为 `v2.0 planning`
 
-> 当前系统的统一定位是 `operator console + constrained execution infra`。当前 canonical 实施入口是 [Post_P4_Remediation_Implementation_Plan.md](../10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)；这不表示 unattended live，也不表示 unrestricted live。
+> 当前系统的统一定位是 `operator console + constrained execution infra`。当前 active planning entry 是 [V2_Implementation_Plan.md](../10-implementation/phase-plans/V2_Implementation_Plan.md)；[Post_P4_Remediation_Implementation_Plan.md](../10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md) 保留为 historical accepted remediation record。这不表示 unattended live，也不表示 unrestricted live。
+
+> 深度审计提出的后续优化路线，已作为 `P4` 之后到 `v2.0` 之前的 historical accepted remediation record 保留在 `Post-P4 Phase 10` 到 `Post-P4 Phase 15` 中。
 
 ---
 
@@ -22,13 +24,14 @@
 ✅ **Weather MVP 实施方案** - 第一个业务包的完整设计
 ✅ **数据模型设计** - 完整的数据库表设计
 ✅ **风险管理框架** - 仓位限制、熔断机制
-✅ **开发路线图** - 4 个 Phase 的详细计划
+✅ **开发路线图** - 历史 `P0` 到 `P4`、historical post-P4 remediation，以及当前 `v2.0 planning` 入口
 
 **详细设计文档**:
+- [V2.0 版本入口](../10-implementation/phase-plans/V2_Implementation_Plan.md)
 - [Documentation Index](./Documentation_Index.md)
 - [开发路线图](./DEVELOPMENT_ROADMAP.md)
 - [Implementation Index](../10-implementation/Implementation_Index.md)
-- [Post-P4 Remediation 实施计划](../10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
+- [Post-P4 Remediation 历史实施记录](../10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
 - [P4 实施文档](../10-implementation/phase-plans/P4_Implementation_Plan.md)
 - [P4 关闭清单](../10-implementation/checklists/P4_Closeout_Checklist.md)
 - [P4 Controlled Rollout Decision Runbook](../10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
@@ -47,6 +50,11 @@
 - [Event Sourcing 详细设计](../20-architecture/Event_Sourcing_Design.md)
 - [热路径 vs 冷路径架构](../20-architecture/Hot_Cold_Path_Architecture.md)
 - [Forecast Ensemble 详细设计](../40-weather/Forecast_Ensemble_Design.md)
+- [Controlled Live Boundary 详细设计](../30-trading/Controlled_Live_Boundary_Design.md)
+- [Execution Economics 详细设计](../30-trading/Execution_Economics_Design.md)
+- [Forecast Calibration v2 详细设计](../40-weather/Forecast_Calibration_v2_Design.md)
+- [Operator Console Truth Source 详细设计](../50-operations/Operator_Console_Truth_Source_Design.md)
+- [UI Read Model 详细设计](../20-architecture/UI_Read_Model_Design.md)
 - [Agent Monitor 详细设计](../50-operations/Agent_Monitor_Design.md)
 - [Gas Manager 详细设计](../30-trading/Gas_Manager_Design.md)
 ---
@@ -393,18 +401,24 @@ Asterion/
     10-implementation/
       Implementation_Index.md
       phase-plans/
+        Post_P4_Remediation_Implementation_Plan.md
         P0_Implementation_Plan.md
         P1_Implementation_Plan.md
         P2_Implementation_Plan.md
         P3_Implementation_Plan.md
+        P4_Implementation_Plan.md
       checklists/
+        Checklist_Index.md
         P0_Closeout_Checklist.md
         P1_Closeout_Checklist.md
         P2_Closeout_Checklist.md
-        P1_P2_AlphaDesk_Remaining_Migration_Checklist.md
+        P3_Closeout_Checklist.md
+        P4_Closeout_Checklist.md
       runbooks/
         P1_Watch_Only_Replay_Cold_Path_Runbook.md
         P2_Cold_Path_Orchestration_Job_Map_Runbook.md
+        P3_Paper_Execution_Runbook.md
+        P4_Controlled_Rollout_Decision_Runbook.md
       migration-ledger/
         AlphaDesk_Migration_Ledger.md
       module-notes/
@@ -413,17 +427,27 @@ Asterion/
       Database_Architecture_Design.md
       Event_Sourcing_Design.md
       Hot_Cold_Path_Architecture.md
+      UI_Read_Model_Design.md
     30-trading/
       CLOB_Order_Router_Design.md
       OMS_Design.md
       Market_Capability_Registry_Design.md
       Signer_Service_Design.md
       Gas_Manager_Design.md
+      Controlled_Live_Boundary_Design.md
+      Execution_Economics_Design.md
     40-weather/
       Forecast_Ensemble_Design.md
       UMA_Watcher_Design.md
+      Forecast_Calibration_v2_Design.md
+    analysis/
+      Analysis_Index.md
+      01_Current_Code_Reassessment.md
+      02_Current_Deep_Audit_and_Improvement_Plan.md
+      10_*.md / 11_*.md / 12_*.md / 13_*.md
     50-operations/
       Agent_Monitor_Design.md
+      Operator_Console_Truth_Source_Design.md
 
   README.md                       # 项目导航（根目录唯一文档）
   pyproject.toml                  # Python 项目配置

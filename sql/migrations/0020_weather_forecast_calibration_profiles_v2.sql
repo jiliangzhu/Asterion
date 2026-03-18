@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS weather.forecast_calibration_profiles_v2 (
+    profile_key TEXT PRIMARY KEY,
+    station_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    forecast_horizon_bucket TEXT NOT NULL,
+    season_bucket TEXT NOT NULL,
+    regime_bucket TEXT NOT NULL,
+    sample_count BIGINT NOT NULL,
+    mean_bias DOUBLE NOT NULL,
+    mean_abs_residual DOUBLE NOT NULL,
+    p90_abs_residual DOUBLE NOT NULL,
+    empirical_coverage_50 DOUBLE,
+    empirical_coverage_80 DOUBLE,
+    empirical_coverage_95 DOUBLE,
+    regime_stability_score DOUBLE NOT NULL,
+    residual_quantiles_json TEXT NOT NULL,
+    threshold_probability_profile_json TEXT,
+    calibration_health_status TEXT NOT NULL,
+    window_start TIMESTAMP NOT NULL,
+    window_end TIMESTAMP NOT NULL,
+    materialized_at TIMESTAMP NOT NULL
+);

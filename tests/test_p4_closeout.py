@@ -20,7 +20,7 @@ class P4CloseoutDocsTest(unittest.TestCase):
         missing = [str(path) for path in expected if not path.exists()]
         self.assertEqual(missing, [])
 
-    def test_navigation_docs_reference_p4_closeout_materials(self) -> None:
+    def test_navigation_docs_reference_archived_p4_closeout_materials(self) -> None:
         expected_refs = {
             ROOT / "README.md": ["P4_Closeout_Checklist.md", "P4_Controlled_Rollout_Decision_Runbook.md"],
             ROOT / "docs" / "10-implementation" / "Implementation_Index.md": [
@@ -57,6 +57,17 @@ class P4CloseoutDocsTest(unittest.TestCase):
         self.assertIn("不等于 production live", runbook)
         self.assertIn("weather_controlled_live_smoke", checklist)
         self.assertIn("approve_usdc", checklist)
+
+    def test_p4_closeout_docs_are_archived_historical_records(self) -> None:
+        checklist = (
+            ROOT / "docs" / "10-implementation" / "checklists" / "P4_Closeout_Checklist.md"
+        ).read_text(encoding="utf-8")
+        runbook = (
+            ROOT / "docs" / "10-implementation" / "runbooks" / "P4_Controlled_Rollout_Decision_Runbook.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("archived accepted historical closeout record", checklist)
+        self.assertIn("historical closeout record", checklist)
+        self.assertIn("archived accepted historical runbook", runbook)
 
 
 if __name__ == "__main__":
