@@ -34,6 +34,7 @@ class UiPagesSmokeTest(unittest.TestCase):
                 "actionable_market_count": 0,
                 "weather_market_count": 0,
                 "top_opportunity_score": 0.0,
+                "action_queue_count": 1,
                 "liquidity_ready_count": 0,
                 "highest_edge_bps": 0.0,
                 "weather_locations": [],
@@ -60,6 +61,19 @@ class UiPagesSmokeTest(unittest.TestCase):
                         "source_freshness_status": "fresh",
                         "market_quality_status": "pass",
                         "agent_review_status": "passed",
+                        "actionability_status": "actionable",
+                    }
+                ]
+            ),
+            "action_queue": pd.DataFrame(
+                [
+                    {
+                        "location_name": "Seattle",
+                        "question": "Seattle weather",
+                        "best_side": "BUY",
+                        "ranking_score": 88.0,
+                        "recommended_size": 4.0,
+                        "allocation_status": "resized",
                         "actionability_status": "actionable",
                     }
                 ]

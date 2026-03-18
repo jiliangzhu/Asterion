@@ -19,6 +19,11 @@ def _prior_summary(
     partial_fill_rate: float = 0.10,
     cancel_rate: float = 0.05,
     adverse_fill_slippage_bps_p50: float | None = 18.0,
+    submit_latency_ms_p90: float | None = 30_000.0,
+    fill_latency_ms_p90: float | None = 60_000.0,
+    realized_edge_retention_bps_p50: float | None = 420.0,
+    prior_lookup_mode: str = "exact_market",
+    prior_feature_scope: dict | None = None,
     feedback_prior: ExecutionFeedbackPrior | None = None,
 ) -> ExecutionPriorSummary:
     return ExecutionPriorSummary(
@@ -38,9 +43,17 @@ def _prior_summary(
         cancel_rate=cancel_rate,
         adverse_fill_slippage_bps_p50=adverse_fill_slippage_bps_p50,
         adverse_fill_slippage_bps_p90=42.0,
+        submit_latency_ms_p50=submit_latency_ms_p90,
+        submit_latency_ms_p90=submit_latency_ms_p90,
+        fill_latency_ms_p50=fill_latency_ms_p90,
+        fill_latency_ms_p90=fill_latency_ms_p90,
+        realized_edge_retention_bps_p50=realized_edge_retention_bps_p50,
+        realized_edge_retention_bps_p90=realized_edge_retention_bps_p50,
         avg_realized_pnl=0.07,
         avg_post_trade_error=0.01,
         prior_quality_status="ready" if sample_count >= 10 else "sparse",
+        prior_lookup_mode=prior_lookup_mode,
+        prior_feature_scope=prior_feature_scope or {"lookup_mode": prior_lookup_mode},
         feedback_prior=feedback_prior,
     )
 
@@ -71,6 +84,11 @@ class RankingScoreV2Test(unittest.TestCase):
         self.assertEqual(assessment.why_ranked_json["mode"], "prior_backed")
         self.assertEqual(assessment.execution_prior_key, assessment.why_ranked_json["execution_prior_key"]["prior_key"])
         self.assertEqual(assessment.ops_readiness_score, 0.001)
+        self.assertIn("latency_penalty", assessment.why_ranked_json)
+        self.assertIn("tail_slippage_penalty", assessment.why_ranked_json)
+        self.assertIn("edge_retention_penalty", assessment.why_ranked_json)
+        self.assertIn("quality_confidence_multiplier", assessment.why_ranked_json)
+        self.assertEqual(assessment.why_ranked_json["prior_lookup_mode"], "exact_market")
 
     def test_ops_tie_breaker_does_not_override_materially_better_ev(self) -> None:
         low_ev = build_weather_opportunity_assessment(
@@ -124,6 +142,7 @@ class RankingScoreV2Test(unittest.TestCase):
         self.assertEqual(assessment.why_ranked_json["mode"], "fallback_heuristic")
         self.assertIsNone(assessment.execution_prior_key)
         self.assertGreater(assessment.capture_probability, 0.0)
+        self.assertEqual(assessment.why_ranked_json["prior_lookup_mode"], "heuristic_fallback")
 
     def test_feedback_suppression_applies_after_ranking_v2(self) -> None:
         degraded_feedback = ExecutionFeedbackPrior(
@@ -167,6 +186,51 @@ class RankingScoreV2Test(unittest.TestCase):
         self.assertEqual(degraded.feedback_status, "degraded")
         self.assertAlmostEqual(degraded.feedback_penalty, 0.4)
         self.assertEqual(degraded.why_ranked_json["pre_feedback_ranking_score"], baseline.ranking_score)
+        self.assertIn("quality_confidence_multiplier", degraded.why_ranked_json)
+
+    def test_latency_and_edge_retention_penalties_lower_ranking(self) -> None:
+        fast = build_weather_opportunity_assessment(
+            market_id="mkt_fast",
+            token_id="tok_fast",
+            outcome="YES",
+            reference_price=0.38,
+            model_fair_value=0.67,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="not_started",
+            execution_prior_summary=_prior_summary(
+                market_id="mkt_fast",
+                submit_latency_ms_p90=5_000.0,
+                fill_latency_ms_p90=10_000.0,
+                realized_edge_retention_bps_p50=700.0,
+            ),
+        )
+        slow = build_weather_opportunity_assessment(
+            market_id="mkt_slow",
+            token_id="tok_slow",
+            outcome="YES",
+            reference_price=0.38,
+            model_fair_value=0.67,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="not_started",
+            execution_prior_summary=_prior_summary(
+                market_id="mkt_slow",
+                submit_latency_ms_p90=120_000.0,
+                fill_latency_ms_p90=240_000.0,
+                realized_edge_retention_bps_p50=120.0,
+            ),
+        )
+
+        self.assertGreater(fast.ranking_score, slow.ranking_score)
+        self.assertGreater(slow.why_ranked_json["latency_penalty"], fast.why_ranked_json["latency_penalty"])
+        self.assertGreater(slow.why_ranked_json["edge_retention_penalty"], fast.why_ranked_json["edge_retention_penalty"])
 
 
 if __name__ == "__main__":

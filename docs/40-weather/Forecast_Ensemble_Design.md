@@ -1,8 +1,8 @@
 # Forecast Ensemble 详细设计
 
-**模块**: `domains/weather/forecast/forecast_ensemble.py`  
-**版本**: v3.1  
-**更新日期**: 2026-03-08  
+**模块**: `domains/weather/forecast/forecast_ensemble.py`
+**版本**: v3.1
+**更新日期**: 2026-03-08
 **状态**: Interface Freeze Candidate
 
 ---

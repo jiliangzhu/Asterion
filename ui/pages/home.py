@@ -37,6 +37,7 @@ def show() -> None:
     metrics = overview.get("metrics", {})
     wallet_attention = overview.get("wallet_attention", pd.DataFrame())
     top_opportunities = overview.get("top_opportunities", pd.DataFrame())
+    action_queue = overview.get("action_queue", pd.DataFrame())
     largest_blocker = overview.get("largest_blocker", {"source": "unknown", "summary": "unknown"})
     recent_agent = overview.get("recent_agent_summary", {})
     agent_data = overview.get("agent_data", {}).get("frame", pd.DataFrame())
@@ -76,7 +77,7 @@ def show() -> None:
         else:
             st.success("当前没有 gate-level blocker。")
         st.caption(
-            "当前仓库状态是 `post-P4 remediation active / closeout pending objective verification`，"
+            "当前仓库状态是 `P4 accepted; post-P4 remediation accepted; v2.0 implementation active`，"
             "当前系统定位是 `operator console + constrained execution infra`，这不表示 unattended live。"
         )
 
@@ -106,6 +107,8 @@ def show() -> None:
                     "ranking_score",
                     "expected_dollar_pnl",
                     "capture_probability",
+                    "recommended_size",
+                    "allocation_status",
                     "source_badge",
                     "source_truth_status",
                     "mapping_confidence",
@@ -185,6 +188,44 @@ def show() -> None:
                 if column in uncaptured_high_edge.columns
             ]
             st.dataframe(uncaptured_high_edge[columns].head(5), width="stretch", hide_index=True)
+
+    row3b_left, row3b_right = st.columns([1.2, 1.0])
+    with row3b_left:
+        st.markdown("#### Action Queue")
+        if action_queue.empty:
+            st.info("当前没有 approved / resized allocation rows。")
+        else:
+            columns = [
+                column
+                for column in [
+                    "location_name",
+                    "question",
+                    "best_side",
+                    "ranking_score",
+                    "recommended_size",
+                    "allocation_status",
+                    "actionability_status",
+                ]
+                if column in action_queue.columns
+            ]
+            st.dataframe(action_queue[columns].head(5), width="stretch", hide_index=True)
+    with row3b_right:
+        st.markdown("#### Allocation Overlay")
+        st.metric("Queued Actions", metrics.get("action_queue_count", 0), delta="approved/resized")
+        if not top_opportunities.empty:
+            top_row = top_opportunities.iloc[0].to_dict()
+            st.write(f"recommended_size: `{_format_metric_value(top_row.get('recommended_size'))}`")
+            st.write(f"allocation_status: `{_format_metric_value(top_row.get('allocation_status'))}`")
+            budget_impact = _json_dict(top_row.get("budget_impact"))
+            if budget_impact:
+                st.caption(
+                    " | ".join(
+                        [
+                            f"binding_limit={budget_impact.get('binding_limit_scope') or 'none'}",
+                            f"remaining_budget={_format_metric_value(budget_impact.get('remaining_run_budget'))}",
+                        ]
+                    )
+                )
 
     row4_left, row4_right = st.columns([1.1, 1.1])
     with row4_left:

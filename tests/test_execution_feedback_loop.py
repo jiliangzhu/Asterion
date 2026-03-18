@@ -87,6 +87,7 @@ class ExecutionFeedbackLoopTest(unittest.TestCase):
         self.assertAlmostEqual(suppressed.feedback_penalty, 0.35)
         self.assertGreater(suppressed.why_ranked_json["pre_feedback_ranking_score"], suppressed.ranking_score)
         self.assertIn("market", suppressed.why_ranked_json["feedback_scope_breakdown"])
+        self.assertIn("quality_confidence_multiplier", suppressed.why_ranked_json)
 
     def test_missing_feedback_prior_keeps_heuristic_only_status(self) -> None:
         assessment = build_weather_opportunity_assessment(

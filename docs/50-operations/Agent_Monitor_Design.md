@@ -80,24 +80,24 @@ class AgentInvocation:
     invocation_id: str
     agent_type: AgentType
     agent_version: str
-    
+
     # 输入输出
     input_data: Dict[str, Any]
     output_data: Optional[Dict[str, Any]]
-    
+
     # 执行信息
     status: AgentStatus
     start_time: datetime
     end_time: Optional[datetime]
     duration_ms: Optional[int]
-    
+
     # API 信息
     model_name: str
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
     api_cost_usd: float
-    
+
     # 错误信息
     error_message: Optional[str]
     error_traceback: Optional[str]
@@ -107,21 +107,21 @@ class AgentEvaluation:
     """Agent 评估结果"""
     invocation_id: str
     agent_type: AgentType
-    
+
     # 质量评分
     accuracy_score: Optional[float]  # 0-1
     confidence_score: float  # Agent 自评置信度
     human_rating: Optional[int]  # 1-5 人工评分
-    
+
     # 性能指标
     latency_ms: int
     cost_usd: float
-    
+
     # 验证结果
     is_verified: bool
     verification_method: str  # "human" / "automated" / "ground_truth"
     verification_notes: Optional[str]
-    
+
     created_at: datetime
 ```
 
@@ -130,17 +130,17 @@ class AgentEvaluation:
 ```python
 class AgentEvaluator:
     """Agent 评估器"""
-    
+
     def __init__(self, db_path: str):
         self.db_path = db_path
-    
+
     def evaluate_rule2spec(
         self,
         invocation: AgentInvocation,
         ground_truth: Optional[Dict[str, Any]] = None
     ) -> AgentEvaluation:
         """评估 Rule2Spec Agent"""
-        
+
         if not invocation.output_data:
             return AgentEvaluation(
                 invocation_id=invocation.invocation_id,
@@ -155,16 +155,16 @@ class AgentEvaluator:
                 verification_notes="No output",
                 created_at=datetime.now(),
             )
-        
+
         # 提取 Agent 输出
         output = invocation.output_data
         confidence = output.get("confidence", 0.5)
-        
+
         # 如果有 ground truth，计算准确率
         accuracy = None
         if ground_truth:
             accuracy = self._calc_rule2spec_accuracy(output, ground_truth)
-        
+
         return AgentEvaluation(
             invocation_id=invocation.invocation_id,
             agent_type=invocation.agent_type,
@@ -178,22 +178,22 @@ class AgentEvaluator:
             verification_notes=None,
             created_at=datetime.now(),
         )
-    
+
     def _calc_rule2spec_accuracy(
         self,
         output: Dict[str, Any],
         ground_truth: Dict[str, Any]
     ) -> float:
         """计算 Rule2Spec 准确率"""
-        
+
         # 关键字段匹配
         key_fields = ["city", "date", "metric", "threshold_low", "threshold_high"]
         matches = 0
-        
+
         for field in key_fields:
             if output.get(field) == ground_truth.get(field):
                 matches += 1
-        
+
         return matches / len(key_fields)
 ```
 
@@ -204,19 +204,19 @@ class AgentEvaluator:
         actual_issues: Optional[list] = None
     ) -> AgentEvaluation:
         """评估 Data QA Agent"""
-        
+
         if not invocation.output_data:
             return self._create_failed_evaluation(invocation)
-        
+
         output = invocation.output_data
         confidence = output.get("confidence", 0.5)
         detected_issues = output.get("issues", [])
-        
+
         # 如果有实际问题列表，计算准确率
         accuracy = None
         if actual_issues is not None:
             accuracy = self._calc_detection_accuracy(detected_issues, actual_issues)
-        
+
         return AgentEvaluation(
             invocation_id=invocation.invocation_id,
             agent_type=invocation.agent_type,
@@ -230,26 +230,26 @@ class AgentEvaluator:
             verification_notes=None,
             created_at=datetime.now(),
         )
-    
+
     def evaluate_resolution_sentinel(
         self,
         invocation: AgentInvocation,
         actual_outcome: Optional[str] = None
     ) -> AgentEvaluation:
         """评估 Resolution Sentinel Agent"""
-        
+
         if not invocation.output_data:
             return self._create_failed_evaluation(invocation)
-        
+
         output = invocation.output_data
         confidence = output.get("confidence", 0.5)
         predicted_outcome = output.get("outcome")
-        
+
         # 如果有实际结果，计算准确率
         accuracy = None
         if actual_outcome and predicted_outcome:
             accuracy = 1.0 if predicted_outcome == actual_outcome else 0.0
-        
+
         return AgentEvaluation(
             invocation_id=invocation.invocation_id,
             agent_type=invocation.agent_type,
@@ -263,36 +263,36 @@ class AgentEvaluator:
             verification_notes=None,
             created_at=datetime.now(),
         )
-    
+
     def _calc_detection_accuracy(
         self,
         detected: list,
         actual: list
     ) -> float:
         """计算检测准确率（F1 score）"""
-        
+
         if not actual and not detected:
             return 1.0
-        
+
         if not actual or not detected:
             return 0.0
-        
+
         detected_set = set(detected)
         actual_set = set(actual)
-        
+
         true_positives = len(detected_set & actual_set)
         false_positives = len(detected_set - actual_set)
         false_negatives = len(actual_set - detected_set)
-        
+
         precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
         recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
-        
+
         if precision + recall == 0:
             return 0.0
-        
+
         f1 = 2 * (precision * recall) / (precision + recall)
         return f1
-    
+
     def _create_failed_evaluation(self, invocation: AgentInvocation) -> AgentEvaluation:
         """创建失败的评估结果"""
         return AgentEvaluation(
@@ -323,34 +323,34 @@ class AgentMetrics:
     """Agent 性能指标"""
     agent_type: AgentType
     time_window: str  # "1h" / "24h" / "7d" / "30d"
-    
+
     # 调用统计
     total_invocations: int
     success_count: int
     failure_count: int
     timeout_count: int
     success_rate: float
-    
+
     # 性能指标
     avg_latency_ms: float
     p50_latency_ms: float
     p95_latency_ms: float
     p99_latency_ms: float
-    
+
     # 质量指标
     avg_accuracy: Optional[float]
     avg_confidence: float
     avg_human_rating: Optional[float]
-    
+
     # 成本指标
     total_cost_usd: float
     avg_cost_per_call_usd: float
     total_tokens: int
-    
+
     # 趋势
     accuracy_trend: str  # "improving" / "stable" / "degrading"
     latency_trend: str
-    
+
     calculated_at: datetime
 
 @dataclass
@@ -372,7 +372,7 @@ class AgentAlert:
 ```python
 class AgentMonitor:
     """Agent 监控器"""
-    
+
     def __init__(self, db_path: str, evaluator: AgentEvaluator):
         self.db_path = db_path
         self.evaluator = evaluator
@@ -382,31 +382,31 @@ class AgentMonitor:
             "accuracy_min": 0.8,
             "cost_spike_multiplier": 3.0,
         }
-    
+
     def record_invocation(self, invocation: AgentInvocation) -> None:
         """记录 Agent 调用"""
         # 保存到数据库
         self._save_invocation(invocation)
-        
+
         # 触发评估
         evaluation = self._evaluate_invocation(invocation)
         self._save_evaluation(evaluation)
-        
+
         # 检查告警
         alerts = self._check_alerts(invocation.agent_type)
         for alert in alerts:
             self._send_alert(alert)
-    
+
     def get_metrics(
         self,
         agent_type: AgentType,
         time_window: str = "24h"
     ) -> AgentMetrics:
         """获取 Agent 性能指标"""
-        
+
         # 从数据库查询统计数据
         stats = self._query_stats(agent_type, time_window)
-        
+
         return AgentMetrics(
             agent_type=agent_type,
             time_window=time_window,
@@ -429,12 +429,12 @@ class AgentMonitor:
             latency_trend=self._calc_trend(agent_type, "latency", time_window),
             calculated_at=datetime.now(),
         )
-    
+
     def _check_alerts(self, agent_type: AgentType) -> list[AgentAlert]:
         """检查告警条件"""
         alerts = []
         metrics = self.get_metrics(agent_type, "1h")
-        
+
         # 高延迟告警
         if metrics.p95_latency_ms > self.alert_thresholds["latency_p95_ms"]:
             alerts.append(AgentAlert(
@@ -447,7 +447,7 @@ class AgentMonitor:
                 threshold_value=self.alert_thresholds["latency_p95_ms"],
                 created_at=datetime.now(),
             ))
-        
+
         # 高失败率告警
         if metrics.success_rate < (1 - self.alert_thresholds["failure_rate"]):
             alerts.append(AgentAlert(
@@ -460,7 +460,7 @@ class AgentMonitor:
                 threshold_value=1 - self.alert_thresholds["failure_rate"],
                 created_at=datetime.now(),
             ))
-        
+
         # 低准确率告警
         if metrics.avg_accuracy and metrics.avg_accuracy < self.alert_thresholds["accuracy_min"]:
             alerts.append(AgentAlert(
@@ -473,20 +473,20 @@ class AgentMonitor:
                 threshold_value=self.alert_thresholds["accuracy_min"],
                 created_at=datetime.now(),
             ))
-        
+
         return alerts
-    
+
     def _calc_trend(self, agent_type: AgentType, metric: str, time_window: str) -> str:
         """计算指标趋势"""
         # 比较当前窗口和上一个窗口
         current = self._query_metric_avg(agent_type, metric, time_window)
         previous = self._query_metric_avg(agent_type, metric, time_window, offset=1)
-        
+
         if previous == 0:
             return "stable"
-        
+
         change_pct = (current - previous) / previous
-        
+
         if metric == "accuracy":
             if change_pct > 0.05:
                 return "improving"
@@ -497,7 +497,7 @@ class AgentMonitor:
                 return "degrading"
             elif change_pct < -0.2:
                 return "improving"
-        
+
         return "stable"
 
 ---
@@ -515,19 +515,19 @@ class HumanFeedback:
     feedback_id: str
     invocation_id: str
     agent_type: AgentType
-    
+
     # 评分
     rating: int  # 1-5
     accuracy_correct: Optional[bool]
-    
+
     # 反馈内容
     feedback_text: Optional[str]
     issues_found: list[str]
     suggestions: list[str]
-    
+
     # 标注数据
     corrected_output: Optional[Dict[str, Any]]
-    
+
     # 元数据
     reviewer_id: str
     review_time_seconds: int
@@ -538,16 +538,16 @@ class FeedbackSummary:
     """反馈汇总"""
     agent_type: AgentType
     time_window: str
-    
+
     total_feedbacks: int
     avg_rating: float
     rating_distribution: Dict[int, int]
-    
+
     common_issues: list[tuple[str, int]]  # [(issue, count), ...]
     common_suggestions: list[tuple[str, int]]
-    
+
     accuracy_rate: float  # 人工验证的准确率
-    
+
     calculated_at: datetime
 ```
 
@@ -557,30 +557,30 @@ class FeedbackSummary:
 ```python
 class HumanFeedbackCollector:
     """人工反馈收集器"""
-    
+
     def __init__(self, db_path: str):
         self.db_path = db_path
-    
+
     def submit_feedback(self, feedback: HumanFeedback) -> None:
         """提交人工反馈"""
         self._save_feedback(feedback)
-        
+
         # 更新 Agent 评估记录
         self._update_evaluation_with_feedback(feedback)
-        
+
         # 如果有修正的输出，保存为训练数据
         if feedback.corrected_output:
             self._save_training_example(feedback)
-    
+
     def get_feedback_summary(
         self,
         agent_type: AgentType,
         time_window: str = "7d"
     ) -> FeedbackSummary:
         """获取反馈汇总"""
-        
+
         feedbacks = self._query_feedbacks(agent_type, time_window)
-        
+
         if not feedbacks:
             return FeedbackSummary(
                 agent_type=agent_type,
@@ -593,32 +593,32 @@ class HumanFeedbackCollector:
                 accuracy_rate=0.0,
                 calculated_at=datetime.now(),
             )
-        
+
         # 计算评分分布
         rating_dist = {}
         for fb in feedbacks:
             rating_dist[fb.rating] = rating_dist.get(fb.rating, 0) + 1
-        
+
         # 统计常见问题
         issue_counts = {}
         for fb in feedbacks:
             for issue in fb.issues_found:
                 issue_counts[issue] = issue_counts.get(issue, 0) + 1
-        
+
         common_issues = sorted(issue_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        
+
         # 统计常见建议
         suggestion_counts = {}
         for fb in feedbacks:
             for suggestion in fb.suggestions:
                 suggestion_counts[suggestion] = suggestion_counts.get(suggestion, 0) + 1
-        
+
         common_suggestions = sorted(suggestion_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        
+
         # 计算准确率
         accuracy_feedbacks = [fb for fb in feedbacks if fb.accuracy_correct is not None]
         accuracy_rate = sum(1 for fb in accuracy_feedbacks if fb.accuracy_correct) / len(accuracy_feedbacks) if accuracy_feedbacks else 0.0
-        
+
         return FeedbackSummary(
             agent_type=agent_type,
             time_window=time_window,
@@ -630,7 +630,7 @@ class HumanFeedbackCollector:
             accuracy_rate=accuracy_rate,
             calculated_at=datetime.now(),
         )
-    
+
     def get_training_examples(
         self,
         agent_type: AgentType,
@@ -638,10 +638,10 @@ class HumanFeedbackCollector:
         limit: int = 100
     ) -> list[Dict[str, Any]]:
         """获取高质量训练样本"""
-        
+
         # 查询高评分且有修正输出的反馈
         examples = self._query_training_examples(agent_type, min_rating, limit)
-        
+
         return examples
 
 ---
@@ -655,30 +655,30 @@ CREATE TABLE agent_invocations (
     invocation_id TEXT PRIMARY KEY,
     agent_type TEXT NOT NULL,
     agent_version TEXT NOT NULL,
-    
+
     -- 输入输出
     input_data JSON NOT NULL,
     output_data JSON,
-    
+
     -- 执行信息
     status TEXT NOT NULL,
     start_time TIMESTAMP NOT NULL,
     end_time TIMESTAMP,
     duration_ms INTEGER,
-    
+
     -- API 信息
     model_name TEXT NOT NULL,
     prompt_tokens INTEGER NOT NULL,
     completion_tokens INTEGER NOT NULL,
     total_tokens INTEGER NOT NULL,
     api_cost_usd REAL NOT NULL,
-    
+
     -- 错误信息
     error_message TEXT,
     error_traceback TEXT,
-    
+
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
+
     INDEX idx_agent_type_time (agent_type, created_at),
     INDEX idx_status (status)
 );
@@ -691,23 +691,23 @@ CREATE TABLE agent_evaluations (
     evaluation_id TEXT PRIMARY KEY,
     invocation_id TEXT NOT NULL,
     agent_type TEXT NOT NULL,
-    
+
     -- 质量评分
     accuracy_score REAL,
     confidence_score REAL NOT NULL,
     human_rating INTEGER,
-    
+
     -- 性能指标
     latency_ms INTEGER NOT NULL,
     cost_usd REAL NOT NULL,
-    
+
     -- 验证结果
     is_verified BOOLEAN NOT NULL,
     verification_method TEXT NOT NULL,
     verification_notes TEXT,
-    
+
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
+
     FOREIGN KEY (invocation_id) REFERENCES agent_invocations(invocation_id),
     INDEX idx_agent_type_time (agent_type, created_at)
 );
@@ -720,24 +720,24 @@ CREATE TABLE human_feedbacks (
     feedback_id TEXT PRIMARY KEY,
     invocation_id TEXT NOT NULL,
     agent_type TEXT NOT NULL,
-    
+
     -- 评分
     rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
     accuracy_correct BOOLEAN,
-    
+
     -- 反馈内容
     feedback_text TEXT,
     issues_found JSON,
     suggestions JSON,
-    
+
     -- 标注数据
     corrected_output JSON,
-    
+
     -- 元数据
     reviewer_id TEXT NOT NULL,
     review_time_seconds INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
+
     FOREIGN KEY (invocation_id) REFERENCES agent_invocations(invocation_id),
     INDEX idx_agent_type_time (agent_type, created_at),
     INDEX idx_rating (rating)
@@ -756,15 +756,15 @@ CREATE TABLE agent_alerts (
     message TEXT NOT NULL,
     metric_value REAL NOT NULL,
     threshold_value REAL NOT NULL,
-    
+
     -- 处理状态
     is_resolved BOOLEAN DEFAULT FALSE,
     resolved_at TIMESTAMP,
     resolved_by TEXT,
     resolution_notes TEXT,
-    
+
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
+
     INDEX idx_agent_type_severity (agent_type, severity),
     INDEX idx_unresolved (is_resolved, created_at)
 );
@@ -777,15 +777,15 @@ CREATE TABLE agent_training_examples (
     example_id TEXT PRIMARY KEY,
     agent_type TEXT NOT NULL,
     feedback_id TEXT NOT NULL,
-    
+
     input_data JSON NOT NULL,
     expected_output JSON NOT NULL,
-    
+
     quality_score REAL NOT NULL,
     is_validated BOOLEAN DEFAULT FALSE,
-    
+
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
+
     FOREIGN KEY (feedback_id) REFERENCES human_feedbacks(feedback_id),
     INDEX idx_agent_type_quality (agent_type, quality_score DESC)
 );
@@ -812,7 +812,7 @@ start_time = datetime.now()
 try:
     # 调用 Agent
     output = rule2spec_agent.parse(market_rules)
-    
+
     # 记录成功调用
     invocation = AgentInvocation(
         invocation_id=str(uuid.uuid4()),
@@ -832,9 +832,9 @@ try:
         error_message=None,
         error_traceback=None,
     )
-    
+
     monitor.record_invocation(invocation)
-    
+
 except Exception as e:
     # 记录失败调用
     invocation = AgentInvocation(
@@ -855,7 +855,7 @@ except Exception as e:
         error_message=str(e),
         error_traceback=traceback.format_exc(),
     )
-    
+
     monitor.record_invocation(invocation)
 ```
 
@@ -1045,9 +1045,9 @@ with st.form("feedback_form"):
         options=["missing_field", "wrong_value", "format_error", "logic_error", "other"],
     )
     suggestions = st.text_area("Suggestions (one per line)")
-    
+
     submitted = st.form_submit_button("Submit Feedback")
-    
+
     if submitted:
         feedback = HumanFeedback(
             feedback_id=str(uuid.uuid4()),
@@ -1063,7 +1063,7 @@ with st.form("feedback_form"):
             review_time_seconds=0,
             created_at=datetime.now(),
         )
-        
+
         collector.submit_feedback(feedback)
         st.success("Feedback submitted!")
         st.rerun()
@@ -1144,23 +1144,23 @@ ALERT_RULES = {
 ```python
 class AlertNotifier:
     """告警通知器"""
-    
+
     def __init__(self, webhook_url: Optional[str] = None):
         self.webhook_url = webhook_url
-    
+
     def send_alert(self, alert: AgentAlert) -> None:
         """发送告警"""
-        
+
         # 记录到日志
         logger.warning(f"Agent alert: {alert.message}")
-        
+
         # 发送到 Slack/Discord
         if self.webhook_url:
             self._send_webhook(alert)
-        
+
         # 保存到数据库
         self._save_alert(alert)
-    
+
     def _send_webhook(self, alert: AgentAlert) -> None:
         """发送 webhook 通知"""
         payload = {
@@ -1183,7 +1183,7 @@ class AlertNotifier:
                 }
             ]
         }
-        
+
         requests.post(self.webhook_url, json=payload)
 ```
 
@@ -1196,35 +1196,35 @@ class AlertNotifier:
 ```python
 class PromptOptimizer:
     """Prompt 优化器"""
-    
+
     def __init__(self, feedback_collector: HumanFeedbackCollector):
         self.feedback_collector = feedback_collector
-    
+
     def analyze_feedback(self, agent_type: AgentType) -> Dict[str, Any]:
         """分析反馈，识别改进机会"""
-        
+
         summary = self.feedback_collector.get_feedback_summary(agent_type, "30d")
-        
+
         # 识别常见问题
         common_issues = summary.common_issues[:3]
-        
+
         # 获取低评分样本
         low_rating_examples = self._get_low_rating_examples(agent_type, max_rating=2)
-        
+
         # 获取高评分样本
         high_rating_examples = self._get_high_rating_examples(agent_type, min_rating=4)
-        
+
         return {
             "common_issues": common_issues,
             "low_rating_count": len(low_rating_examples),
             "high_rating_count": len(high_rating_examples),
             "improvement_suggestions": self._generate_suggestions(common_issues),
         }
-    
+
     def _generate_suggestions(self, issues: list) -> list[str]:
         """根据常见问题生成改进建议"""
         suggestions = []
-        
+
         for issue, count in issues:
             if issue == "missing_field":
                 suggestions.append("Add explicit field extraction instructions to prompt")
@@ -1232,7 +1232,7 @@ class PromptOptimizer:
                 suggestions.append("Add validation examples to prompt")
             elif issue == "format_error":
                 suggestions.append("Add output format schema to prompt")
-        
+
         return suggestions
 ```
 
@@ -1241,28 +1241,28 @@ class PromptOptimizer:
 ```python
 class AgentABTest:
     """Agent A/B 测试"""
-    
+
     def __init__(self, agent_type: AgentType, variant_a: str, variant_b: str):
         self.agent_type = agent_type
         self.variant_a = variant_a
         self.variant_b = variant_b
         self.traffic_split = 0.5  # 50/50 split
-    
+
     def select_variant(self, invocation_id: str) -> str:
         """选择测试变体"""
         # 使用 invocation_id 的哈希值决定分组
         hash_val = int(hashlib.md5(invocation_id.encode()).hexdigest(), 16)
         return self.variant_a if hash_val % 2 == 0 else self.variant_b
-    
+
     def get_test_results(self, min_samples: int = 100) -> Dict[str, Any]:
         """获取测试结果"""
-        
+
         results_a = self._get_variant_metrics(self.variant_a)
         results_b = self._get_variant_metrics(self.variant_b)
-        
+
         if results_a["sample_count"] < min_samples or results_b["sample_count"] < min_samples:
             return {"status": "insufficient_data"}
-        
+
         # 比较关键指标
         comparison = {
             "accuracy": {
@@ -1281,7 +1281,7 @@ class AgentABTest:
                 "winner": "a" if results_a["avg_cost"] < results_b["avg_cost"] else "b",
             },
         }
-        
+
         return {
             "status": "complete",
             "comparison": comparison,
@@ -1306,7 +1306,7 @@ from decimal import Decimal
 def test_rule2spec_accuracy_calculation():
     """测试 Rule2Spec 准确率计算"""
     evaluator = AgentEvaluator(db_path=":memory:")
-    
+
     invocation = AgentInvocation(
         invocation_id="test_001",
         agent_type=AgentType.RULE2SPEC,
@@ -1331,7 +1331,7 @@ def test_rule2spec_accuracy_calculation():
         error_message=None,
         error_traceback=None,
     )
-    
+
     ground_truth = {
         "city": "New York",
         "date": "2026-03-15",
@@ -1339,16 +1339,16 @@ def test_rule2spec_accuracy_calculation():
         "threshold_low": 70,
         "threshold_high": 75,
     }
-    
+
     evaluation = evaluator.evaluate_rule2spec(invocation, ground_truth)
-    
+
     assert evaluation.accuracy_score == 1.0
     assert evaluation.is_verified is True
 
 def test_data_qa_detection_accuracy():
     """测试 Data QA 检测准确率"""
     evaluator = AgentEvaluator(db_path=":memory:")
-    
+
     invocation = AgentInvocation(
         invocation_id="test_002",
         agent_type=AgentType.DATA_QA,
@@ -1370,11 +1370,11 @@ def test_data_qa_detection_accuracy():
         error_message=None,
         error_traceback=None,
     )
-    
+
     actual_issues = ["missing_data", "outlier", "format_error"]
-    
+
     evaluation = evaluator.evaluate_data_qa(invocation, actual_issues)
-    
+
     # F1 score: TP=2, FP=0, FN=1
     # Precision=1.0, Recall=0.67, F1=0.8
     assert evaluation.accuracy_score == pytest.approx(0.8, abs=0.01)
@@ -1387,15 +1387,15 @@ def test_monitor_workflow():
     """测试完整监控流程"""
     evaluator = AgentEvaluator(db_path=":memory:")
     monitor = AgentMonitor(db_path=":memory:", evaluator=evaluator)
-    
+
     # 记录多次调用
     for i in range(10):
         invocation = create_test_invocation(f"test_{i}")
         monitor.record_invocation(invocation)
-    
+
     # 获取指标
     metrics = monitor.get_metrics(AgentType.RULE2SPEC, "1h")
-    
+
     assert metrics.total_invocations == 10
     assert metrics.success_rate > 0
     assert metrics.avg_latency_ms > 0
@@ -1403,7 +1403,7 @@ def test_monitor_workflow():
 def test_feedback_collection():
     """测试反馈收集"""
     collector = HumanFeedbackCollector(db_path=":memory:")
-    
+
     feedback = HumanFeedback(
         feedback_id="fb_001",
         invocation_id="inv_001",
@@ -1418,9 +1418,9 @@ def test_feedback_collection():
         review_time_seconds=30,
         created_at=datetime.now(),
     )
-    
+
     collector.submit_feedback(feedback)
-    
+
     summary = collector.get_feedback_summary(AgentType.RULE2SPEC, "7d")
     assert summary.total_feedbacks == 1
     assert summary.avg_rating == 4.0
@@ -1432,25 +1432,25 @@ def test_feedback_collection():
 def test_monitor_performance():
     """测试监控性能"""
     import time
-    
+
     evaluator = AgentEvaluator(db_path=":memory:")
     monitor = AgentMonitor(db_path=":memory:", evaluator=evaluator)
-    
+
     # 记录 1000 次调用
     start = time.time()
     for i in range(1000):
         invocation = create_test_invocation(f"perf_{i}")
         monitor.record_invocation(invocation)
     duration = time.time() - start
-    
+
     # 应该在 10 秒内完成
     assert duration < 10.0
-    
+
     # 查询性能
     start = time.time()
     metrics = monitor.get_metrics(AgentType.RULE2SPEC, "1h")
     query_duration = time.time() - start
-    
+
     # 查询应该在 100ms 内完成
     assert query_duration < 0.1
 ```
@@ -1493,21 +1493,21 @@ agent_monitor:
     path: "data/asterion.db"
     backup_enabled: true
     backup_interval_hours: 24
-  
+
   alert_thresholds:
     latency_p95_ms: 5000
     failure_rate: 0.1
     accuracy_min: 0.8
     cost_spike_multiplier: 3.0
-  
+
   alert_notifier:
     webhook_url: "${SLACK_WEBHOOK_URL}"
     enabled: true
-  
+
   feedback:
     auto_request_on_low_confidence: true
     confidence_threshold: 0.7
-  
+
   ab_testing:
     enabled: false
     traffic_split: 0.5
@@ -1541,38 +1541,38 @@ RETENTION_POLICY = {
 ```python
 class DataRetentionManager:
     """数据保留管理器"""
-    
+
     def __init__(self, db_path: str, retention_policy: Dict[str, Any]):
         self.db_path = db_path
         self.retention_policy = retention_policy
-    
+
     def cleanup_old_data(self) -> Dict[str, int]:
         """清理过期数据"""
         results = {}
-        
+
         # 清理过期的 invocations
         deleted = self._cleanup_invocations()
         results["invocations_deleted"] = deleted
-        
+
         # 清理过期的 evaluations
         deleted = self._cleanup_evaluations()
         results["evaluations_deleted"] = deleted
-        
+
         # 清理已解决的告警
         deleted = self._cleanup_resolved_alerts()
         results["alerts_deleted"] = deleted
-        
+
         return results
-    
+
     def _cleanup_invocations(self) -> int:
         """清理过期的调用记录"""
         retention_days = int(self.retention_policy["agent_invocations"]["raw_data"].rstrip("d"))
-        
+
         query = f"""
         DELETE FROM agent_invocations
         WHERE created_at < datetime('now', '-{retention_days} days')
         """
-        
+
         # 执行删除
         return self._execute_delete(query)
 ```
@@ -1685,23 +1685,23 @@ class DataRetentionManager:
 ```python
 class AgentDebugger:
     """Agent 调试工具"""
-    
+
     def replay_invocation(self, invocation_id: str) -> Dict[str, Any]:
         """重放 Agent 调用"""
         invocation = self._load_invocation(invocation_id)
-        
+
         # 使用相同输入重新调用 Agent
         result = self._call_agent(
             agent_type=invocation.agent_type,
             input_data=invocation.input_data,
         )
-        
+
         return {
             "original_output": invocation.output_data,
             "replay_output": result,
             "is_consistent": invocation.output_data == result,
         }
-    
+
     def compare_versions(
         self,
         invocation_id: str,
@@ -1710,19 +1710,19 @@ class AgentDebugger:
     ) -> Dict[str, Any]:
         """比较不同版本的输出"""
         invocation = self._load_invocation(invocation_id)
-        
+
         output_a = self._call_agent_version(
             agent_type=invocation.agent_type,
             version=version_a,
             input_data=invocation.input_data,
         )
-        
+
         output_b = self._call_agent_version(
             agent_type=invocation.agent_type,
             version=version_b,
             input_data=invocation.input_data,
         )
-        
+
         return {
             "version_a": output_a,
             "version_b": output_b,
@@ -1744,12 +1744,12 @@ Agent Monitor 为 Operator UI 提供以下接口：
 def render_agent_status():
     """渲染 Agent 状态组件"""
     monitor = get_agent_monitor()
-    
+
     for agent_type in AgentType:
         metrics = monitor.get_metrics(agent_type, "1h")
-        
+
         status = "🟢" if metrics.success_rate > 0.95 else "🟡" if metrics.success_rate > 0.9 else "🔴"
-        
+
         st.metric(
             label=f"{status} {agent_type.value}",
             value=f"{metrics.success_rate:.1%}",
@@ -1764,18 +1764,18 @@ def render_agent_status():
 ```python
 class AgentRiskIntegration:
     """Agent 风控集成"""
-    
+
     def check_agent_health(self, agent_type: AgentType) -> bool:
         """检查 Agent 健康状态"""
         metrics = self.monitor.get_metrics(agent_type, "1h")
-        
+
         # 如果准确率过低，禁用自动执行
         if metrics.avg_accuracy and metrics.avg_accuracy < 0.7:
             self.risk_manager.disable_auto_execution(
                 reason=f"{agent_type.value} accuracy too low: {metrics.avg_accuracy:.2%}"
             )
             return False
-        
+
         return True
 ```
 
@@ -1790,7 +1790,7 @@ from dagster import asset, AssetExecutionContext
 def agent_metrics_hourly(context: AssetExecutionContext):
     """每小时计算 Agent 指标"""
     monitor = get_agent_monitor()
-    
+
     for agent_type in AgentType:
         metrics = monitor.get_metrics(agent_type, "1h")
         context.log.info(f"{agent_type.value}: {metrics.success_rate:.2%} success rate")

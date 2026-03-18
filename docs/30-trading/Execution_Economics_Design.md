@@ -1,8 +1,8 @@
 # Execution Economics Design
 
-**版本**: v1.0  
-**更新日期**: 2026-03-17  
-**状态**: historical accepted supporting design (`Post-P4 Phase 12` / `Post-P4 Phase 14`)  
+**版本**: v1.0
+**更新日期**: 2026-03-17
+**状态**: historical accepted supporting design (`Post-P4 Phase 12` / `Post-P4 Phase 14`)
 **对应阶段**: `Post-P4 Phase 12: Execution Economics and Ranking v2`, `Post-P4 Phase 14: Execution Feedback Loop and Cohort Priors`
 
 ---

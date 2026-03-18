@@ -51,11 +51,15 @@ class DocsIndexHygieneTest(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertIn("Checklist_Index.md", text)
         self.assertIn(
+            "Version_Index.md",
+            (ROOT / "README.md").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
             "Analysis_Index.md",
             (ROOT / "README.md").read_text(encoding="utf-8"),
         )
 
-    def test_v2_planning_entry_and_archived_p4_are_consistent(self) -> None:
+    def test_version_tree_and_active_entry_are_consistent(self) -> None:
         docs = [
             ROOT / "README.md",
             ROOT / "AGENTS.md",
@@ -64,14 +68,19 @@ class DocsIndexHygieneTest(unittest.TestCase):
         ]
         for path in docs:
             text = path.read_text(encoding="utf-8")
+            self.assertIn("versions/v2.0/phase-plans/V2_Implementation_Plan.md", text)
             self.assertIn("V2_Implementation_Plan.md", text)
-            self.assertIn("v2.0 planning", text)
+            self.assertIn("v2.0 implementation active", text)
+            self.assertNotIn("v2.0 planning", text)
+        version_index = (ROOT / "docs" / "00-overview" / "Version_Index.md").read_text(encoding="utf-8")
+        for needle in ["v1.0", "v1.0-remediation", "v2.0", "当前 active version: `v2.0`"]:
+            self.assertIn(needle, version_index)
         p4_docs = [
-            ROOT / "docs" / "10-implementation" / "phase-plans" / "P4_Implementation_Plan.md",
-            ROOT / "docs" / "10-implementation" / "checklists" / "P4_Closeout_Checklist.md",
-            ROOT / "docs" / "10-implementation" / "runbooks" / "P4_Controlled_Rollout_Decision_Runbook.md",
-            ROOT / "docs" / "10-implementation" / "runbooks" / "P4_Controlled_Live_Smoke_Runbook.md",
-            ROOT / "docs" / "10-implementation" / "runbooks" / "P4_Real_Weather_Chain_Smoke_Runbook.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0" / "phase-plans" / "P4_Implementation_Plan.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0" / "checklists" / "P4_Closeout_Checklist.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0" / "runbooks" / "P4_Controlled_Rollout_Decision_Runbook.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0" / "runbooks" / "P4_Controlled_Live_Smoke_Runbook.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0" / "runbooks" / "P4_Real_Weather_Chain_Smoke_Runbook.md",
         ]
         for path in p4_docs:
             text = path.read_text(encoding="utf-8")

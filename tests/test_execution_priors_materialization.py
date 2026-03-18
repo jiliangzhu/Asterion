@@ -34,6 +34,19 @@ class ExecutionPriorsMaterializationTest(unittest.TestCase):
     def _insert_market_spec(self, con) -> None:
         con.execute(
             """
+            INSERT INTO weather.weather_markets (
+                market_id, condition_id, event_id, slug, title, description, rules, status,
+                active, closed, archived, accepting_orders, enable_order_book, tags_json,
+                outcomes_json, token_ids_json, close_time, end_date, created_at, updated_at, raw_market_json
+            ) VALUES (
+                'mkt_exec', 'cond_exec', 'evt_exec', 'mkt_exec', 'mkt_exec', 'desc', 'rules', 'active',
+                TRUE, FALSE, FALSE, TRUE, TRUE, '["Weather"]', '["YES","NO"]', '["tok_yes","tok_no"]',
+                '2026-03-16 12:00:00', '2026-03-16 12:00:00', '2026-03-15 00:00:00', '2026-03-15 00:00:00', '{}'
+            )
+            """
+        )
+        con.execute(
+            """
             INSERT INTO weather.weather_market_specs (
                 market_id, condition_id, location_name, station_id, latitude, longitude, timezone, observation_date,
                 observation_window_local, metric, unit, bucket_min_value, bucket_max_value, authoritative_source,
@@ -61,6 +74,8 @@ class ExecutionPriorsMaterializationTest(unittest.TestCase):
                     "spread_bps": 40,
                     "edge_bps_executable": 900,
                     "reference_price": 0.40,
+                    "calibration_bias_quality": "healthy",
+                    "source_freshness_status": "fresh",
                 }
             }
         )
@@ -144,10 +159,16 @@ class ExecutionPriorsMaterializationTest(unittest.TestCase):
                 self.assertEqual(prior.side, "BUY")
                 self.assertEqual(prior.horizon_bucket, "0-1")
                 self.assertEqual(prior.liquidity_bucket, "deep")
+                self.assertEqual(prior.station_id, "KSEA")
+                self.assertEqual(prior.metric, "temperature_max")
+                self.assertEqual(prior.market_age_bucket, "new")
+                self.assertEqual(prior.hours_to_close_bucket, "24-72")
                 self.assertEqual(prior.sample_count, 10)
                 self.assertEqual(prior.prior_quality_status, "ready")
                 self.assertGreater(prior.fill_rate, 0.0)
                 self.assertGreater(prior.resolution_rate, 0.0)
+                self.assertGreater(prior.submit_latency_ms_p50 or 0.0, 0.0)
+                self.assertGreater(prior.fill_latency_ms_p50 or 0.0, 0.0)
                 self.assertEqual(prior.cohort_key, "mkt_exec")
                 self.assertEqual(prior.feedback_status, "sparse")
                 self.assertGreaterEqual(prior.feedback_penalty, 0.0)
@@ -177,6 +198,8 @@ class ExecutionPriorsMaterializationTest(unittest.TestCase):
             self.assertEqual(loaded.sample_count, 10)
             self.assertAlmostEqual(loaded.submit_ack_rate, 1.0)
             self.assertAlmostEqual(loaded.fill_rate, 1.0)
+            self.assertEqual(loaded.prior_lookup_mode, "exact_market")
+            self.assertIn("lookup_mode", loaded.prior_feature_scope)
             self.assertIsNotNone(loaded.feedback_prior)
             assert loaded.feedback_prior is not None
             self.assertEqual(loaded.feedback_prior.feedback_status, "sparse")

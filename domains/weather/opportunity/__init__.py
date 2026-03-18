@@ -15,6 +15,11 @@ from .execution_priors import (
     load_execution_prior_summary,
     materialize_execution_priors,
 )
+from .ranking_retrospective import (
+    enqueue_ranking_retrospective_row_upserts,
+    enqueue_ranking_retrospective_run_upserts,
+    materialize_ranking_retrospective,
+)
 from .service import (
     build_market_quality_assessment,
     build_source_health_snapshot,
@@ -39,5 +44,8 @@ __all__ = [
     "execution_prior_key_id",
     "execution_prior_liquidity_bucket",
     "load_execution_prior_summary",
+    "enqueue_ranking_retrospective_row_upserts",
+    "enqueue_ranking_retrospective_run_upserts",
     "materialize_execution_priors",
+    "materialize_ranking_retrospective",
 ]

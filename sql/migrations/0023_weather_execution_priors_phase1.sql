@@ -1,0 +1,12 @@
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS station_id TEXT;
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS metric TEXT;
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS market_age_bucket TEXT DEFAULT 'unknown';
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS hours_to_close_bucket TEXT DEFAULT 'unknown';
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS calibration_quality_bucket TEXT DEFAULT 'sparse_or_missing';
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS source_freshness_bucket TEXT DEFAULT 'degraded_or_missing';
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS submit_latency_ms_p50 DOUBLE;
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS submit_latency_ms_p90 DOUBLE;
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS fill_latency_ms_p50 DOUBLE;
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS fill_latency_ms_p90 DOUBLE;
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS realized_edge_retention_bps_p50 DOUBLE;
+ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS realized_edge_retention_bps_p90 DOUBLE;

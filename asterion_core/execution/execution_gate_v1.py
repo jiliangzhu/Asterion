@@ -15,9 +15,11 @@ def evaluate_execution_gate(
     available_quantity: Decimal,
     min_edge_bps: int | None = None,
     created_at: datetime | None = None,
+    allocation_context: dict[str, object] | None = None,
 ) -> GateDecision:
     reason_codes: list[str] = []
     metrics = {
+        "allocation_gate": "pass",
         "account_gate": "pass",
         "economic_gate": "pass",
         "inventory_gate": "pass",
@@ -46,6 +48,20 @@ def evaluate_execution_gate(
         metrics["account_gate"] = "fail"
     if account_capability.restricted_reason:
         metrics["restricted_reason"] = account_capability.restricted_reason
+
+    allocation_status = str((allocation_context or {}).get("allocation_status") or "").strip()
+    if allocation_status:
+        metrics["allocation_status"] = allocation_status
+    allocation_reason_codes = list((allocation_context or {}).get("allocation_reason_codes") or [])
+    if allocation_reason_codes:
+        metrics["allocation_reason_codes"] = allocation_reason_codes
+    if (allocation_context or {}).get("recommended_size") is not None:
+        metrics["recommended_size"] = str(allocation_context.get("recommended_size"))
+    if (allocation_context or {}).get("requested_size") is not None:
+        metrics["requested_size"] = str(allocation_context.get("requested_size"))
+    if allocation_status in {"blocked", "policy_missing"}:
+        reason_codes.append("allocation_blocked")
+        metrics["allocation_gate"] = "fail"
 
     required_quantity = reservation_required_quantity(ticket)
     metrics["available_quantity"] = str(available_quantity)

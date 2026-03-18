@@ -39,12 +39,31 @@ class ExecutionPriorKey:
     market_id: str | None
     strategy_id: str | None
     wallet_id: str | None
-    side: str | None
-    horizon_bucket: str | None
-    liquidity_bucket: str | None
+    station_id: str | None = None
+    metric: str | None = None
+    side: str | None = None
+    horizon_bucket: str | None = None
+    liquidity_bucket: str | None = None
+    market_age_bucket: str | None = None
+    hours_to_close_bucket: str | None = None
+    calibration_quality_bucket: str | None = None
+    source_freshness_bucket: str | None = None
 
     def __post_init__(self) -> None:
-        for name in ("market_id", "strategy_id", "wallet_id", "side", "horizon_bucket", "liquidity_bucket"):
+        for name in (
+            "market_id",
+            "strategy_id",
+            "wallet_id",
+            "station_id",
+            "metric",
+            "side",
+            "horizon_bucket",
+            "liquidity_bucket",
+            "market_age_bucket",
+            "hours_to_close_bucket",
+            "calibration_quality_bucket",
+            "source_freshness_bucket",
+        ):
             value = getattr(self, name)
             if value is not None and not str(value).strip():
                 raise ValueError(f"{name} must be non-empty when provided")
@@ -61,9 +80,17 @@ class ExecutionPriorSummary:
     cancel_rate: float
     adverse_fill_slippage_bps_p50: float | None
     adverse_fill_slippage_bps_p90: float | None
-    avg_realized_pnl: float | None
-    avg_post_trade_error: float | None
-    prior_quality_status: str
+    submit_latency_ms_p50: float | None = None
+    submit_latency_ms_p90: float | None = None
+    fill_latency_ms_p50: float | None = None
+    fill_latency_ms_p90: float | None = None
+    realized_edge_retention_bps_p50: float | None = None
+    realized_edge_retention_bps_p90: float | None = None
+    avg_realized_pnl: float | None = None
+    avg_post_trade_error: float | None = None
+    prior_quality_status: str = "missing"
+    prior_lookup_mode: str = "exact_market"
+    prior_feature_scope: dict[str, Any] | None = None
     feedback_prior: "ExecutionFeedbackPrior | None" = None
 
     def __post_init__(self) -> None:
@@ -75,6 +102,10 @@ class ExecutionPriorSummary:
                 raise ValueError(f"{name} must be between 0 and 1")
         if not self.prior_quality_status:
             raise ValueError("prior_quality_status is required")
+        if self.prior_lookup_mode not in {"exact_market", "station_metric_fallback", "heuristic_fallback"}:
+            raise ValueError("prior_lookup_mode must be exact_market/station_metric_fallback/heuristic_fallback")
+        if self.prior_feature_scope is not None and not isinstance(self.prior_feature_scope, dict):
+            raise ValueError("prior_feature_scope must be a dictionary when provided")
         if self.feedback_prior is not None and not isinstance(self.feedback_prior, ExecutionFeedbackPrior):
             raise ValueError("feedback_prior must be an ExecutionFeedbackPrior when provided")
 
@@ -193,6 +224,215 @@ class RankingScoreV2Decomposition:
 
 
 @dataclass(frozen=True)
+class RankingRetrospectiveRun:
+    run_id: str
+    baseline_version: str
+    window_start: Any
+    window_end: Any
+    snapshot_count: int
+    row_count: int
+    summary_json: dict[str, Any]
+    created_at: Any
+
+    def __post_init__(self) -> None:
+        if not self.run_id or not self.baseline_version:
+            raise ValueError("run_id and baseline_version are required")
+        if int(self.snapshot_count) < 0 or int(self.row_count) < 0:
+            raise ValueError("snapshot_count and row_count must be non-negative")
+        if not isinstance(self.summary_json, dict):
+            raise ValueError("summary_json must be a dictionary")
+
+
+@dataclass(frozen=True)
+class RankingRetrospectiveRow:
+    row_id: str
+    run_id: str
+    market_id: str
+    strategy_id: str
+    side: str
+    ranking_decile: int
+    top_k_bucket: str
+    evaluation_status: str
+    submitted_capture_ratio: float
+    fill_capture_ratio: float
+    resolution_capture_ratio: float
+    avg_ranking_score: float
+    avg_edge_bps_executable: float
+    avg_realized_pnl: float | None
+    avg_predicted_vs_realized_gap: float | None
+    forecast_replay_change_rate: float
+    top_rank_share_of_realized_pnl: float
+    window_start: Any
+    window_end: Any
+    created_at: Any
+
+    def __post_init__(self) -> None:
+        if not self.row_id or not self.run_id or not self.market_id or not self.strategy_id or not self.side:
+            raise ValueError("row_id, run_id, market_id, strategy_id, and side are required")
+        if int(self.ranking_decile) <= 0:
+            raise ValueError("ranking_decile must be positive")
+        if not self.top_k_bucket or not self.evaluation_status:
+            raise ValueError("top_k_bucket and evaluation_status are required")
+        for name in (
+            "submitted_capture_ratio",
+            "fill_capture_ratio",
+            "resolution_capture_ratio",
+            "forecast_replay_change_rate",
+            "top_rank_share_of_realized_pnl",
+        ):
+            value = float(getattr(self, name))
+            if not (0.0 <= value <= 1.0):
+                raise ValueError(f"{name} must be between 0 and 1")
+
+
+@dataclass(frozen=True)
+class RankingRetrospectiveSummary:
+    baseline_version: str
+    snapshot_count: int
+    row_count: int
+    top_decile_submitted_capture_ratio: float
+    top_decile_fill_capture_ratio: float
+    top_decile_resolution_capture_ratio: float
+    top_decile_realized_pnl: float | None
+    top_decile_realized_pnl_share: float
+
+    def __post_init__(self) -> None:
+        if not self.baseline_version:
+            raise ValueError("baseline_version is required")
+        if int(self.snapshot_count) < 0 or int(self.row_count) < 0:
+            raise ValueError("snapshot_count and row_count must be non-negative")
+        for name in (
+            "top_decile_submitted_capture_ratio",
+            "top_decile_fill_capture_ratio",
+            "top_decile_resolution_capture_ratio",
+            "top_decile_realized_pnl_share",
+        ):
+            value = float(getattr(self, name))
+            if not (0.0 <= value <= 1.0):
+                raise ValueError(f"{name} must be between 0 and 1")
+
+
+@dataclass(frozen=True)
+class CapitalAllocationRun:
+    allocation_run_id: str
+    run_id: str
+    wallet_id: str
+    strategy_id: str | None
+    source_kind: str
+    requested_decision_count: int
+    decision_count: int
+    approved_count: int
+    resized_count: int
+    blocked_count: int
+    policy_missing_count: int
+    requested_buy_notional_total: float
+    recommended_buy_notional_total: float
+    created_at: Any
+
+    def __post_init__(self) -> None:
+        for name in ("allocation_run_id", "run_id", "wallet_id", "source_kind"):
+            if not str(getattr(self, name) or "").strip():
+                raise ValueError(f"{name} is required")
+        if self.strategy_id is not None and not str(self.strategy_id).strip():
+            raise ValueError("strategy_id must be non-empty when provided")
+        for name in (
+            "requested_decision_count",
+            "decision_count",
+            "approved_count",
+            "resized_count",
+            "blocked_count",
+            "policy_missing_count",
+        ):
+            if int(getattr(self, name)) < 0:
+                raise ValueError(f"{name} must be non-negative")
+        for name in ("requested_buy_notional_total", "recommended_buy_notional_total"):
+            if float(getattr(self, name)) < 0.0:
+                raise ValueError(f"{name} must be non-negative")
+
+
+@dataclass(frozen=True)
+class AllocationDecision:
+    allocation_decision_id: str
+    allocation_run_id: str
+    run_id: str
+    decision_id: str
+    watch_snapshot_id: str
+    wallet_id: str
+    strategy_id: str
+    market_id: str
+    token_id: str
+    side: str
+    ranking_score: float
+    requested_size: float
+    recommended_size: float
+    requested_notional: float
+    recommended_notional: float
+    allocation_status: str
+    reason_codes: tuple[str, ...]
+    budget_impact: dict[str, Any]
+    policy_id: str | None
+    policy_version: str | None
+    source_kind: str
+    binding_limit_scope: str | None
+    binding_limit_key: str | None
+    created_at: Any
+
+    def __post_init__(self) -> None:
+        for name in (
+            "allocation_decision_id",
+            "allocation_run_id",
+            "run_id",
+            "decision_id",
+            "watch_snapshot_id",
+            "wallet_id",
+            "strategy_id",
+            "market_id",
+            "token_id",
+            "side",
+            "source_kind",
+        ):
+            if not str(getattr(self, name) or "").strip():
+                raise ValueError(f"{name} is required")
+        if self.allocation_status not in {"approved", "resized", "blocked", "policy_missing"}:
+            raise ValueError("allocation_status must be approved/resized/blocked/policy_missing")
+        for name in ("ranking_score", "requested_size", "recommended_size", "requested_notional", "recommended_notional"):
+            if float(getattr(self, name)) < 0.0:
+                raise ValueError(f"{name} must be non-negative")
+        if not isinstance(self.reason_codes, tuple):
+            raise ValueError("reason_codes must be a tuple")
+        if not isinstance(self.budget_impact, dict):
+            raise ValueError("budget_impact must be a dictionary")
+        for name in ("policy_id", "policy_version", "binding_limit_scope", "binding_limit_key"):
+            value = getattr(self, name)
+            if value is not None and not str(value).strip():
+                raise ValueError(f"{name} must be non-empty when provided")
+
+
+@dataclass(frozen=True)
+class PositionLimitCheck:
+    check_id: str
+    allocation_decision_id: str
+    limit_id: str
+    limit_scope: str
+    scope_key: str
+    observed_gross_notional: float
+    candidate_gross_notional: float
+    remaining_capacity: float | None
+    check_status: str
+    created_at: Any
+
+    def __post_init__(self) -> None:
+        for name in ("check_id", "allocation_decision_id", "limit_id", "limit_scope", "scope_key", "check_status"):
+            if not str(getattr(self, name) or "").strip():
+                raise ValueError(f"{name} is required")
+        for name in ("observed_gross_notional", "candidate_gross_notional"):
+            if float(getattr(self, name)) < 0.0:
+                raise ValueError(f"{name} must be non-negative")
+        if self.remaining_capacity is not None and float(self.remaining_capacity) < 0.0:
+            raise ValueError("remaining_capacity must be non-negative when provided")
+
+
+@dataclass(frozen=True)
 class OpportunityAssessment:
     assessment_id: str
     market_id: str
@@ -226,6 +466,9 @@ class OpportunityAssessment:
     feedback_penalty: float
     feedback_status: str
     cohort_prior_version: str | None
+    recommended_size: float | None
+    allocation_status: str | None
+    budget_impact: dict[str, Any] | None
     execution_prior_key: str | None
     why_ranked_json: dict[str, Any]
     ranking_score: float
@@ -285,6 +528,17 @@ class OpportunityAssessment:
             raise ValueError("feedback_status must be heuristic_only/ready/watch/sparse/degraded/missing")
         if self.cohort_prior_version is not None and not str(self.cohort_prior_version).strip():
             raise ValueError("cohort_prior_version must be non-empty when provided")
+        if self.recommended_size is not None and float(self.recommended_size) < 0.0:
+            raise ValueError("recommended_size must be non-negative when provided")
+        if self.allocation_status is not None and self.allocation_status not in {
+            "approved",
+            "resized",
+            "blocked",
+            "policy_missing",
+        }:
+            raise ValueError("allocation_status must be approved/resized/blocked/policy_missing when provided")
+        if self.budget_impact is not None and not isinstance(self.budget_impact, dict):
+            raise ValueError("budget_impact must be a dictionary when provided")
         if self.execution_prior_key is not None and not str(self.execution_prior_key).strip():
             raise ValueError("execution_prior_key must be non-empty when provided")
         if not isinstance(self.why_ranked_json, dict):

@@ -63,6 +63,9 @@ class OpportunityServiceRankingV2Test(unittest.TestCase):
         self.assertAlmostEqual(assessment.feedback_penalty, 0.2)
         self.assertEqual(assessment.cohort_prior_version, "feedback_v1")
         self.assertIn("feedback_scope_breakdown", assessment.why_ranked_json)
+        self.assertIn("prior_lookup_mode", assessment.why_ranked_json)
+        self.assertIn("latency_penalty", assessment.why_ranked_json)
+        self.assertIn("edge_retention_penalty", assessment.why_ranked_json)
 
     def test_assessment_context_carries_feedback_why_ranked_fields(self) -> None:
         assessment = build_weather_opportunity_assessment(
@@ -83,6 +86,33 @@ class OpportunityServiceRankingV2Test(unittest.TestCase):
         self.assertIn("capture_probability", assessment.assessment_context_json)
         self.assertEqual(assessment.assessment_context_json["why_ranked_json"]["version"], "ranking_v2")
         self.assertEqual(assessment.assessment_context_json["ranking_score"], assessment.ranking_score)
+
+    def test_injected_allocation_fields_flow_into_assessment_and_why_ranked(self) -> None:
+        assessment = build_weather_opportunity_assessment(
+            market_id="mkt_alloc",
+            token_id="tok_yes",
+            outcome="YES",
+            reference_price=0.42,
+            model_fair_value=0.70,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="shadow_aligned",
+            recommended_size=4.0,
+            allocation_status="resized",
+            budget_impact={"remaining_run_budget": 0.0, "binding_limit_scope": "market"},
+            allocation_decision_id="alloc_1",
+            policy_id="policy_exact",
+            policy_version="alloc_v1",
+        )
+        self.assertEqual(assessment.recommended_size, 4.0)
+        self.assertEqual(assessment.allocation_status, "resized")
+        self.assertEqual(assessment.budget_impact["binding_limit_scope"], "market")
+        self.assertEqual(assessment.why_ranked_json["allocation_decision_id"], "alloc_1")
+        self.assertEqual(assessment.why_ranked_json["policy_id"], "policy_exact")
+        self.assertEqual(assessment.assessment_context_json["allocation_status"], "resized")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 # Controlled Live Boundary Design
 
-**版本**: v1.1  
-**更新日期**: 2026-03-17  
-**状态**: historical accepted supporting design (`Post-P4 Phase 10`)  
+**版本**: v1.1
+**更新日期**: 2026-03-17
+**状态**: historical accepted supporting design (`Post-P4 Phase 10`)
 **对应阶段**: `Post-P4 Phase 10: Boundary Hardening v2`
 
 ---

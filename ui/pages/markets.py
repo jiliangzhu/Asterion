@@ -185,6 +185,8 @@ def show() -> None:
                     "edge_bps",
                     "edge_bps_model",
                     "ranking_score",
+                    "recommended_size",
+                    "allocation_status",
                     "source_badge",
                     "liquidity_proxy",
                     "mapping_confidence",
@@ -222,12 +224,22 @@ def show() -> None:
                         {"字段": "Capture Probability", "值": top_display_row.get("capture_probability")},
                         {"字段": "Feedback Status", "值": top_display_row.get("feedback_status")},
                         {"字段": "Feedback Penalty", "值": top_display_row.get("feedback_penalty")},
+                        {"字段": "Recommended Size", "值": top_display_row.get("recommended_size")},
+                        {"字段": "Allocation Status", "值": top_display_row.get("allocation_status")},
+                        {"字段": "Allocation Decision", "值": top_display_row.get("allocation_decision_id")},
                         {"字段": "Actionability", "值": top_display_row.get("actionability_status")},
                     ]
                 ),
                 width="stretch",
                 hide_index=True,
             )
+            budget_impact = _json_dict(top_display_row.get("budget_impact"))
+            if budget_impact:
+                st.caption(
+                    "allocation: "
+                    f"binding_limit={budget_impact.get('binding_limit_scope') or 'none'}, "
+                    f"remaining_budget={_format_value(budget_impact.get('remaining_run_budget'))}"
+                )
 
     if display_rows.empty:
         return

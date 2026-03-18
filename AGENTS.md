@@ -12,9 +12,9 @@ Asterion 是一个面向 Polymarket 多领域事件市场的统一平台。
 
 当前仓库状态：
 
-- 当前默认开发状态是 `v2.0 planning`
-- 当前状态固定表达为 `P4 accepted; post-P4 remediation accepted; v2.0 planning`
-- active planning entry 是 `docs/10-implementation/phase-plans/V2_Implementation_Plan.md`
+- 当前默认开发状态是 `v2.0 implementation active`
+- 当前状态固定表达为 `P4 accepted; post-P4 remediation accepted; v2.0 implementation active`
+- active implementation entry 是 `docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md`
 - 当前仓库是独立的 Asterion 运行时代码仓库
 - 当前系统定位是 `operator console + constrained execution infra`，不是 unattended live stack
 
@@ -32,18 +32,19 @@ Agent 在理解任务时，默认遵守以下边界：
 
 1. `README.md`
 2. `docs/00-overview/Documentation_Index.md`
-3. `docs/00-overview/Asterion_Project_Plan.md`
-4. `docs/00-overview/DEVELOPMENT_ROADMAP.md`
-5. `docs/10-implementation/Implementation_Index.md`
-6. `docs/10-implementation/phase-plans/V2_Implementation_Plan.md`
-7. `docs/10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md`
-8. `docs/10-implementation/phase-plans/P4_Implementation_Plan.md`
-9. `docs/10-implementation/checklists/P4_Closeout_Checklist.md`
-10. `docs/10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md`
-11. `docs/10-implementation/runbooks/P4_Controlled_Live_Smoke_Runbook.md`
-12. `docs/10-implementation/checklists/P3_Closeout_Checklist.md`
-13. `docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md`
-14. `docs/10-implementation/phase-plans/P3_Implementation_Plan.md`
+3. `docs/00-overview/Version_Index.md`
+4. `docs/00-overview/versions/v2.0/Asterion_Project_Plan.md`
+5. `docs/00-overview/versions/v2.0/DEVELOPMENT_ROADMAP.md`
+6. `docs/10-implementation/Implementation_Index.md`
+7. `docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md`
+8. `docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md`
+9. `docs/10-implementation/versions/v1.0/phase-plans/P4_Implementation_Plan.md`
+10. `docs/10-implementation/versions/v1.0/checklists/P4_Closeout_Checklist.md`
+11. `docs/10-implementation/versions/v1.0/runbooks/P4_Controlled_Rollout_Decision_Runbook.md`
+12. `docs/10-implementation/versions/v1.0/runbooks/P4_Controlled_Live_Smoke_Runbook.md`
+13. `docs/10-implementation/versions/v1.0/checklists/P3_Closeout_Checklist.md`
+14. `docs/10-implementation/versions/v1.0/runbooks/P3_Paper_Execution_Runbook.md`
+15. `docs/10-implementation/versions/v1.0/phase-plans/P3_Implementation_Plan.md`
 
 文档优先级：
 
@@ -228,7 +229,7 @@ Phase 2 之后，weather 机会链还有一个固定语义约束：
 - deterministic replay
 - read-only validation
 
-当前 post-P4 remediation 阶段，仍必须保持以下边界：
+当前 `v2.0` 阶段，仍必须保持以下从 post-P4 remediation 继承的边界：
 
 - 允许：real data ingress、capability refresh、external observation、signer shell、submitter dry-run / shadow / constrained real submit backend、chain tx scaffold、controlled live readiness
 - 允许：在显式 env arm + operator approval + allowlist/cap 下的最小 `approve_usdc` controlled live smoke
@@ -315,8 +316,8 @@ python3 -m unittest discover -s tests -v
 - 新增 phase 文档时，必须同步更新 `README.md`、`Documentation_Index.md`、`Implementation_Index.md`
 - overview 文档不得把“未来规划”写成“当前已落地”
 - 若当前 active phase plan 与代码状态不符，应优先修正文档而不是继续沿错口径开发
-- 当前版本规划统一以 `docs/10-implementation/phase-plans/V2_Implementation_Plan.md` 为 planning 入口
-- `docs/10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md` 保留为 historical accepted remediation record
+- 当前版本规划统一以 `docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md` 为 active implementation entry
+- `docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md` 保留为 historical accepted remediation record
 - 若任务落在历史 remediation 主线复核，必须先对照对应 `Phase 0` 到 `Phase 4` 与 `Post-P4 Phase 5` 到 `Post-P4 Phase 15` 的交付物、non-goals 和 exit criteria
 
 ---

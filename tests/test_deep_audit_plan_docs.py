@@ -15,12 +15,12 @@ class DeepAuditPlanDocsTest(unittest.TestCase):
             ROOT / "docs" / "40-weather" / "Forecast_Calibration_v2_Design.md",
             ROOT / "docs" / "50-operations" / "Operator_Console_Truth_Source_Design.md",
             ROOT / "docs" / "20-architecture" / "UI_Read_Model_Design.md",
-            ROOT / "docs" / "10-implementation" / "checklists" / "Post_P4_P10_Closeout_Checklist.md",
-            ROOT / "docs" / "10-implementation" / "checklists" / "Post_P4_P11_Closeout_Checklist.md",
-            ROOT / "docs" / "10-implementation" / "checklists" / "Post_P4_P12_Closeout_Checklist.md",
-            ROOT / "docs" / "10-implementation" / "checklists" / "Post_P4_P13_Closeout_Checklist.md",
-            ROOT / "docs" / "10-implementation" / "checklists" / "Post_P4_P14_Closeout_Checklist.md",
-            ROOT / "docs" / "10-implementation" / "checklists" / "Post_P4_P15_Closeout_Checklist.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0-remediation" / "checklists" / "Post_P4_P10_Closeout_Checklist.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0-remediation" / "checklists" / "Post_P4_P11_Closeout_Checklist.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0-remediation" / "checklists" / "Post_P4_P12_Closeout_Checklist.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0-remediation" / "checklists" / "Post_P4_P13_Closeout_Checklist.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0-remediation" / "checklists" / "Post_P4_P14_Closeout_Checklist.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0-remediation" / "checklists" / "Post_P4_P15_Closeout_Checklist.md",
         ]
         missing = [str(path) for path in expected if not path.exists()]
         self.assertEqual(missing, [])
@@ -48,17 +48,17 @@ class DeepAuditPlanDocsTest(unittest.TestCase):
                 "Operator_Console_Truth_Source_Design.md",
                 "UI_Read_Model_Design.md",
             ],
-            ROOT / "docs" / "00-overview" / "DEVELOPMENT_ROADMAP.md": [
+            ROOT / "docs" / "00-overview" / "versions" / "v2.0" / "DEVELOPMENT_ROADMAP.md": [
                 "Deep Audit Improvement Roadmap",
                 "Post-P4 Phase 10",
                 "Post-P4 Phase 15",
             ],
-            ROOT / "docs" / "00-overview" / "Asterion_Project_Plan.md": [
+            ROOT / "docs" / "00-overview" / "versions" / "v2.0" / "Asterion_Project_Plan.md": [
                 "Post-P4 Phase 10` 到 `Post-P4 Phase 15",
                 "Controlled_Live_Boundary_Design.md",
                 "UI_Read_Model_Design.md",
             ],
-            ROOT / "docs" / "10-implementation" / "phase-plans" / "Post_P4_Remediation_Implementation_Plan.md": [
+            ROOT / "docs" / "10-implementation" / "versions" / "v1.0-remediation" / "phase-plans" / "Post_P4_Remediation_Implementation_Plan.md": [
                 "## 11. Deep Audit Improvement Roadmap",
                 "### 11.3 Post-P4 Phase 10: Boundary Hardening v2",
                 "### 11.8 Post-P4 Phase 15: UI Read-Model and Truth-Source Refactor",
@@ -72,13 +72,13 @@ class DeepAuditPlanDocsTest(unittest.TestCase):
                     missing_refs.append(f"{path}:{ref}")
         self.assertEqual(missing_refs, [])
 
-    def test_only_one_active_planning_entry_is_described(self) -> None:
+    def test_only_one_active_implementation_entry_is_described(self) -> None:
         docs = [
             ROOT / "README.md",
             ROOT / "docs" / "10-implementation" / "Implementation_Index.md",
             ROOT / "docs" / "00-overview" / "Documentation_Index.md",
-            ROOT / "docs" / "00-overview" / "DEVELOPMENT_ROADMAP.md",
-            ROOT / "docs" / "00-overview" / "Asterion_Project_Plan.md",
+            ROOT / "docs" / "00-overview" / "versions" / "v2.0" / "DEVELOPMENT_ROADMAP.md",
+            ROOT / "docs" / "00-overview" / "versions" / "v2.0" / "Asterion_Project_Plan.md",
         ]
         missing: list[str] = []
         for path in docs:
@@ -86,6 +86,27 @@ class DeepAuditPlanDocsTest(unittest.TestCase):
             if "V2_Implementation_Plan.md" not in text:
                 missing.append(str(path))
         self.assertEqual(missing, [])
+
+    def test_v2_plan_is_full_active_contract(self) -> None:
+        plan = (
+            ROOT
+            / "docs"
+            / "10-implementation"
+            / "versions"
+            / "v2.0"
+            / "phase-plans"
+            / "V2_Implementation_Plan.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("active implementation contract", plan)
+        self.assertIn("当前唯一 active implementation entry", plan)
+        self.assertIn("WS0. Truth-Source and Delivery Baseline", plan)
+        self.assertIn("Phase 0. Stabilize Current HEAD", plan)
+        self.assertIn("ui.daily_review_input.item_id", plan)
+        self.assertIn("recommended_size", plan)
+        self.assertIn("runtime.capital_allocation_runs", plan)
+        self.assertIn("runtime.calibration_profile_materializations", plan)
+        self.assertIn("manual-only / default-off / constrained", plan)
+        self.assertNotIn("planning placeholder", plan)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@
 ## 1. 为什么被归档
 
 - 原文件曾同时承担 `P1` 历史遗留、`P2` exit gate 和迁移台账补充说明，语义与 [P2_Closeout_Checklist.md](./P2_Closeout_Checklist.md) 和 [AlphaDesk_Migration_Ledger.md](../migration-ledger/AlphaDesk_Migration_Ledger.md) 重叠。
-- 当前仓库阶段状态已经切换到 `v2.0 planning`，继续把它作为并列主入口只会增加导航噪音。
+- 当前仓库阶段状态已经切换到 `v2.0 implementation active`，继续把它作为并列主入口只会增加导航噪音。
 - 因此本文件保留为历史 redirect note，不再维护细节条目。
 
 ## 2. 历史结论

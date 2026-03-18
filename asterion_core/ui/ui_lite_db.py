@@ -1411,6 +1411,7 @@ def _build_ui_lite_contract(
             target="ui.daily_review_input",
             sql_body="""
             SELECT
+                ticket.ticket_id AS item_id,
                 ticket.run_id,
                 ticket.ticket_id,
                 ticket.request_id,
@@ -1463,6 +1464,7 @@ def _create_phase_readiness_summary(con, *, report_path: Path, table_row_counts:
         CREATE OR REPLACE TABLE ui.phase_readiness_summary (
             target TEXT,
             gate_name TEXT,
+            status TEXT,
             passed BOOLEAN,
             all_passed BOOLEAN,
             go_decision TEXT,
@@ -1486,6 +1488,7 @@ def _create_phase_readiness_summary(con, *, report_path: Path, table_row_counts:
             [
                 str(payload.get("target", "")),
                 str(gate.get("gate_name", "")),
+                "pass" if bool(gate.get("passed", False)) else "fail",
                 bool(gate.get("passed", False)),
                 bool(payload.get("all_passed", False)),
                 str(payload.get("go_decision", "")),
@@ -1501,9 +1504,9 @@ def _create_phase_readiness_summary(con, *, report_path: Path, table_row_counts:
         con.executemany(
             """
             INSERT INTO ui.phase_readiness_summary (
-                target, gate_name, passed, all_passed, go_decision, decision_reason,
+                target, gate_name, status, passed, all_passed, go_decision, decision_reason,
                 generated_at, checks_json, violations_json, warnings_json, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -2412,6 +2415,7 @@ def _create_calibration_health_summary(con, *, table_row_counts: dict[str, int])
             CREATE OR REPLACE TABLE ui.calibration_health_summary (
                 station_id TEXT,
                 source TEXT,
+                metric TEXT,
                 forecast_horizon_bucket TEXT,
                 season_bucket TEXT,
                 sample_count BIGINT,
@@ -2428,6 +2432,7 @@ def _create_calibration_health_summary(con, *, table_row_counts: dict[str, int])
         SELECT
             station_id,
             source,
+            metric,
             forecast_horizon_bucket,
             season_bucket,
             ABS(residual) AS abs_residual
@@ -2440,6 +2445,7 @@ def _create_calibration_health_summary(con, *, table_row_counts: dict[str, int])
             CREATE OR REPLACE TABLE ui.calibration_health_summary (
                 station_id TEXT,
                 source TEXT,
+                metric TEXT,
                 forecast_horizon_bucket TEXT,
                 season_bucket TEXT,
                 sample_count BIGINT,
@@ -2452,8 +2458,8 @@ def _create_calibration_health_summary(con, *, table_row_counts: dict[str, int])
         table_row_counts["ui.calibration_health_summary"] = 0
         return
     rows: list[dict[str, Any]] = []
-    grouped = base.groupby(["station_id", "source", "forecast_horizon_bucket", "season_bucket"], dropna=False)
-    for (station_id, source, horizon, season), frame in grouped:
+    grouped = base.groupby(["station_id", "source", "metric", "forecast_horizon_bucket", "season_bucket"], dropna=False)
+    for (station_id, source, metric, horizon, season), frame in grouped:
         series = pd.to_numeric(frame["abs_residual"], errors="coerce").dropna()
         sample_count = int(len(series.index))
         mean_abs_residual = float(series.mean()) if sample_count else None
@@ -2470,6 +2476,7 @@ def _create_calibration_health_summary(con, *, table_row_counts: dict[str, int])
             {
                 "station_id": station_id,
                 "source": source,
+                "metric": metric,
                 "forecast_horizon_bucket": horizon,
                 "season_bucket": season,
                 "sample_count": sample_count,
@@ -2603,8 +2610,51 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
           AND COALESCE(market.archived, FALSE) = FALSE
         """
     ).df()
+    allocation_by_market: dict[str, dict[str, Any]] = {}
+    if _table_exists(con, "src.runtime.allocation_decisions"):
+        allocation_frame = con.execute(
+            """
+            SELECT
+                market_id,
+                allocation_decision_id,
+                recommended_size,
+                allocation_status,
+                budget_impact_json,
+                policy_id,
+                policy_version,
+                binding_limit_scope,
+                binding_limit_key,
+                created_at
+            FROM (
+                SELECT
+                    market_id,
+                    allocation_decision_id,
+                    recommended_size,
+                    allocation_status,
+                    budget_impact_json,
+                    policy_id,
+                    policy_version,
+                    binding_limit_scope,
+                    binding_limit_key,
+                    created_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY market_id
+                        ORDER BY created_at DESC, allocation_decision_id DESC
+                    ) AS rn
+                FROM src.runtime.allocation_decisions
+            )
+            WHERE rn = 1
+            """
+        ).df()
+        allocation_by_market = {
+            str(row["market_id"]): row.to_dict()
+            for _, row in allocation_frame.iterrows()
+            if row.get("market_id") is not None
+        }
     rows: list[dict[str, Any]] = []
     for _, row in frame.iterrows():
+        allocation_payload = allocation_by_market.get(str(row.get("market_id")))
+        budget_impact = _json_object(allocation_payload.get("budget_impact_json")) if allocation_payload else {}
         pricing_context = _json_object(row.get("pricing_context_json"))
         model_fair_value = _coerce_float(pricing_context.get("model_fair_value")) or _coerce_float(row.get("fair_value")) or 0.0
         market_price = _coerce_float(row.get("reference_price")) or 0.0
@@ -2691,6 +2741,10 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                     "feedback_penalty": 0.0,
                     "feedback_status": "heuristic_only",
                     "cohort_prior_version": None,
+                    "recommended_size": _coerce_float(allocation_payload.get("recommended_size")) if allocation_payload else None,
+                    "allocation_status": allocation_payload.get("allocation_status") if allocation_payload else None,
+                    "budget_impact": budget_impact,
+                    "allocation_decision_id": allocation_payload.get("allocation_decision_id") if allocation_payload else None,
                     "ranking_score": 0.0,
                     "execution_prior_key": None,
                     "why_ranked_json": json.dumps({}, ensure_ascii=True, sort_keys=True),
@@ -2734,6 +2788,12 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
             forecast_distribution_summary_v2=pricing_context.get("distribution_summary_v2")
             if isinstance(pricing_context.get("distribution_summary_v2"), dict)
             else None,
+            recommended_size=_coerce_float(allocation_payload.get("recommended_size")) if allocation_payload else None,
+            allocation_status=str(allocation_payload.get("allocation_status")) if allocation_payload else None,
+            budget_impact=budget_impact if allocation_payload else None,
+            allocation_decision_id=str(allocation_payload.get("allocation_decision_id")) if allocation_payload else None,
+            policy_id=str(allocation_payload.get("policy_id")) if allocation_payload and allocation_payload.get("policy_id") is not None else None,
+            policy_version=str(allocation_payload.get("policy_version")) if allocation_payload and allocation_payload.get("policy_version") is not None else None,
             source_context={
                 **pricing_context,
                 "calibration_health_status": calibration_health_status,
@@ -2800,6 +2860,10 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                 "feedback_penalty": assessment.feedback_penalty,
                 "feedback_status": assessment.feedback_status,
                 "cohort_prior_version": assessment.cohort_prior_version,
+                "recommended_size": assessment.recommended_size,
+                "allocation_status": assessment.allocation_status,
+                "budget_impact": assessment.budget_impact,
+                "allocation_decision_id": allocation_payload.get("allocation_decision_id") if allocation_payload else None,
                 "ranking_score": assessment.ranking_score,
                 "execution_prior_key": assessment.execution_prior_key,
                 "why_ranked_json": json.dumps(assessment.why_ranked_json, ensure_ascii=True, sort_keys=True),
@@ -2860,6 +2924,10 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
         "feedback_penalty",
         "feedback_status",
         "cohort_prior_version",
+        "recommended_size",
+        "allocation_status",
+        "budget_impact",
+        "allocation_decision_id",
         "ranking_score",
         "execution_prior_key",
         "why_ranked_json",

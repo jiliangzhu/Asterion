@@ -1,8 +1,8 @@
 # UI Read Model Design
 
-**版本**: v1.1  
-**更新日期**: 2026-03-17  
-**状态**: historical accepted supporting design (`Post-P4 Phase 15`)  
+**版本**: v1.1
+**更新日期**: 2026-03-17
+**状态**: historical accepted supporting design (`Post-P4 Phase 15`)
 **对应阶段**: `Post-P4 Phase 15: UI Read-Model and Truth-Source Refactor`
 
 ---

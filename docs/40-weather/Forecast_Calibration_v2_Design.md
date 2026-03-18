@@ -1,8 +1,8 @@
 # Forecast Calibration v2 Design
 
-**版本**: v1.1  
-**更新日期**: 2026-03-17  
-**状态**: historical accepted supporting design (`Post-P4 Phase 13`)  
+**版本**: v1.1
+**更新日期**: 2026-03-17
+**状态**: historical accepted supporting design (`Post-P4 Phase 13`)
 **对应阶段**: `Post-P4 Phase 13: Calibration v2 and Threshold Probability Quality`
 
 ---

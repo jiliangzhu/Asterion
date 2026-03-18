@@ -593,14 +593,25 @@ def _sort_market_opportunities(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return frame
     sortable = frame.copy()
-    sortable["_actionability_rank"] = sortable.get("actionability_status", pd.Series(dtype="object")).map(_ACTIONABILITY_ORDER).fillna(9)
+    actionability_values = (
+        sortable["actionability_status"]
+        if "actionability_status" in sortable.columns
+        else pd.Series(index=sortable.index, dtype="object")
+    )
+    sortable["_actionability_rank"] = actionability_values.map(_ACTIONABILITY_ORDER).fillna(9)
     if "ranking_score" in sortable.columns:
         ranking_values = sortable["ranking_score"]
     else:
         ranking_values = sortable.get("opportunity_score", pd.Series(index=sortable.index, dtype="float64"))
     sortable["_opportunity_score_value"] = pd.to_numeric(ranking_values, errors="coerce").fillna(-1.0)
-    sortable["_edge_bps_value"] = pd.to_numeric(sortable.get("edge_bps"), errors="coerce").fillna(-999999.0)
-    sortable["_market_close_time_value"] = sortable.get("market_close_time", pd.Series(dtype="object")).fillna("")
+    edge_values = sortable["edge_bps"] if "edge_bps" in sortable.columns else pd.Series(index=sortable.index, dtype="float64")
+    market_close_values = (
+        sortable["market_close_time"]
+        if "market_close_time" in sortable.columns
+        else pd.Series(index=sortable.index, dtype="object")
+    )
+    sortable["_edge_bps_value"] = pd.to_numeric(edge_values, errors="coerce").fillna(-999999.0)
+    sortable["_market_close_time_value"] = market_close_values.fillna("")
     sortable = sortable.sort_values(
         by=["_actionability_rank", "_opportunity_score_value", "_edge_bps_value", "_market_close_time_value"],
         ascending=[True, False, False, True],
@@ -639,6 +650,12 @@ def _build_opportunity_row(
     sample_count: int = 0,
     calibration_multiplier: float | None = None,
     calibration_reason_codes: list[str] | None = None,
+    recommended_size: float | None = None,
+    allocation_status: str | None = None,
+    budget_impact: dict[str, Any] | None = None,
+    allocation_decision_id: str | None = None,
+    policy_id: str | None = None,
+    policy_version: str | None = None,
 ) -> dict[str, Any]:
     assessment = build_weather_opportunity_assessment(
         market_id=market_id,
@@ -662,6 +679,12 @@ def _build_opportunity_row(
         sample_count=sample_count,
         calibration_multiplier=calibration_multiplier,
         calibration_reason_codes=calibration_reason_codes,
+        recommended_size=recommended_size,
+        allocation_status=allocation_status,
+        budget_impact=budget_impact,
+        allocation_decision_id=allocation_decision_id,
+        policy_id=policy_id,
+        policy_version=policy_version,
         source_context={
             "calibration_health_status": calibration_health_status,
             "calibration_bias_quality": calibration_bias_quality,
@@ -726,6 +749,10 @@ def _build_opportunity_row(
         "feedback_penalty": assessment.feedback_penalty,
         "feedback_status": assessment.feedback_status,
         "cohort_prior_version": assessment.cohort_prior_version,
+        "recommended_size": assessment.recommended_size,
+        "allocation_status": assessment.allocation_status,
+        "budget_impact": assessment.budget_impact,
+        "allocation_decision_id": allocation_decision_id,
         "ranking_score": assessment.ranking_score,
         "execution_prior_key": assessment.execution_prior_key,
         "why_ranked_json": assessment.why_ranked_json,
@@ -1675,6 +1702,11 @@ def build_ops_console_overview() -> dict[str, Any]:
         else opportunities.iloc[0:0]
     )
     top_opportunities = actionable.head(5) if not actionable.empty else opportunities.head(5)
+    action_queue = opportunities.iloc[0:0]
+    if not opportunities.empty and "allocation_status" in opportunities.columns:
+        action_queue = opportunities[
+            opportunities["allocation_status"].isin(["approved", "resized"])
+        ].head(5)
     resolved_rows = (
         predicted_vs_realized[predicted_vs_realized["evaluation_status"] == "resolved"]
         if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty)
@@ -1736,6 +1768,7 @@ def build_ops_console_overview() -> dict[str, Any]:
         "surface_status": load_operator_surface_status(),
         "boundary_sidebar_summary": load_boundary_sidebar_truth(),
         "top_opportunities": top_opportunities,
+        "action_queue": action_queue,
         "degraded_inputs": degraded_inputs,
         "largest_blocker": {"summary": largest_blocker, "source": blocker_source},
         "metrics": {
@@ -1749,6 +1782,7 @@ def build_ops_console_overview() -> dict[str, Any]:
             "weather_market_question": ((weather_report.get("market_discovery") or {}).get("question") or "未发现实时市场"),
             "weather_market_count": int(len(opportunities.index)),
             "actionable_market_count": int(len(actionable.index)),
+            "action_queue_count": int(len(action_queue.index)),
             "top_ranking_score": float(top_opportunities.iloc[0]["ranking_score"]) if (not top_opportunities.empty and "ranking_score" in top_opportunities.columns) else 0.0,
             "top_opportunity_score": float(top_opportunities.iloc[0]["ranking_score"]) if (not top_opportunities.empty and "ranking_score" in top_opportunities.columns) else 0.0,
             "highest_edge_bps": float(pd.to_numeric(opportunities["edge_bps"], errors="coerce").abs().max()) if ("edge_bps" in opportunities.columns and not opportunities.empty) else 0.0,

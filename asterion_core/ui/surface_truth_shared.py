@@ -6,9 +6,9 @@ from typing import Any
 import pandas as pd
 
 
-TRUTH_SOURCE_DOC = "docs/10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md"
+TRUTH_SOURCE_DOC = "docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md"
 SYSTEM_POSITIONING = "operator console + constrained execution infra"
-CURRENT_PHASE_STATUS = "post-P4 remediation active / closeout pending objective verification"
+CURRENT_PHASE_STATUS = "P4 accepted; post-P4 remediation accepted; v2.0 implementation active"
 PRIMARY_SCORE_FIELD = "ranking_score"
 PRIMARY_SCORE_LABEL = "Ranking Score"
 PRIMARY_SCORE_DIAGNOSTICS = (

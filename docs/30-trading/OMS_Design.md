@@ -1,8 +1,8 @@
 # OMS + Inventory + Reconciliation 详细设计
 
-**模块**: `domains/trading/oms/`  
-**版本**: v1.1  
-**更新日期**: 2026-03-08  
+**模块**: `domains/trading/oms/`
+**版本**: v1.1
+**更新日期**: 2026-03-08
 **状态**: Interface Freeze Candidate
 
 ---

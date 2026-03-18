@@ -54,6 +54,12 @@ def build_weather_opportunity_assessment(
     execution_prior_summary: ExecutionPriorSummary | None = None,
     forecast_distribution_summary_v2: dict[str, Any] | None = None,
     source_context: dict[str, Any] | None = None,
+    recommended_size: float | None = None,
+    allocation_status: str | None = None,
+    budget_impact: dict[str, Any] | None = None,
+    allocation_decision_id: str | None = None,
+    policy_id: str | None = None,
+    policy_version: str | None = None,
 ) -> OpportunityAssessment:
     normalized_fees_bps = max(0, int(fees_bps or 0))
     normalized_reference_price = float(reference_price)
@@ -225,6 +231,12 @@ def build_weather_opportunity_assessment(
             "feedback_status": feedback_status,
             "cohort_prior_version": cohort_prior_version,
             "feedback_scope_breakdown": dict(feedback_prior.scope_breakdown) if feedback_prior is not None else {},
+            "recommended_size": recommended_size,
+            "allocation_status": allocation_status,
+            "budget_impact": dict(budget_impact or {}),
+            "allocation_decision_id": allocation_decision_id,
+            "policy_id": policy_id,
+            "policy_version": policy_version,
             "ranking_score": final_ranking_score,
         }
     )
@@ -289,6 +301,12 @@ def build_weather_opportunity_assessment(
         "feedback_penalty": feedback_penalty,
         "feedback_status": feedback_status,
         "cohort_prior_version": cohort_prior_version,
+        "recommended_size": recommended_size,
+        "allocation_status": allocation_status,
+        "budget_impact": dict(budget_impact or {}) if budget_impact is not None else None,
+        "allocation_decision_id": allocation_decision_id,
+        "policy_id": policy_id,
+        "policy_version": policy_version,
         "ranking_score": final_ranking_score,
         "expected_dollar_pnl": ranking_v2.expected_dollar_pnl,
         "capture_probability": ranking_v2.capture_probability,
@@ -330,6 +348,12 @@ def build_weather_opportunity_assessment(
             "feedback_penalty": feedback_penalty,
             "feedback_status": feedback_status,
             "cohort_prior_version": cohort_prior_version,
+            "recommended_size": recommended_size,
+            "allocation_status": allocation_status,
+            "budget_impact": dict(budget_impact or {}) if budget_impact is not None else None,
+            "allocation_decision_id": allocation_decision_id,
+            "policy_id": policy_id,
+            "policy_version": policy_version,
             "ranking_score": final_ranking_score,
             "expected_dollar_pnl": ranking_v2.expected_dollar_pnl,
             "capture_probability": ranking_v2.capture_probability,
@@ -398,6 +422,9 @@ def build_weather_opportunity_assessment(
         feedback_penalty=feedback_penalty,
         feedback_status=feedback_status,
         cohort_prior_version=cohort_prior_version,
+        recommended_size=recommended_size,
+        allocation_status=allocation_status,
+        budget_impact=dict(budget_impact or {}) if budget_impact is not None else None,
         ranking_score=final_ranking_score,
         actionability_status=actionability_status,
         rationale=rationale,
@@ -576,6 +603,41 @@ def _ops_tie_breaker(live_prereq_status: str) -> float:
     return 0.0
 
 
+def _quality_confidence_multiplier(summary: ExecutionPriorSummary | None) -> float:
+    if summary is None:
+        return 0.65
+    quality_factor = {
+        "ready": 1.00,
+        "watch": 0.92,
+        "sparse": 0.78,
+        "missing": 0.65,
+        "degraded": 0.70,
+    }.get(str(summary.prior_quality_status or "missing"), 0.70)
+    sample_count = int(summary.sample_count)
+    if sample_count >= 20:
+        sample_factor = 1.00
+    elif sample_count >= 10:
+        sample_factor = 0.95
+    elif sample_count >= 5:
+        sample_factor = 0.85
+    else:
+        sample_factor = 0.75
+    calibration_bucket = summary.prior_key.calibration_quality_bucket
+    freshness_bucket = summary.prior_key.source_freshness_bucket
+    calibration_factor = 1.00 if calibration_bucket is None else {
+        "healthy": 1.00,
+        "watch": 0.93,
+        "degraded": 0.78,
+        "sparse_or_missing": 0.70,
+    }.get(str(calibration_bucket), 0.70)
+    freshness_factor = 1.00 if freshness_bucket is None else {
+        "fresh": 1.00,
+        "stale": 0.90,
+        "degraded_or_missing": 0.75,
+    }.get(str(freshness_bucket), 0.75)
+    return round(max(0.25, min(1.0, quality_factor * sample_factor * calibration_factor * freshness_factor)), 6)
+
+
 def _ranking_score_v2_decomposition(
     *,
     edge_bps_executable: int,
@@ -589,6 +651,7 @@ def _ranking_score_v2_decomposition(
 ) -> RankingScoreV2Decomposition:
     gross_unit_edge = max(abs(int(edge_bps_executable)) / 10_000.0, 0.0)
     prior_mode = "prior_backed" if execution_prior_summary is not None else "fallback_heuristic"
+    prior_lookup_mode = execution_prior_summary.prior_lookup_mode if execution_prior_summary is not None else "heuristic_fallback"
     submit_ack_rate = execution_prior_summary.submit_ack_rate if execution_prior_summary is not None else 1.0
     fill_rate = execution_prior_summary.fill_rate if execution_prior_summary is not None else 1.0
     resolution_rate = execution_prior_summary.resolution_rate if execution_prior_summary is not None else 1.0
@@ -596,6 +659,11 @@ def _ranking_score_v2_decomposition(
     partial_fill_rate = execution_prior_summary.partial_fill_rate if execution_prior_summary is not None else 0.0
     prior_quality_status = execution_prior_summary.prior_quality_status if execution_prior_summary is not None else "missing"
     prior_key = execution_prior_summary.prior_key if execution_prior_summary is not None else None
+    prior_feature_scope = (
+        dict(execution_prior_summary.prior_feature_scope or {})
+        if execution_prior_summary is not None
+        else {}
+    )
 
     capture_probability = max(
         0.0,
@@ -609,17 +677,51 @@ def _ranking_score_v2_decomposition(
     )
     expected_dollar_pnl = gross_unit_edge * capture_probability
     prior_p50_slippage = execution_prior_summary.adverse_fill_slippage_bps_p50 if execution_prior_summary is not None else None
+    prior_p90_slippage = execution_prior_summary.adverse_fill_slippage_bps_p90 if execution_prior_summary is not None else None
     slippage_penalty = max(
         max(0, int(slippage_bps)) / 10_000.0,
         (float(prior_p50_slippage) / 10_000.0) if prior_p50_slippage is not None else 0.0,
     )
+    tail_slippage_penalty = max(
+        (
+            max(
+                float(prior_p90_slippage or 0.0)
+                - max(float(prior_p50_slippage or 0.0), float(max(0, int(slippage_bps)))),
+                0.0,
+            )
+            / 10_000.0
+        )
+        * 0.50,
+        0.0,
+    )
+    submit_latency_penalty = 0.0
+    fill_latency_penalty = 0.0
+    edge_retention_penalty = 0.0
+    if execution_prior_summary is not None:
+        submit_latency_penalty = gross_unit_edge * min(max(float(execution_prior_summary.submit_latency_ms_p90 or 0.0), 0.0) / 900_000.0, 0.20)
+        fill_latency_penalty = gross_unit_edge * min(max(float(execution_prior_summary.fill_latency_ms_p90 or 0.0), 0.0) / 1_200_000.0, 0.20)
+        if (
+            execution_prior_summary.realized_edge_retention_bps_p50 is not None
+            or execution_prior_summary.realized_edge_retention_bps_p90 is not None
+        ):
+            retained_p50 = max(float(execution_prior_summary.realized_edge_retention_bps_p50 or 0.0), 0.0) / 10_000.0
+            retained_p90 = max(float(execution_prior_summary.realized_edge_retention_bps_p90 or 0.0), 0.0) / 10_000.0
+            if gross_unit_edge > 0.0:
+                shortfall_ratio_p50 = max(gross_unit_edge - retained_p50, 0.0) / gross_unit_edge
+                shortfall_ratio_p90 = max(gross_unit_edge - retained_p90, 0.0) / gross_unit_edge
+                edge_retention_penalty = gross_unit_edge * (
+                    min(shortfall_ratio_p50, 1.0) * 0.20
+                    + min(shortfall_ratio_p90, 1.0) * 0.10
+                )
+    latency_penalty = submit_latency_penalty + fill_latency_penalty
     cancel_penalty = max(0.0, float(cancel_rate)) * gross_unit_edge * 0.50
     partial_fill_penalty = max(0.0, float(partial_fill_rate)) * gross_unit_edge * 0.25
-    risk_penalty = slippage_penalty + cancel_penalty + partial_fill_penalty
+    risk_penalty = slippage_penalty + tail_slippage_penalty + cancel_penalty + partial_fill_penalty + latency_penalty + edge_retention_penalty
 
     unit_capital_cost = max(reference_price if side == "BUY" else (1.0 - reference_price if side == "SELL" else 0.50), 0.05)
     capital_efficiency = max(0.0, float(depth_proxy)) / unit_capital_cost
-    economic_score = max(expected_dollar_pnl - risk_penalty, 0.0) * capital_efficiency
+    quality_confidence_multiplier = _quality_confidence_multiplier(execution_prior_summary)
+    economic_score = max(expected_dollar_pnl - risk_penalty, 0.0) * capital_efficiency * quality_confidence_multiplier
     ranking_score = round(economic_score + max(0.0, float(ops_tie_breaker)), 6)
     why_ranked_json = {
         "version": "ranking_v2",
@@ -639,11 +741,19 @@ def _ranking_score_v2_decomposition(
             "market_id": prior_key.market_id,
             "strategy_id": prior_key.strategy_id,
             "wallet_id": prior_key.wallet_id,
+            "station_id": prior_key.station_id,
+            "metric": prior_key.metric,
             "side": prior_key.side,
             "horizon_bucket": prior_key.horizon_bucket,
             "liquidity_bucket": prior_key.liquidity_bucket,
+            "market_age_bucket": prior_key.market_age_bucket,
+            "hours_to_close_bucket": prior_key.hours_to_close_bucket,
+            "calibration_quality_bucket": prior_key.calibration_quality_bucket,
+            "source_freshness_bucket": prior_key.source_freshness_bucket,
         },
         "prior_quality_status": prior_quality_status,
+        "prior_lookup_mode": prior_lookup_mode,
+        "prior_feature_scope": prior_feature_scope,
         "edge_bps_executable": int(edge_bps_executable),
         "fill_probability_heuristic": round(float(fill_probability), 6),
         "submit_ack_rate": round(float(submit_ack_rate), 6),
@@ -651,9 +761,14 @@ def _ranking_score_v2_decomposition(
         "resolution_rate": round(float(resolution_rate), 6),
         "capture_probability": round(capture_probability, 6),
         "expected_dollar_pnl": round(expected_dollar_pnl, 6),
+        "latency_penalty": round(latency_penalty, 6),
+        "tail_slippage_penalty": round(tail_slippage_penalty, 6),
+        "edge_retention_penalty": round(edge_retention_penalty, 6),
         "risk_penalty": round(risk_penalty, 6),
         "capital_efficiency": round(capital_efficiency, 6),
+        "quality_confidence_multiplier": quality_confidence_multiplier,
         "ops_tie_breaker": round(max(0.0, float(ops_tie_breaker)), 6),
+        "retrospective_baseline_version": "ranking_retro_v1",
         "ranking_score": ranking_score,
     }
     return RankingScoreV2Decomposition(

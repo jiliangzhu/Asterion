@@ -682,6 +682,9 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
                     "capability.account_trading_capabilities",
                     "capability.execution_contexts",
                     "runtime.strategy_runs",
+                    "runtime.capital_allocation_runs",
+                    "runtime.allocation_decisions",
+                    "runtime.position_limit_checks",
                     "runtime.trade_tickets",
                     "runtime.gate_decisions",
                     "runtime.external_balance_observations",
@@ -932,6 +935,22 @@ class WeatherPricingDuckDBTest(unittest.TestCase):
                             100.0,
                             "0x1111111111111111111111111111111111111111",
                             1,
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
+                    writer_con.execute(
+                        "INSERT INTO trading.allocation_policies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [
+                            "policy_weather_primary",
+                            "wallet_weather_1",
+                            "weather_primary",
+                            "active",
+                            "alloc_v1",
+                            100.0,
+                            100.0,
+                            1.0,
+                            1.0,
+                            datetime(2026, 3, 10, 10, 0),
                             datetime(2026, 3, 10, 10, 0),
                         ],
                     )

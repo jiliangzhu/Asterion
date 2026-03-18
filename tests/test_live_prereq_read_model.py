@@ -58,6 +58,22 @@ def _setup_base_paper_execution(*, db_path: str, queue_path: str) -> tuple[str, 
                 ],
             )
             con.execute(
+                "INSERT INTO trading.allocation_policies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    "policy_weather_primary",
+                    "wallet_weather_1",
+                    "weather_primary",
+                    "active",
+                    "alloc_v1",
+                    100.0,
+                    100.0,
+                    1.0,
+                    1.0,
+                    datetime(2026, 3, 10, 10, 0),
+                    datetime(2026, 3, 10, 10, 0),
+                ],
+            )
+            con.execute(
                 "INSERT INTO weather.weather_watch_only_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     "snap_yes",
@@ -128,6 +144,9 @@ def _setup_base_paper_execution(*, db_path: str, queue_path: str) -> tuple[str, 
     allow_tables = ",".join(
         [
             "runtime.strategy_runs",
+            "runtime.capital_allocation_runs",
+            "runtime.allocation_decisions",
+            "runtime.position_limit_checks",
             "runtime.trade_tickets",
             "runtime.gate_decisions",
             "trading.orders",

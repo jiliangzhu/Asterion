@@ -7,6 +7,8 @@ from datetime import UTC, date, datetime, timedelta
 from statistics import mean
 from typing import Any
 
+import pandas as pd
+
 from asterion_core.contracts import ExecutionPriorKey, ExecutionPriorSummary, stable_object_id
 from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.write_queue import WriteQueueConfig
@@ -18,9 +20,15 @@ WEATHER_EXECUTION_PRIOR_COLUMNS = [
     "market_id",
     "strategy_id",
     "wallet_id",
+    "station_id",
+    "metric",
     "side",
     "horizon_bucket",
     "liquidity_bucket",
+    "market_age_bucket",
+    "hours_to_close_bucket",
+    "calibration_quality_bucket",
+    "source_freshness_bucket",
     "sample_count",
     "submit_ack_rate",
     "fill_rate",
@@ -29,6 +37,12 @@ WEATHER_EXECUTION_PRIOR_COLUMNS = [
     "cancel_rate",
     "adverse_fill_slippage_bps_p50",
     "adverse_fill_slippage_bps_p90",
+    "submit_latency_ms_p50",
+    "submit_latency_ms_p90",
+    "fill_latency_ms_p50",
+    "fill_latency_ms_p90",
+    "realized_edge_retention_bps_p50",
+    "realized_edge_retention_bps_p90",
     "avg_realized_pnl",
     "avg_post_trade_error",
     "prior_quality_status",
@@ -67,9 +81,15 @@ class ExecutionPriorRow:
     market_id: str
     strategy_id: str | None
     wallet_id: str | None
+    station_id: str | None
+    metric: str | None
     side: str
     horizon_bucket: str
     liquidity_bucket: str
+    market_age_bucket: str
+    hours_to_close_bucket: str
+    calibration_quality_bucket: str
+    source_freshness_bucket: str
     sample_count: int
     submit_ack_rate: float
     fill_rate: float
@@ -78,6 +98,12 @@ class ExecutionPriorRow:
     cancel_rate: float
     adverse_fill_slippage_bps_p50: float | None
     adverse_fill_slippage_bps_p90: float | None
+    submit_latency_ms_p50: float | None
+    submit_latency_ms_p90: float | None
+    fill_latency_ms_p50: float | None
+    fill_latency_ms_p90: float | None
+    realized_edge_retention_bps_p50: float | None
+    realized_edge_retention_bps_p90: float | None
     avg_realized_pnl: float | None
     avg_post_trade_error: float | None
     prior_quality_status: str
@@ -118,6 +144,12 @@ def build_execution_prior_key(
     spread_bps: int | None = None,
     strategy_id: str | None = None,
     wallet_id: str | None = None,
+    station_id: str | None = None,
+    metric: str | None = None,
+    market_age_bucket: str | None = None,
+    hours_to_close_bucket: str | None = None,
+    calibration_quality_bucket: str | None = None,
+    source_freshness_bucket: str | None = None,
 ) -> ExecutionPriorKey:
     horizon = "unknown"
     if forecast_target_time is not None and observation_date is not None:
@@ -129,9 +161,15 @@ def build_execution_prior_key(
         market_id=str(market_id),
         strategy_id=_coerce_optional_text(strategy_id),
         wallet_id=_coerce_optional_text(wallet_id),
+        station_id=_coerce_optional_text(station_id),
+        metric=_coerce_optional_text(metric),
         side=str(side).upper(),
         horizon_bucket=horizon,
         liquidity_bucket=execution_prior_liquidity_bucket(depth_proxy=depth_proxy, spread_bps=spread_bps),
+        market_age_bucket=_coerce_optional_text(market_age_bucket),
+        hours_to_close_bucket=_coerce_optional_text(hours_to_close_bucket),
+        calibration_quality_bucket=_coerce_optional_text(calibration_quality_bucket),
+        source_freshness_bucket=_coerce_optional_text(source_freshness_bucket),
     )
 
 
@@ -175,9 +213,15 @@ def build_execution_prior_summary_from_context(source_context: dict[str, Any] | 
         market_id=_coerce_optional_text(source_context.get("execution_prior_market_id")),
         strategy_id=_coerce_optional_text(source_context.get("execution_prior_strategy_id")),
         wallet_id=_coerce_optional_text(source_context.get("execution_prior_wallet_id")),
+        station_id=_coerce_optional_text(source_context.get("execution_prior_station_id")),
+        metric=_coerce_optional_text(source_context.get("execution_prior_metric")),
         side=_coerce_optional_text(source_context.get("execution_prior_side")),
         horizon_bucket=_coerce_optional_text(source_context.get("execution_prior_horizon_bucket")),
         liquidity_bucket=_coerce_optional_text(source_context.get("execution_prior_liquidity_bucket")),
+        market_age_bucket=_coerce_optional_text(source_context.get("execution_prior_market_age_bucket")),
+        hours_to_close_bucket=_coerce_optional_text(source_context.get("execution_prior_hours_to_close_bucket")),
+        calibration_quality_bucket=_coerce_optional_text(source_context.get("execution_prior_calibration_quality_bucket")),
+        source_freshness_bucket=_coerce_optional_text(source_context.get("execution_prior_source_freshness_bucket")),
     )
     return ExecutionPriorSummary(
         prior_key=prior_key,
@@ -189,9 +233,17 @@ def build_execution_prior_summary_from_context(source_context: dict[str, Any] | 
         cancel_rate=float(source_context.get("execution_prior_cancel_rate") or 0.0),
         adverse_fill_slippage_bps_p50=_coerce_optional_float(source_context.get("execution_prior_slippage_p50")),
         adverse_fill_slippage_bps_p90=_coerce_optional_float(source_context.get("execution_prior_slippage_p90")),
+        submit_latency_ms_p50=_coerce_optional_float(source_context.get("execution_prior_submit_latency_ms_p50")),
+        submit_latency_ms_p90=_coerce_optional_float(source_context.get("execution_prior_submit_latency_ms_p90")),
+        fill_latency_ms_p50=_coerce_optional_float(source_context.get("execution_prior_fill_latency_ms_p50")),
+        fill_latency_ms_p90=_coerce_optional_float(source_context.get("execution_prior_fill_latency_ms_p90")),
+        realized_edge_retention_bps_p50=_coerce_optional_float(source_context.get("execution_prior_edge_retention_bps_p50")),
+        realized_edge_retention_bps_p90=_coerce_optional_float(source_context.get("execution_prior_edge_retention_bps_p90")),
         avg_realized_pnl=_coerce_optional_float(source_context.get("execution_prior_avg_realized_pnl")),
         avg_post_trade_error=_coerce_optional_float(source_context.get("execution_prior_avg_post_trade_error")),
         prior_quality_status=str(source_context.get("execution_prior_quality_status") or "sparse"),
+        prior_lookup_mode=str(source_context.get("execution_prior_lookup_mode") or "exact_market"),
+        prior_feature_scope=_json_dict(source_context.get("execution_prior_feature_scope")),
         feedback_prior=build_execution_feedback_prior(
             sample_count=int(source_context.get("execution_prior_sample_count") or 0),
             miss_rate=float(source_context.get("execution_prior_miss_rate") or 0.0),
@@ -220,9 +272,15 @@ def execution_prior_context_fields(summary: ExecutionPriorSummary | None) -> dic
         "execution_prior_market_id": summary.prior_key.market_id,
         "execution_prior_strategy_id": summary.prior_key.strategy_id,
         "execution_prior_wallet_id": summary.prior_key.wallet_id,
+        "execution_prior_station_id": summary.prior_key.station_id,
+        "execution_prior_metric": summary.prior_key.metric,
         "execution_prior_side": summary.prior_key.side,
         "execution_prior_horizon_bucket": summary.prior_key.horizon_bucket,
         "execution_prior_liquidity_bucket": summary.prior_key.liquidity_bucket,
+        "execution_prior_market_age_bucket": summary.prior_key.market_age_bucket,
+        "execution_prior_hours_to_close_bucket": summary.prior_key.hours_to_close_bucket,
+        "execution_prior_calibration_quality_bucket": summary.prior_key.calibration_quality_bucket,
+        "execution_prior_source_freshness_bucket": summary.prior_key.source_freshness_bucket,
         "execution_prior_sample_count": summary.sample_count,
         "execution_prior_submit_ack_rate": summary.submit_ack_rate,
         "execution_prior_fill_rate": summary.fill_rate,
@@ -231,9 +289,17 @@ def execution_prior_context_fields(summary: ExecutionPriorSummary | None) -> dic
         "execution_prior_cancel_rate": summary.cancel_rate,
         "execution_prior_slippage_p50": summary.adverse_fill_slippage_bps_p50,
         "execution_prior_slippage_p90": summary.adverse_fill_slippage_bps_p90,
+        "execution_prior_submit_latency_ms_p50": summary.submit_latency_ms_p50,
+        "execution_prior_submit_latency_ms_p90": summary.submit_latency_ms_p90,
+        "execution_prior_fill_latency_ms_p50": summary.fill_latency_ms_p50,
+        "execution_prior_fill_latency_ms_p90": summary.fill_latency_ms_p90,
+        "execution_prior_edge_retention_bps_p50": summary.realized_edge_retention_bps_p50,
+        "execution_prior_edge_retention_bps_p90": summary.realized_edge_retention_bps_p90,
         "execution_prior_avg_realized_pnl": summary.avg_realized_pnl,
         "execution_prior_avg_post_trade_error": summary.avg_post_trade_error,
         "execution_prior_quality_status": summary.prior_quality_status,
+        "execution_prior_lookup_mode": summary.prior_lookup_mode,
+        "execution_prior_feature_scope": dict(summary.prior_feature_scope or {}),
     }
     if summary.feedback_prior is not None:
         payload.update(
@@ -262,6 +328,12 @@ def load_execution_prior_summary(
     spread_bps: int | None = None,
     strategy_id: str | None = None,
     wallet_id: str | None = None,
+    station_id: str | None = None,
+    metric: str | None = None,
+    market_age_bucket: str | None = None,
+    hours_to_close_bucket: str | None = None,
+    calibration_quality_bucket: str | None = None,
+    source_freshness_bucket: str | None = None,
 ) -> ExecutionPriorSummary | None:
     if not _table_exists(con, "weather.weather_execution_priors"):
         return None
@@ -274,6 +346,12 @@ def load_execution_prior_summary(
         spread_bps=spread_bps,
         strategy_id=strategy_id,
         wallet_id=wallet_id,
+        station_id=station_id,
+        metric=metric,
+        market_age_bucket=market_age_bucket,
+        hours_to_close_bucket=hours_to_close_bucket,
+        calibration_quality_bucket=calibration_quality_bucket,
+        source_freshness_bucket=source_freshness_bucket,
     )
     fallback_rows: dict[str, ExecutionPriorSummary] = {}
     for horizon_bucket, liquidity_bucket in [
@@ -294,32 +372,95 @@ def load_execution_prior_summary(
             fallback_rows.setdefault(scope, summary)
         if "market" in fallback_rows:
             break
-    if not fallback_rows:
-        return None
-    base_summary = fallback_rows.get("market") or fallback_rows.get("strategy") or fallback_rows.get("wallet")
-    assert base_summary is not None
-    feedback_prior = aggregate_feedback_priors(
-        {
-            "market": fallback_rows.get("market").feedback_prior if fallback_rows.get("market") is not None else None,
-            "strategy": fallback_rows.get("strategy").feedback_prior if fallback_rows.get("strategy") is not None else None,
-            "wallet": fallback_rows.get("wallet").feedback_prior if fallback_rows.get("wallet") is not None else None,
-        }
-    )
-    return ExecutionPriorSummary(
-        prior_key=base_summary.prior_key,
-        sample_count=base_summary.sample_count,
-        submit_ack_rate=base_summary.submit_ack_rate,
-        fill_rate=base_summary.fill_rate,
-        resolution_rate=base_summary.resolution_rate,
-        partial_fill_rate=base_summary.partial_fill_rate,
-        cancel_rate=base_summary.cancel_rate,
-        adverse_fill_slippage_bps_p50=base_summary.adverse_fill_slippage_bps_p50,
-        adverse_fill_slippage_bps_p90=base_summary.adverse_fill_slippage_bps_p90,
-        avg_realized_pnl=base_summary.avg_realized_pnl,
-        avg_post_trade_error=base_summary.avg_post_trade_error,
-        prior_quality_status=base_summary.prior_quality_status,
-        feedback_prior=feedback_prior,
-    )
+    if fallback_rows:
+        base_summary = fallback_rows.get("market") or fallback_rows.get("strategy") or fallback_rows.get("wallet")
+        assert base_summary is not None
+        station_metric_summary = None
+        if station_id and metric and base_summary.prior_quality_status != "ready":
+            for horizon_bucket, liquidity_bucket in [
+                (key.horizon_bucket, key.liquidity_bucket),
+                (key.horizon_bucket, "unknown"),
+                ("unknown", key.liquidity_bucket),
+                ("unknown", "unknown"),
+            ]:
+                station_metric_summary = _load_station_metric_fallback_summary(
+                    con,
+                    station_id=str(station_id),
+                    metric=str(metric),
+                    side=key.side or side,
+                    horizon_bucket=horizon_bucket,
+                    liquidity_bucket=liquidity_bucket,
+                    market_age_bucket=key.market_age_bucket,
+                    hours_to_close_bucket=key.hours_to_close_bucket,
+                    calibration_quality_bucket=key.calibration_quality_bucket,
+                    source_freshness_bucket=key.source_freshness_bucket,
+                )
+                if station_metric_summary is not None and station_metric_summary.sample_count >= max(base_summary.sample_count, 5):
+                    return station_metric_summary
+        feedback_prior = aggregate_feedback_priors(
+            {
+                "market": fallback_rows.get("market").feedback_prior if fallback_rows.get("market") is not None else None,
+                "strategy": fallback_rows.get("strategy").feedback_prior if fallback_rows.get("strategy") is not None else None,
+                "wallet": fallback_rows.get("wallet").feedback_prior if fallback_rows.get("wallet") is not None else None,
+            }
+        )
+        return ExecutionPriorSummary(
+            prior_key=ExecutionPriorKey(
+                market_id=base_summary.prior_key.market_id,
+                strategy_id=base_summary.prior_key.strategy_id,
+                wallet_id=base_summary.prior_key.wallet_id,
+                station_id=base_summary.prior_key.station_id,
+                metric=base_summary.prior_key.metric,
+                side=base_summary.prior_key.side,
+                horizon_bucket=base_summary.prior_key.horizon_bucket,
+                liquidity_bucket=base_summary.prior_key.liquidity_bucket,
+                market_age_bucket=base_summary.prior_key.market_age_bucket,
+                hours_to_close_bucket=base_summary.prior_key.hours_to_close_bucket,
+                calibration_quality_bucket=base_summary.prior_key.calibration_quality_bucket,
+                source_freshness_bucket=base_summary.prior_key.source_freshness_bucket,
+            ),
+            sample_count=base_summary.sample_count,
+            submit_ack_rate=base_summary.submit_ack_rate,
+            fill_rate=base_summary.fill_rate,
+            resolution_rate=base_summary.resolution_rate,
+            partial_fill_rate=base_summary.partial_fill_rate,
+            cancel_rate=base_summary.cancel_rate,
+            adverse_fill_slippage_bps_p50=base_summary.adverse_fill_slippage_bps_p50,
+            adverse_fill_slippage_bps_p90=base_summary.adverse_fill_slippage_bps_p90,
+            submit_latency_ms_p50=base_summary.submit_latency_ms_p50,
+            submit_latency_ms_p90=base_summary.submit_latency_ms_p90,
+            fill_latency_ms_p50=base_summary.fill_latency_ms_p50,
+            fill_latency_ms_p90=base_summary.fill_latency_ms_p90,
+            realized_edge_retention_bps_p50=base_summary.realized_edge_retention_bps_p50,
+            realized_edge_retention_bps_p90=base_summary.realized_edge_retention_bps_p90,
+            avg_realized_pnl=base_summary.avg_realized_pnl,
+            avg_post_trade_error=base_summary.avg_post_trade_error,
+            prior_quality_status=base_summary.prior_quality_status,
+            prior_lookup_mode="exact_market",
+            prior_feature_scope=_build_prior_feature_scope(base_summary.prior_key, lookup_mode="exact_market"),
+            feedback_prior=feedback_prior,
+        )
+    if station_id and metric:
+        for horizon_bucket, liquidity_bucket in [
+            (key.horizon_bucket, key.liquidity_bucket),
+            (key.horizon_bucket, "unknown"),
+            ("unknown", key.liquidity_bucket),
+            ("unknown", "unknown"),
+        ]:
+            summary = _load_station_metric_fallback_summary(
+                con,
+                station_id=str(station_id),
+                metric=str(metric),
+                side=key.side or side,
+                horizon_bucket=horizon_bucket,
+                liquidity_bucket=liquidity_bucket,
+                market_age_bucket=key.market_age_bucket,
+                hours_to_close_bucket=key.hours_to_close_bucket,
+                calibration_quality_bucket=key.calibration_quality_bucket,
+                source_freshness_bucket=key.source_freshness_bucket,
+            )
+            if summary is not None:
+                return summary
     return None
 
 
@@ -365,6 +506,7 @@ def materialize_execution_priors(
     ).fetchdf()
     latest_submit_by_ticket = _latest_status_by_ticket(submit_attempts)
     latest_submit_order_by_ticket = _latest_value_by_ticket(submit_attempts, value_col="order_id")
+    latest_submit_created_at_by_ticket = _latest_value_by_ticket(submit_attempts, value_col="created_at")
 
     external_orders = con.execute(
         """
@@ -377,18 +519,24 @@ def materialize_execution_priors(
 
     orders = con.execute(
         """
-        SELECT order_id, status
+        SELECT order_id, status, submitted_at
         FROM trading.orders
         """
     ).fetchdf()
     order_status_by_id = {str(row["order_id"]): str(row["status"]).lower() for _, row in orders.iterrows()}
+    order_submitted_at_by_id = {
+        str(row["order_id"]): _coerce_optional_datetime(row["submitted_at"])
+        for _, row in orders.iterrows()
+        if row["order_id"] is not None
+    }
 
     fills = con.execute(
         """
         SELECT
             order_id,
             SUM(size) AS filled_size,
-            SUM(price * size) / NULLIF(SUM(size), 0) AS avg_fill_price
+            SUM(price * size) / NULLIF(SUM(size), 0) AS avg_fill_price,
+            MIN(filled_at) AS first_fill_at
         FROM trading.fills
         GROUP BY order_id
         """
@@ -397,6 +545,7 @@ def materialize_execution_priors(
         str(row["order_id"]): {
             "filled_size": float(row["filled_size"] or 0.0),
             "avg_fill_price": _coerce_optional_float(row["avg_fill_price"]),
+            "first_fill_at": _coerce_optional_datetime(row["first_fill_at"]),
         }
         for _, row in fills.iterrows()
     }
@@ -417,11 +566,38 @@ def materialize_execution_priors(
         }
 
     market_observation_dates = {}
+    market_station_ids = {}
+    market_metrics = {}
     if _table_exists(con, "weather.weather_market_specs"):
-        spec_rows = con.execute("SELECT market_id, observation_date FROM weather.weather_market_specs").fetchdf()
+        spec_rows = con.execute("SELECT market_id, station_id, observation_date, metric FROM weather.weather_market_specs").fetchdf()
         market_observation_dates = {
             str(row["market_id"]): row["observation_date"]
             for _, row in spec_rows.iterrows()
+            if row["market_id"] is not None
+        }
+        market_station_ids = {
+            str(row["market_id"]): _coerce_optional_text(row["station_id"])
+            for _, row in spec_rows.iterrows()
+            if row["market_id"] is not None
+        }
+        market_metrics = {
+            str(row["market_id"]): _coerce_optional_text(row["metric"])
+            for _, row in spec_rows.iterrows()
+            if row["market_id"] is not None
+        }
+
+    market_created_ats: dict[str, datetime | None] = {}
+    market_close_times: dict[str, datetime | None] = {}
+    if _table_exists(con, "weather.weather_markets"):
+        market_rows = con.execute("SELECT market_id, created_at, close_time FROM weather.weather_markets").fetchdf()
+        market_created_ats = {
+            str(row["market_id"]): _coerce_optional_datetime(row["created_at"])
+            for _, row in market_rows.iterrows()
+            if row["market_id"] is not None
+        }
+        market_close_times = {
+            str(row["market_id"]): _coerce_optional_datetime(row["close_time"])
+            for _, row in market_rows.iterrows()
             if row["market_id"] is not None
         }
 
@@ -444,15 +620,29 @@ def materialize_execution_priors(
             observation_date=observation_date,
             depth_proxy=_coerce_optional_float(pricing_context.get("depth_proxy")),
             spread_bps=_coerce_optional_int(pricing_context.get("spread_bps")),
+            station_id=market_station_ids.get(market_id),
+            metric=market_metrics.get(market_id),
+            market_age_bucket=_market_age_bucket(
+                ticket_created_at=_coerce_optional_datetime(ticket.get("created_at")),
+                market_created_at=market_created_ats.get(market_id),
+            ),
+            hours_to_close_bucket=_hours_to_close_bucket(
+                ticket_created_at=_coerce_optional_datetime(ticket.get("created_at")),
+                market_close_time=market_close_times.get(market_id),
+            ),
+            calibration_quality_bucket=_calibration_quality_bucket(pricing_context),
+            source_freshness_bucket=_source_freshness_bucket(pricing_context),
         )
         sample = _ticket_prior_sample(
             ticket=ticket,
             prior_key=prior_key,
             latest_submit_by_ticket=latest_submit_by_ticket,
             latest_submit_order_by_ticket=latest_submit_order_by_ticket,
+            latest_submit_created_at_by_ticket=latest_submit_created_at_by_ticket,
             latest_external_order_by_ticket=latest_external_order_by_ticket,
             latest_external_order_id_by_ticket=latest_external_order_id_by_ticket,
             order_status_by_id=order_status_by_id,
+            order_submitted_at_by_id=order_submitted_at_by_id,
             fills_by_order=fills_by_order,
             market_outcome_resolution=market_outcome_resolution,
             pricing_context=pricing_context,
@@ -485,6 +675,9 @@ def materialize_execution_priors(
         first = samples[0]
         prior_key = first["prior_key_obj"]
         slippages = [float(item["adverse_fill_slippage_bps"]) for item in samples if item["adverse_fill_slippage_bps"] is not None]
+        submit_latencies = [float(item["submit_latency_ms"]) for item in samples if item["submit_latency_ms"] is not None]
+        fill_latencies = [float(item["fill_latency_ms"]) for item in samples if item["fill_latency_ms"] is not None]
+        edge_retentions = [float(item["realized_edge_retention_bps"]) for item in samples if item["realized_edge_retention_bps"] is not None]
         realized_pnls = [float(item["realized_pnl"]) for item in samples if item["realized_pnl"] is not None]
         post_trade_errors = [float(item["post_trade_error"]) for item in samples if item["post_trade_error"] is not None]
         sample_count = len(samples)
@@ -529,9 +722,15 @@ def materialize_execution_priors(
                 market_id=str(prior_key.market_id),
                 strategy_id=None if cohort_type != "strategy" else str(cohort_key),
                 wallet_id=None if cohort_type != "wallet" else str(cohort_key),
+                station_id=prior_key.station_id,
+                metric=prior_key.metric,
                 side=str(prior_key.side),
                 horizon_bucket=str(prior_key.horizon_bucket or "unknown"),
                 liquidity_bucket=str(prior_key.liquidity_bucket or "unknown"),
+                market_age_bucket=str(prior_key.market_age_bucket or "unknown"),
+                hours_to_close_bucket=str(prior_key.hours_to_close_bucket or "unknown"),
+                calibration_quality_bucket=str(prior_key.calibration_quality_bucket or "sparse_or_missing"),
+                source_freshness_bucket=str(prior_key.source_freshness_bucket or "degraded_or_missing"),
                 sample_count=sample_count,
                 submit_ack_rate=round(_mean(item["submit_ack"] for item in samples), 6),
                 fill_rate=round(_mean(item["filled"] for item in samples), 6),
@@ -540,6 +739,12 @@ def materialize_execution_priors(
                 cancel_rate=round(_mean(item["cancelled"] for item in samples), 6),
                 adverse_fill_slippage_bps_p50=_percentile(slippages, 0.50),
                 adverse_fill_slippage_bps_p90=_percentile(slippages, 0.90),
+                submit_latency_ms_p50=_percentile(submit_latencies, 0.50),
+                submit_latency_ms_p90=_percentile(submit_latencies, 0.90),
+                fill_latency_ms_p50=_percentile(fill_latencies, 0.50),
+                fill_latency_ms_p90=_percentile(fill_latencies, 0.90),
+                realized_edge_retention_bps_p50=_percentile(edge_retentions, 0.50),
+                realized_edge_retention_bps_p90=_percentile(edge_retentions, 0.90),
                 avg_realized_pnl=round(mean(realized_pnls), 6) if realized_pnls else None,
                 avg_post_trade_error=round(mean(post_trade_errors), 6) if post_trade_errors else None,
                 prior_quality_status="ready" if sample_count >= 10 else "sparse",
@@ -586,9 +791,15 @@ def execution_prior_row_to_row(record: ExecutionPriorRow) -> list[Any]:
         record.market_id,
         record.strategy_id,
         record.wallet_id,
+        record.station_id,
+        record.metric,
         record.side,
         record.horizon_bucket,
         record.liquidity_bucket,
+        record.market_age_bucket,
+        record.hours_to_close_bucket,
+        record.calibration_quality_bucket,
+        record.source_freshness_bucket,
         record.sample_count,
         record.submit_ack_rate,
         record.fill_rate,
@@ -597,6 +808,12 @@ def execution_prior_row_to_row(record: ExecutionPriorRow) -> list[Any]:
         record.cancel_rate,
         record.adverse_fill_slippage_bps_p50,
         record.adverse_fill_slippage_bps_p90,
+        record.submit_latency_ms_p50,
+        record.submit_latency_ms_p90,
+        record.fill_latency_ms_p50,
+        record.fill_latency_ms_p90,
+        record.realized_edge_retention_bps_p50,
+        record.realized_edge_retention_bps_p90,
         record.avg_realized_pnl,
         record.avg_post_trade_error,
         record.prior_quality_status,
@@ -622,9 +839,11 @@ def _ticket_prior_sample(
     prior_key: ExecutionPriorKey,
     latest_submit_by_ticket: dict[str, str],
     latest_submit_order_by_ticket: dict[str, str],
+    latest_submit_created_at_by_ticket: dict[str, Any],
     latest_external_order_by_ticket: dict[str, str],
     latest_external_order_id_by_ticket: dict[str, str],
     order_status_by_id: dict[str, str],
+    order_submitted_at_by_id: dict[str, datetime | None],
     fills_by_order: dict[str, dict[str, float | None]],
     market_outcome_resolution: dict[str, str],
     pricing_context: dict[str, Any],
@@ -641,6 +860,10 @@ def _ticket_prior_sample(
     filled_size = float(fill["filled_size"] or 0.0)
     size = max(0.0, float(ticket.get("size") or 0.0))
     avg_fill_price = _coerce_optional_float(fill.get("avg_fill_price"))
+    ticket_created_at = _coerce_optional_datetime(ticket.get("created_at"))
+    latest_submit_created_at = _coerce_optional_datetime(latest_submit_created_at_by_ticket.get(ticket_id))
+    order_submitted_at = order_submitted_at_by_id.get(order_id or "")
+    first_fill_at = _coerce_optional_datetime(fill.get("first_fill_at"))
     reference_price = float(ticket.get("reference_price") or pricing_context.get("reference_price") or 0.0)
     side = str(ticket.get("side") or "").upper()
     submit_ack = _is_submit_ack(latest_submit_status, external_order_status)
@@ -659,7 +882,10 @@ def _ticket_prior_sample(
 
     realized_pnl = None
     post_trade_error = None
+    submit_latency_ms = _latency_ms(ticket_created_at, latest_submit_created_at or order_submitted_at)
+    fill_latency_ms = _latency_ms(latest_submit_created_at or order_submitted_at or ticket_created_at, first_fill_at)
     edge_bps = _coerce_optional_float(pricing_context.get("edge_bps_executable"))
+    realized_edge_retention_bps = None
     if resolved_outcome is not None and avg_fill_price is not None:
         resolution_value = 1.0 if str(resolved_outcome).upper() == str(ticket.get("outcome") or "").upper() else 0.0
         if side == "BUY":
@@ -668,6 +894,7 @@ def _ticket_prior_sample(
             realized_pnl = avg_fill_price - resolution_value
         if edge_bps is not None:
             post_trade_error = abs((float(edge_bps) / 10_000.0) - realized_pnl)
+            realized_edge_retention_bps = min(max(float(realized_pnl) * 10_000.0, 0.0), abs(float(edge_bps)))
     stage = _execution_lifecycle_stage(
         resolved=resolved_outcome is not None and filled_size > 0,
         filled_quantity=filled_size,
@@ -691,6 +918,9 @@ def _ticket_prior_sample(
         "partial_fill": partial_fill,
         "cancelled": cancelled,
         "adverse_fill_slippage_bps": adverse_slippage,
+        "submit_latency_ms": submit_latency_ms,
+        "fill_latency_ms": fill_latency_ms,
+        "realized_edge_retention_bps": realized_edge_retention_bps,
         "realized_pnl": realized_pnl,
         "post_trade_error": post_trade_error,
         "miss_reason_bucket": miss_reason_bucket,
@@ -714,9 +944,15 @@ def _load_execution_prior_scope_rows(
             market_id,
             strategy_id,
             wallet_id,
+            station_id,
+            metric,
             side,
             horizon_bucket,
             liquidity_bucket,
+            market_age_bucket,
+            hours_to_close_bucket,
+            calibration_quality_bucket,
+            source_freshness_bucket,
             sample_count,
             submit_ack_rate,
             fill_rate,
@@ -725,6 +961,12 @@ def _load_execution_prior_scope_rows(
             cancel_rate,
             adverse_fill_slippage_bps_p50,
             adverse_fill_slippage_bps_p90,
+            submit_latency_ms_p50,
+            submit_latency_ms_p90,
+            fill_latency_ms_p50,
+            fill_latency_ms_p90,
+            realized_edge_retention_bps_p50,
+            realized_edge_retention_bps_p90,
             avg_realized_pnl,
             avg_post_trade_error,
             prior_quality_status,
@@ -763,46 +1005,222 @@ def _load_execution_prior_scope_rows(
             market_id=str(row[0]),
             strategy_id=_coerce_optional_text(row[1]),
             wallet_id=_coerce_optional_text(row[2]),
-            side=str(row[3]),
-            horizon_bucket=str(row[4]),
-            liquidity_bucket=str(row[5]),
+            station_id=_coerce_optional_text(row[3]),
+            metric=_coerce_optional_text(row[4]),
+            side=str(row[5]),
+            horizon_bucket=str(row[6]),
+            liquidity_bucket=str(row[7]),
+            market_age_bucket=_coerce_optional_text(row[8]),
+            hours_to_close_bucket=_coerce_optional_text(row[9]),
+            calibration_quality_bucket=_coerce_optional_text(row[10]),
+            source_freshness_bucket=_coerce_optional_text(row[11]),
         )
         rows[scope] = ExecutionPriorSummary(
             prior_key=row_key,
-            sample_count=int(row[6]),
-            submit_ack_rate=float(row[7]),
-            fill_rate=float(row[8]),
-            resolution_rate=float(row[9]),
-            partial_fill_rate=float(row[10]),
-            cancel_rate=float(row[11]),
-            adverse_fill_slippage_bps_p50=_coerce_optional_float(row[12]),
-            adverse_fill_slippage_bps_p90=_coerce_optional_float(row[13]),
-            avg_realized_pnl=_coerce_optional_float(row[14]),
-            avg_post_trade_error=_coerce_optional_float(row[15]),
-            prior_quality_status=str(row[16]),
+            sample_count=int(row[12]),
+            submit_ack_rate=float(row[13]),
+            fill_rate=float(row[14]),
+            resolution_rate=float(row[15]),
+            partial_fill_rate=float(row[16]),
+            cancel_rate=float(row[17]),
+            adverse_fill_slippage_bps_p50=_coerce_optional_float(row[18]),
+            adverse_fill_slippage_bps_p90=_coerce_optional_float(row[19]),
+            submit_latency_ms_p50=_coerce_optional_float(row[20]),
+            submit_latency_ms_p90=_coerce_optional_float(row[21]),
+            fill_latency_ms_p50=_coerce_optional_float(row[22]),
+            fill_latency_ms_p90=_coerce_optional_float(row[23]),
+            realized_edge_retention_bps_p50=_coerce_optional_float(row[24]),
+            realized_edge_retention_bps_p90=_coerce_optional_float(row[25]),
+            avg_realized_pnl=_coerce_optional_float(row[26]),
+            avg_post_trade_error=_coerce_optional_float(row[27]),
+            prior_quality_status=str(row[28]),
+            prior_lookup_mode="exact_market",
+            prior_feature_scope=_build_prior_feature_scope(row_key, lookup_mode="exact_market"),
             feedback_prior=build_execution_feedback_prior(
-                sample_count=int(row[6]),
-                miss_rate=float(row[22] or 0.0),
-                distortion_rate=float(row[23] or 0.0),
-                resolution_rate=float(row[9]),
-                partial_fill_rate=float(row[10]),
-                cancel_rate=float(row[11]),
-                adverse_fill_slippage_bps_p50=_coerce_optional_float(row[12]),
-                dominant_miss_reason_bucket=str(row[24] or "not_submitted"),
-                dominant_distortion_reason_bucket=str(row[25] or "none"),
-                cohort_prior_version=str(row[21] or "feedback_v1"),
+                sample_count=int(row[12]),
+                miss_rate=float(row[34] or 0.0),
+                distortion_rate=float(row[35] or 0.0),
+                resolution_rate=float(row[15]),
+                partial_fill_rate=float(row[16]),
+                cancel_rate=float(row[17]),
+                adverse_fill_slippage_bps_p50=_coerce_optional_float(row[18]),
+                dominant_miss_reason_bucket=str(row[36] or "not_submitted"),
+                dominant_distortion_reason_bucket=str(row[37] or "none"),
+                cohort_prior_version=str(row[33] or "feedback_v1"),
                 scope_breakdown={
-                    "cohort_type": str(row[17]),
-                    "cohort_key": str(row[18]),
-                    "sample_count": int(row[6]),
-                    "miss_rate": float(row[22] or 0.0),
-                    "distortion_rate": float(row[23] or 0.0),
-                    "feedback_status": str(row[19] or "heuristic_only"),
-                    "feedback_penalty": float(row[20] or 0.0),
+                    "cohort_type": str(row[29]),
+                    "cohort_key": str(row[30]),
+                    "sample_count": int(row[12]),
+                    "miss_rate": float(row[34] or 0.0),
+                    "distortion_rate": float(row[35] or 0.0),
+                    "feedback_status": str(row[31] or "heuristic_only"),
+                    "feedback_penalty": float(row[32] or 0.0),
                 },
             ),
         )
     return rows
+
+
+def _load_station_metric_fallback_summary(
+    con,
+    *,
+    station_id: str,
+    metric: str,
+    side: str,
+    horizon_bucket: str,
+    liquidity_bucket: str,
+    market_age_bucket: str | None,
+    hours_to_close_bucket: str | None,
+    calibration_quality_bucket: str | None,
+    source_freshness_bucket: str | None,
+) -> ExecutionPriorSummary | None:
+    frame = con.execute(
+        """
+        SELECT
+            sample_count,
+            submit_ack_rate,
+            fill_rate,
+            resolution_rate,
+            partial_fill_rate,
+            cancel_rate,
+            adverse_fill_slippage_bps_p50,
+            adverse_fill_slippage_bps_p90,
+            submit_latency_ms_p50,
+            submit_latency_ms_p90,
+            fill_latency_ms_p50,
+            fill_latency_ms_p90,
+            realized_edge_retention_bps_p50,
+            realized_edge_retention_bps_p90,
+            avg_realized_pnl,
+            avg_post_trade_error,
+            miss_rate,
+            distortion_rate,
+            dominant_miss_reason_bucket,
+            dominant_distortion_reason_bucket,
+            feedback_status,
+            feedback_penalty,
+            cohort_prior_version,
+            market_id
+        FROM weather.weather_execution_priors
+        WHERE station_id = ?
+          AND metric = ?
+          AND side = ?
+          AND horizon_bucket = ?
+          AND liquidity_bucket = ?
+          AND cohort_type = 'market'
+        """,
+        [station_id, metric, side, horizon_bucket, liquidity_bucket],
+    ).fetchdf()
+    if frame.empty:
+        return None
+    sample_count = int(frame["sample_count"].fillna(0).sum())
+    if sample_count <= 0:
+        return None
+    feature_scope = _build_prior_feature_scope(
+        ExecutionPriorKey(
+            market_id=None,
+            strategy_id=None,
+            wallet_id=None,
+            station_id=station_id,
+            metric=metric,
+            side=side,
+            horizon_bucket=horizon_bucket,
+            liquidity_bucket=liquidity_bucket,
+            market_age_bucket=market_age_bucket,
+            hours_to_close_bucket=hours_to_close_bucket,
+            calibration_quality_bucket=calibration_quality_bucket,
+            source_freshness_bucket=source_freshness_bucket,
+        ),
+        lookup_mode="station_metric_fallback",
+        matched_market_count=int(frame["market_id"].fillna("").astype(str).replace("", pd.NA).dropna().nunique()),
+    )
+    dominant_miss_reason_bucket = _dominant_bucket(
+        [str(item) for item in frame["dominant_miss_reason_bucket"].dropna().tolist()],
+        priority={**_MARKET_MISS_PRIORITY, "not_submitted": 3},
+        default="not_submitted",
+    )
+    dominant_distortion_reason_bucket = _dominant_bucket(
+        [str(item) for item in frame["dominant_distortion_reason_bucket"].dropna().tolist()],
+        priority={"execution_distortion": 0, "forecast_distortion": 1, "ranking_distortion": 2, "none": 3},
+        default="none",
+    )
+    feedback_prior = build_execution_feedback_prior(
+        sample_count=sample_count,
+        miss_rate=_weighted_mean(frame, "miss_rate"),
+        distortion_rate=_weighted_mean(frame, "distortion_rate"),
+        resolution_rate=_weighted_mean(frame, "resolution_rate"),
+        partial_fill_rate=_weighted_mean(frame, "partial_fill_rate"),
+        cancel_rate=_weighted_mean(frame, "cancel_rate"),
+        adverse_fill_slippage_bps_p50=_weighted_mean_optional(frame, "adverse_fill_slippage_bps_p50"),
+        dominant_miss_reason_bucket=dominant_miss_reason_bucket,
+        dominant_distortion_reason_bucket=dominant_distortion_reason_bucket,
+        cohort_prior_version="feedback_v1",
+        scope_breakdown={
+            "cohort_type": "station_metric_fallback",
+            "sample_count": sample_count,
+            "matched_market_count": feature_scope["matched_market_count"],
+        },
+    )
+    return ExecutionPriorSummary(
+        prior_key=ExecutionPriorKey(
+            market_id=None,
+            strategy_id=None,
+            wallet_id=None,
+            station_id=station_id,
+            metric=metric,
+            side=side,
+            horizon_bucket=horizon_bucket,
+            liquidity_bucket=liquidity_bucket,
+            market_age_bucket=market_age_bucket,
+            hours_to_close_bucket=hours_to_close_bucket,
+            calibration_quality_bucket=calibration_quality_bucket,
+            source_freshness_bucket=source_freshness_bucket,
+        ),
+        sample_count=sample_count,
+        submit_ack_rate=_weighted_mean(frame, "submit_ack_rate"),
+        fill_rate=_weighted_mean(frame, "fill_rate"),
+        resolution_rate=_weighted_mean(frame, "resolution_rate"),
+        partial_fill_rate=_weighted_mean(frame, "partial_fill_rate"),
+        cancel_rate=_weighted_mean(frame, "cancel_rate"),
+        adverse_fill_slippage_bps_p50=_weighted_mean_optional(frame, "adverse_fill_slippage_bps_p50"),
+        adverse_fill_slippage_bps_p90=_weighted_mean_optional(frame, "adverse_fill_slippage_bps_p90"),
+        submit_latency_ms_p50=_weighted_mean_optional(frame, "submit_latency_ms_p50"),
+        submit_latency_ms_p90=_weighted_mean_optional(frame, "submit_latency_ms_p90"),
+        fill_latency_ms_p50=_weighted_mean_optional(frame, "fill_latency_ms_p50"),
+        fill_latency_ms_p90=_weighted_mean_optional(frame, "fill_latency_ms_p90"),
+        realized_edge_retention_bps_p50=_weighted_mean_optional(frame, "realized_edge_retention_bps_p50"),
+        realized_edge_retention_bps_p90=_weighted_mean_optional(frame, "realized_edge_retention_bps_p90"),
+        avg_realized_pnl=_weighted_mean_optional(frame, "avg_realized_pnl"),
+        avg_post_trade_error=_weighted_mean_optional(frame, "avg_post_trade_error"),
+        prior_quality_status="ready" if sample_count >= 10 else "sparse",
+        prior_lookup_mode="station_metric_fallback",
+        prior_feature_scope=feature_scope,
+        feedback_prior=feedback_prior if feedback_prior.feedback_status != "missing" else None,
+    )
+
+
+def _build_prior_feature_scope(
+    prior_key: ExecutionPriorKey,
+    *,
+    lookup_mode: str,
+    matched_market_count: int | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "lookup_mode": lookup_mode,
+        "market_id": prior_key.market_id,
+        "station_id": prior_key.station_id,
+        "metric": prior_key.metric,
+        "side": prior_key.side,
+        "horizon_bucket": prior_key.horizon_bucket,
+        "liquidity_bucket": prior_key.liquidity_bucket,
+        "market_age_bucket": prior_key.market_age_bucket,
+        "hours_to_close_bucket": prior_key.hours_to_close_bucket,
+        "calibration_quality_bucket": prior_key.calibration_quality_bucket,
+        "source_freshness_bucket": prior_key.source_freshness_bucket,
+    }
+    if matched_market_count is not None:
+        payload["matched_market_count"] = int(matched_market_count)
+    return payload
 
 
 def _latest_status_by_ticket(frame, *, status_col: str = "status", ts_col: str = "created_at") -> dict[str, str]:
@@ -931,6 +1349,85 @@ def _dominant_bucket(values: list[str], *, priority: dict[str, int], default: st
     candidates = [item for item, count in counts.items() if count == best_count]
     candidates.sort(key=lambda item: priority.get(item, 999))
     return candidates[0] if candidates else default
+
+
+def _weighted_mean(frame, value_col: str, *, weight_col: str = "sample_count") -> float:
+    if frame.empty or value_col not in frame.columns:
+        return 0.0
+    subset = frame[[value_col, weight_col]].copy()
+    subset[value_col] = pd.to_numeric(subset[value_col], errors="coerce")
+    subset[weight_col] = pd.to_numeric(subset[weight_col], errors="coerce").fillna(0.0)
+    subset = subset.dropna(subset=[value_col])
+    total_weight = float(subset[weight_col].sum())
+    if total_weight <= 0.0 or subset.empty:
+        return 0.0
+    return round(float((subset[value_col] * subset[weight_col]).sum()) / total_weight, 6)
+
+
+def _weighted_mean_optional(frame, value_col: str, *, weight_col: str = "sample_count") -> float | None:
+    if frame.empty or value_col not in frame.columns:
+        return None
+    subset = frame[[value_col, weight_col]].copy()
+    subset[value_col] = pd.to_numeric(subset[value_col], errors="coerce")
+    subset[weight_col] = pd.to_numeric(subset[weight_col], errors="coerce").fillna(0.0)
+    subset = subset.dropna(subset=[value_col])
+    total_weight = float(subset[weight_col].sum())
+    if total_weight <= 0.0 or subset.empty:
+        return None
+    return round(float((subset[value_col] * subset[weight_col]).sum()) / total_weight, 6)
+
+
+def _latency_ms(start: datetime | None, end: datetime | None) -> float | None:
+    if start is None or end is None:
+        return None
+    return round(max((end - start).total_seconds() * 1000.0, 0.0), 6)
+
+
+def _market_age_bucket(*, ticket_created_at: datetime | None, market_created_at: datetime | None) -> str:
+    if ticket_created_at is None or market_created_at is None:
+        return "unknown"
+    age_hours = max((ticket_created_at - market_created_at).total_seconds() / 3600.0, 0.0)
+    if age_hours < 12.0:
+        return "new"
+    if age_hours <= 72.0:
+        return "active"
+    return "late"
+
+
+def _hours_to_close_bucket(*, ticket_created_at: datetime | None, market_close_time: datetime | None) -> str:
+    if ticket_created_at is None or market_close_time is None:
+        return "unknown"
+    hours_to_close = max((market_close_time - ticket_created_at).total_seconds() / 3600.0, 0.0)
+    if hours_to_close <= 6.0:
+        return "0-6"
+    if hours_to_close <= 24.0:
+        return "6-24"
+    if hours_to_close <= 72.0:
+        return "24-72"
+    return "72+"
+
+
+def _calibration_quality_bucket(pricing_context: dict[str, Any]) -> str:
+    quality = str(
+        pricing_context.get("calibration_bias_quality")
+        or pricing_context.get("bias_quality_status")
+        or pricing_context.get("threshold_probability_quality")
+        or pricing_context.get("threshold_probability_quality_status")
+        or pricing_context.get("calibration_health_status")
+        or ""
+    ).strip()
+    if quality in {"healthy", "watch", "degraded"}:
+        return quality
+    return "sparse_or_missing"
+
+
+def _source_freshness_bucket(pricing_context: dict[str, Any]) -> str:
+    freshness = str(pricing_context.get("source_freshness_status") or "").strip()
+    if freshness == "fresh":
+        return "fresh"
+    if freshness == "stale":
+        return "stale"
+    return "degraded_or_missing"
 
 
 def _table_exists(con, table_name: str) -> bool:

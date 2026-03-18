@@ -213,7 +213,21 @@ class UiDataAccessTest(unittest.TestCase):
                         'ranking_score', 0.15, 0.72, 0.02, 1.8, 0.18, 'watch', 'feedback_v1', ?
                     )
                     """,
-                    [json.dumps({"version": "ranking_v2", "mode": "prior_backed", "ranking_score": 0.235, "feedback_penalty": 0.18})],
+                    [
+                        json.dumps(
+                            {
+                                "version": "ranking_v2",
+                                "mode": "prior_backed",
+                                "ranking_score": 0.235,
+                                "feedback_penalty": 0.18,
+                                "prior_lookup_mode": "station_metric_fallback",
+                                "latency_penalty": 0.01,
+                                "tail_slippage_penalty": 0.005,
+                                "edge_retention_penalty": 0.012,
+                                "quality_confidence_multiplier": 0.93,
+                            }
+                        )
+                    ],
                 )
             finally:
                 con.close()
@@ -225,6 +239,7 @@ class UiDataAccessTest(unittest.TestCase):
         self.assertEqual(row["primary_score_label"], "ranking_score")
         self.assertEqual(row["ranking_score"], 0.235)
         self.assertEqual(json.loads(row["why_ranked_json"])["mode"], "prior_backed")
+        self.assertEqual(json.loads(row["why_ranked_json"])["prior_lookup_mode"], "station_metric_fallback")
         self.assertEqual(row["feedback_status"], "watch")
         self.assertEqual(row["cohort_prior_version"], "feedback_v1")
         self.assertEqual(row["feedback_penalty"], 0.18)
@@ -829,6 +844,64 @@ class UiDataAccessTest(unittest.TestCase):
 
             self.assertEqual(snapshot["largest_blocker"]["source"], "readiness")
             self.assertEqual(snapshot["recent_agent_summary"]["agent_type"], "rule2spec")
+
+    def test_console_overview_exposes_action_queue_from_persisted_allocation_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ui_path = Path(tmpdir) / "ui_lite.duckdb"
+            con = duckdb.connect(str(ui_path))
+            try:
+                con.execute("CREATE SCHEMA ui")
+                con.execute("CREATE TABLE ui.phase_readiness_summary(gate_name TEXT, status TEXT)")
+                con.execute("INSERT INTO ui.phase_readiness_summary VALUES ('signer_path_health', 'PASS')")
+                con.execute(
+                    """
+                    CREATE TABLE ui.market_opportunity_summary(
+                        market_id TEXT,
+                        question TEXT,
+                        location_name TEXT,
+                        market_close_time TIMESTAMP,
+                        accepting_orders BOOLEAN,
+                        best_side TEXT,
+                        ranking_score DOUBLE,
+                        recommended_size DOUBLE,
+                        allocation_status TEXT,
+                        budget_impact JSON,
+                        allocation_decision_id TEXT,
+                        actionability_status TEXT,
+                        source_badge TEXT,
+                        source_truth_status TEXT,
+                        is_degraded_source BOOLEAN,
+                        primary_score_label TEXT
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO ui.market_opportunity_summary VALUES
+                    (
+                        'mkt_action', 'Seattle weather', 'Seattle', '2026-03-13 12:00:00', TRUE, 'BUY',
+                        0.42, 4.0, 'resized', '{"remaining_run_budget":0.0,"binding_limit_scope":"market"}',
+                        'alloc_1', 'actionable', 'canonical', 'canonical', FALSE, 'ranking_score'
+                    ),
+                    (
+                        'mkt_blocked', 'Miami weather', 'Miami', '2026-03-13 14:00:00', TRUE, 'BUY',
+                        0.35, 0.0, 'blocked', '{"remaining_run_budget":0.0,"binding_limit_scope":"station"}',
+                        'alloc_2', 'actionable', 'canonical', 'canonical', FALSE, 'ranking_score'
+                    )
+                    """
+                )
+                con.execute(
+                    "CREATE TABLE ui.agent_review_summary(agent_type TEXT, subject_type TEXT, subject_id TEXT, invocation_status TEXT, verdict TEXT, confidence DOUBLE, summary TEXT, human_review_required BOOLEAN, updated_at TIMESTAMP)"
+                )
+            finally:
+                con.close()
+
+            with patch.dict(os.environ, {"ASTERION_UI_LITE_DB_PATH": str(ui_path)}, clear=False):
+                overview = build_ops_console_overview()
+
+        self.assertEqual(overview["metrics"]["action_queue_count"], 1)
+        self.assertEqual(len(overview["action_queue"].index), 1)
+        self.assertEqual(overview["action_queue"].iloc[0]["allocation_status"], "resized")
 
     def test_load_operator_surface_status_reports_no_data_when_everything_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

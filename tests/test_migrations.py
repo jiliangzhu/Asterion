@@ -40,6 +40,10 @@ class MigrationFilesTest(unittest.TestCase):
                 "0020_weather_forecast_calibration_profiles_v2.sql",
                 "0021_weather_execution_priors_feedback.sql",
                 "0022_runtime_execution_feedback_materializations.sql",
+                "0023_weather_execution_priors_phase1.sql",
+                "0024_runtime_ranking_retrospective.sql",
+                "0025_trading_allocation_policies.sql",
+                "0026_runtime_allocation_artifacts.sql",
             ],
         )
 
@@ -97,6 +101,14 @@ class MigrationFilesTest(unittest.TestCase):
         self.assertIn("threshold_probability_profile_json TEXT", contents["0020_weather_forecast_calibration_profiles_v2.sql"])
         self.assertIn("ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS cohort_type", contents["0021_weather_execution_priors_feedback.sql"])
         self.assertIn("runtime.execution_feedback_materializations", contents["0022_runtime_execution_feedback_materializations.sql"])
+        self.assertIn("ALTER TABLE weather.weather_execution_priors ADD COLUMN IF NOT EXISTS station_id", contents["0023_weather_execution_priors_phase1.sql"])
+        self.assertIn("runtime.ranking_retrospective_runs", contents["0024_runtime_ranking_retrospective.sql"])
+        self.assertIn("runtime.ranking_retrospective_rows", contents["0024_runtime_ranking_retrospective.sql"])
+        self.assertIn("trading.allocation_policies", contents["0025_trading_allocation_policies.sql"])
+        self.assertIn("trading.position_limit_policies", contents["0025_trading_allocation_policies.sql"])
+        self.assertIn("runtime.capital_allocation_runs", contents["0026_runtime_allocation_artifacts.sql"])
+        self.assertIn("runtime.allocation_decisions", contents["0026_runtime_allocation_artifacts.sql"])
+        self.assertIn("runtime.position_limit_checks", contents["0026_runtime_allocation_artifacts.sql"])
 
 
 @unittest.skipUnless(HAS_DUCKDB, "duckdb is required for migration application tests")
@@ -115,7 +127,7 @@ class ApplyMigrationsTest(unittest.TestCase):
                 clear=False,
             ):
                 applied = apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=str(root)))
-            self.assertEqual(len(applied), 22)
+            self.assertEqual(len(applied), 26)
 
 
 if __name__ == "__main__":

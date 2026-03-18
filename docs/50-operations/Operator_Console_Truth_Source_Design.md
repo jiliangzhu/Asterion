@@ -1,8 +1,8 @@
 # Operator Console Truth Source Design
 
-**版本**: v1.2  
-**更新日期**: 2026-03-17  
-**状态**: historical accepted supporting design (`Post-P4 Phase 10` / `Post-P4 Phase 11` / `Post-P4 Phase 14` / `Post-P4 Phase 15`)  
+**版本**: v1.2
+**更新日期**: 2026-03-17
+**状态**: historical accepted supporting design (`Post-P4 Phase 10` / `Post-P4 Phase 11` / `Post-P4 Phase 14` / `Post-P4 Phase 15`)
 **对应阶段**: `Post-P4 Phase 10`, `Post-P4 Phase 11`, `Post-P4 Phase 14`, `Post-P4 Phase 15`
 
 ---
@@ -108,7 +108,7 @@ Markets / Execution / Home 所有核心表行固定支持：
 
 - 这是 analysis input
 - 不是 implementation truth-source
-- 当前 active planning entry 是 `V2_Implementation_Plan.md`
+- 当前 active implementation entry 是 `V2_Implementation_Plan.md`
 
 ---
 

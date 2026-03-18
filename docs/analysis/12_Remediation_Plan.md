@@ -2,7 +2,7 @@
 
 > Analysis input only.
 > Not implementation truth-source.
-> Active planning entry: `docs/10-implementation/phase-plans/V2_Implementation_Plan.md`
+> Active implementation entry: `docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md`
 
 **状态**: historical remediation draft (`2026-03-13`)
 
@@ -215,7 +215,7 @@ def build_ensemble_distribution(
 
 ### 1.2 验证 P3/P4 Closeout Checklist
 
-**问题**: `docs/10-implementation/checklists/P3_Closeout_Checklist.md` 和 `P4_Closeout_Checklist.md` 全部 `[ ]` 未勾选。
+**问题**: `docs/10-implementation/versions/v1.0/checklists/P3_Closeout_Checklist.md` 和 `P4_Closeout_Checklist.md` 全部 `[ ]` 未勾选。
 
 **影响**: 文档声称已关闭但验证未执行，项目状态不可信。
 

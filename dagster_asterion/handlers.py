@@ -126,6 +126,7 @@ from asterion_core.risk import (
     apply_fill_to_inventory,
     apply_fill_to_reservation,
     apply_reservation_to_inventory,
+    build_market_station_map,
     build_external_execution_reconciliation_result,
     build_exposure_snapshot,
     build_reservation,
@@ -133,8 +134,12 @@ from asterion_core.risk import (
     classify_external_execution_reconciliation_status,
     finalize_reservation,
     classify_reconciliation_status,
+    enqueue_allocation_decision_upserts,
+    enqueue_capital_allocation_run_upserts,
+    enqueue_position_limit_check_upserts,
     load_inventory_positions,
     load_reservation_for_order,
+    materialize_capital_allocation,
     reconciliation_journal_payload,
     release_reservation_to_inventory,
 )
@@ -181,7 +186,10 @@ from domains.weather.opportunity import (
     build_feedback_materialization_id,
     enqueue_execution_feedback_materialization_upserts,
     enqueue_execution_prior_upserts,
+    enqueue_ranking_retrospective_row_upserts,
+    enqueue_ranking_retrospective_run_upserts,
     materialize_execution_priors,
+    materialize_ranking_retrospective,
 )
 from domains.weather.pricing import (
     enqueue_fair_value_upserts,
@@ -1865,6 +1873,55 @@ def run_weather_execution_priors_refresh_job(
     )
 
 
+def run_weather_ranking_retrospective_refresh_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    lookback_days: int = 30,
+    as_of: datetime | None = None,
+    run_id: str | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    retrospective_run, retrospective_rows, summary = materialize_ranking_retrospective(
+        con,
+        as_of=as_of or datetime.now(UTC),
+        lookback_days=lookback_days,
+        baseline_version="ranking_retro_v1",
+        run_id=request_id,
+    )
+    task_ids: list[str] = []
+    task_ids.extend(
+        _append_task_id(
+            enqueue_ranking_retrospective_run_upserts(
+                queue_cfg,
+                runs=[retrospective_run],
+                run_id=request_id,
+            )
+        )
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_ranking_retrospective_row_upserts(
+                queue_cfg,
+                rows=retrospective_rows,
+                run_id=request_id,
+            )
+        )
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_ranking_retrospective_refresh",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=len(retrospective_rows),
+        metadata={
+            "lookback_days": int(lookback_days),
+            "snapshot_count": retrospective_run.snapshot_count,
+            "row_count": len(retrospective_rows),
+            "baseline_version": summary.baseline_version,
+        },
+    )
+
+
 def run_weather_forecast_calibration_profiles_v2_refresh_job(
     con,
     queue_cfg: WriteQueueConfig,
@@ -1894,6 +1951,110 @@ def run_weather_forecast_calibration_profiles_v2_refresh_job(
         metadata={
             "lookback_days": int(lookback_days),
             "profile_count": len(materialized),
+        },
+    )
+
+
+def run_weather_allocation_preview_refresh_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    params_json: dict[str, Any],
+    run_id: str | None = None,
+    observed_at: datetime | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    batch_request = _normalize_paper_execution_request(params_json)
+    if batch_request.snapshot_ids:
+        snapshots, signal_ts_lookup, created_at_lookup = load_selected_watch_only_snapshots(
+            con,
+            snapshot_ids=batch_request.snapshot_ids,
+        )
+    else:
+        snapshots, signal_ts_lookup, created_at_lookup = load_selected_watch_only_snapshots(
+            con,
+            market_ids=batch_request.market_ids,
+            limit=batch_request.snapshot_limit,
+        )
+    selected_snapshot_ids = [snapshot.snapshot_id for snapshot in snapshots]
+    selected_market_ids = _stable_unique_values([snapshot.market_id for snapshot in snapshots])
+    resolved_asof_ts_ms = batch_request.asof_ts_ms
+    if resolved_asof_ts_ms is None:
+        resolved_asof_ts_ms = _resolve_paper_execution_asof_ts_ms(
+            snapshot_ids=selected_snapshot_ids,
+            signal_ts_lookup=signal_ts_lookup,
+            created_at_lookup=created_at_lookup,
+        )
+    ctx = StrategyContext(
+        data_snapshot_id=batch_request.data_snapshot_id
+        or stable_object_id("dsnap", {"snapshot_ids": selected_snapshot_ids}),
+        universe_snapshot_id=batch_request.universe_snapshot_id
+        or stable_object_id("usnap", {"market_ids": selected_market_ids}),
+        asof_ts_ms=resolved_asof_ts_ms,
+        dq_level=batch_request.dq_level,
+        quote_snapshot_refs=list(batch_request.quote_snapshot_refs),
+    )
+    current_inventory_positions = load_inventory_positions(con, wallet_id=batch_request.wallet_id)
+    strategy_run, decisions = run_strategy_engine(
+        ctx=ctx,
+        snapshots=snapshots,
+        strategies=list(batch_request.strategy_registrations),
+        snapshot_signal_ts_ms=signal_ts_lookup,
+        created_at=observed_at or datetime.now(UTC),
+    )
+    allocation_run, allocation_decisions, position_limit_checks = materialize_capital_allocation(
+        con,
+        decisions=decisions,
+        wallet_id=batch_request.wallet_id,
+        run_id=strategy_run.run_id,
+        source_kind="allocation_preview",
+        current_inventory_positions=current_inventory_positions,
+        market_station_map=build_market_station_map(con, market_ids=selected_market_ids),
+        created_at=observed_at or datetime.now(UTC),
+    )
+    task_ids: list[str] = []
+    task_ids.extend(
+        _append_task_id(
+            enqueue_capital_allocation_run_upserts(
+                queue_cfg,
+                runs=[allocation_run],
+                run_id=request_id,
+            )
+        )
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_allocation_decision_upserts(
+                queue_cfg,
+                decisions=allocation_decisions,
+                run_id=request_id,
+            )
+        )
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_position_limit_check_upserts(
+                queue_cfg,
+                checks=position_limit_checks,
+                run_id=request_id,
+            )
+        )
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_allocation_preview_refresh",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=len(allocation_decisions),
+        metadata={
+            "wallet_id": batch_request.wallet_id,
+            "selected_snapshot_ids": selected_snapshot_ids,
+            "selected_market_ids": selected_market_ids,
+            "decision_count": len(decisions),
+            "allocation_run_id": allocation_run.allocation_run_id,
+            "approved_count": allocation_run.approved_count,
+            "resized_count": allocation_run.resized_count,
+            "blocked_count": allocation_run.blocked_count,
+            "policy_missing_count": allocation_run.policy_missing_count,
         },
     )
 
@@ -1948,8 +2109,45 @@ def run_weather_paper_execution_job(
         snapshot_signal_ts_ms=signal_ts_lookup,
         created_at=observed_at or datetime.now(UTC),
     )
-
-    tickets = [build_trade_ticket(decision, created_at=observed_at or datetime.now(UTC)) for decision in decisions]
+    allocation_run, allocation_decisions, position_limit_checks = materialize_capital_allocation(
+        con,
+        decisions=decisions,
+        wallet_id=batch_request.wallet_id,
+        run_id=strategy_run.run_id,
+        source_kind="paper_execution",
+        current_inventory_positions=current_inventory_positions,
+        market_station_map=build_market_station_map(con, market_ids=selected_market_ids),
+        created_at=observed_at or datetime.now(UTC),
+    )
+    allocation_decision_by_decision_id = {
+        item.decision_id: item for item in allocation_decisions
+    }
+    tickets = []
+    for decision in decisions:
+        allocation_decision = allocation_decision_by_decision_id.get(decision.decision_id)
+        allocation_context = None
+        size_override = None
+        if allocation_decision is not None:
+            allocation_context = {
+                "requested_size": allocation_decision.requested_size,
+                "recommended_size": allocation_decision.recommended_size,
+                "allocation_status": allocation_decision.allocation_status,
+                "allocation_decision_id": allocation_decision.allocation_decision_id,
+                "allocation_reason_codes": list(allocation_decision.reason_codes),
+                "budget_impact": dict(allocation_decision.budget_impact),
+                "policy_id": allocation_decision.policy_id,
+                "policy_version": allocation_decision.policy_version,
+            }
+            if allocation_decision.allocation_status in {"approved", "resized"} and allocation_decision.recommended_size > 0.0:
+                size_override = Decimal(str(allocation_decision.recommended_size))
+        tickets.append(
+            build_trade_ticket(
+                decision,
+                created_at=observed_at or datetime.now(UTC),
+                size_override=size_override,
+                allocation_context=allocation_context,
+            )
+        )
     market_capabilities = {
         token_id: load_market_capability(con, token_id=token_id)
         for token_id in _stable_unique_values([ticket.token_id for ticket in tickets])
@@ -1999,6 +2197,23 @@ def run_weather_paper_execution_job(
         )
     ]
     for ticket in enriched_tickets:
+        allocation_decision = allocation_decision_by_decision_id.get(
+            str(ticket.provenance_json.get("decision_id") or "")
+        )
+        allocation_context = (
+            {
+                "requested_size": allocation_decision.requested_size,
+                "recommended_size": allocation_decision.recommended_size,
+                "allocation_status": allocation_decision.allocation_status,
+                "allocation_decision_id": allocation_decision.allocation_decision_id,
+                "allocation_reason_codes": list(allocation_decision.reason_codes),
+                "budget_impact": dict(allocation_decision.budget_impact),
+                "policy_id": allocation_decision.policy_id,
+                "policy_version": allocation_decision.policy_version,
+            }
+            if allocation_decision is not None
+            else None
+        )
         hydrated_execution_context = execution_context_records_by_id[ticket.execution_context_id or ""].execution_context
         signal_order_intent = build_signal_order_intent_from_handoff(
             ticket,
@@ -2023,6 +2238,7 @@ def run_weather_paper_execution_job(
             degrade_active=False,
             available_quantity=available_quantity,
             created_at=observed_at or datetime.now(UTC),
+            allocation_context=allocation_context,
         )
         gate_decisions.append(gate_decision)
         routed_order = route_trade_ticket(ticket, hydrated_execution_context)
@@ -2088,6 +2304,26 @@ def run_weather_paper_execution_job(
         )
         if not gate_decision.allowed:
             rejected_ticket_ids.append(ticket.ticket_id)
+            if allocation_decision is not None and allocation_decision.allocation_status in {"blocked", "policy_missing"}:
+                journal_events.append(
+                    build_journal_event(
+                        event_type="allocation.blocked",
+                        entity_type="allocation_decision",
+                        entity_id=allocation_decision.allocation_decision_id,
+                        run_id=strategy_run.run_id,
+                        payload_json={
+                            "allocation_decision_id": allocation_decision.allocation_decision_id,
+                            "ticket_id": ticket.ticket_id,
+                            "request_id": ticket.request_id,
+                            "allocation_status": allocation_decision.allocation_status,
+                            "recommended_size": allocation_decision.recommended_size,
+                            "reason_codes": list(allocation_decision.reason_codes),
+                            "policy_id": allocation_decision.policy_id,
+                            "policy_version": allocation_decision.policy_version,
+                        },
+                        created_at=observed_at or datetime.now(UTC),
+                    )
+                )
             journal_events.append(
                 build_journal_event(
                     event_type="order.rejected_by_gate",
@@ -2393,6 +2629,33 @@ def run_weather_paper_execution_job(
 
     task_ids: list[str] = []
     task_ids.extend(_append_task_id(enqueue_strategy_run_upserts(queue_cfg, runs=[strategy_run], run_id=request_id)))
+    task_ids.extend(
+        _append_task_id(
+            enqueue_capital_allocation_run_upserts(
+                queue_cfg,
+                runs=[allocation_run],
+                run_id=request_id,
+            )
+        )
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_allocation_decision_upserts(
+                queue_cfg,
+                decisions=allocation_decisions,
+                run_id=request_id,
+            )
+        )
+    )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_position_limit_check_upserts(
+                queue_cfg,
+                checks=position_limit_checks,
+                run_id=request_id,
+            )
+        )
+    )
     task_ids.extend(_append_task_id(enqueue_trade_ticket_upserts(queue_cfg, tickets=enriched_tickets, run_id=request_id)))
     task_ids.extend(_append_task_id(enqueue_gate_decision_upserts(queue_cfg, gate_decisions=gate_decisions, run_id=request_id)))
     task_ids.extend(_append_task_id(enqueue_order_upserts(queue_cfg, orders=paper_orders, run_id=request_id)))
@@ -2452,6 +2715,11 @@ def run_weather_paper_execution_job(
             "strategy_ids": [item.strategy_id for item in batch_request.strategy_registrations],
             "decision_count": len(decisions),
             "ticket_count": len(enriched_tickets),
+            "allocation_run_id": allocation_run.allocation_run_id,
+            "approved_allocation_count": allocation_run.approved_count,
+            "resized_allocation_count": allocation_run.resized_count,
+            "blocked_allocation_count": allocation_run.blocked_count,
+            "policy_missing_count": allocation_run.policy_missing_count,
             "gate_count": len(gate_decisions),
             "allowed_order_count": len(paper_orders),
             "reservation_count": len(reservations),

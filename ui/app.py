@@ -187,14 +187,14 @@ def _render_shell_header() -> None:
                     <h1 class="console-heading">Operator Console for Constrained Execution</h1>
                 </div>
                 <div>
-                    {_render_status_badge("Post-P4 remediation active", "ok")}
-                    {_render_status_badge("Closeout pending objective verification", "warn")}
+                    {_render_status_badge("v2.0 implementation active", "ok")}
+                    {_render_status_badge("P4/remediation accepted", "warn")}
                 </div>
             </div>
             <div class="console-subcopy">
                 当前 UI 的定位是 operator console + constrained execution infra：聚焦机会优先的 weather markets、execution science、
                 live-prereq wallet / execution、readiness evidence 与 controlled-live boundary。这里不是 unattended live，也不是 unrestricted live；
-                当前默认口径是 post-P4 remediation active / closeout pending objective verification。
+                当前默认口径是 P4 accepted; post-P4 remediation accepted; v2.0 implementation active。
             </div>
         </div>
         """,

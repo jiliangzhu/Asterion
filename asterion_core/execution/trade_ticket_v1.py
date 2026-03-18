@@ -12,7 +12,10 @@ def build_trade_ticket(
     decision: StrategyDecision,
     *,
     created_at: datetime | None = None,
+    size_override: Decimal | None = None,
+    allocation_context: dict[str, object] | None = None,
 ) -> TradeTicket:
+    effective_size = size_override if size_override is not None else decision.size
     provenance = {
         "decision_id": decision.decision_id,
         "decision_rank": decision.decision_rank,
@@ -23,7 +26,22 @@ def build_trade_ticket(
         "strategy_version": decision.strategy_version,
         "watch_snapshot_id": decision.watch_snapshot_id,
     }
+    if allocation_context:
+        provenance.update(
+            {
+                "requested_size": str(decision.size),
+                "recommended_size": str(allocation_context.get("recommended_size") or effective_size),
+                "allocation_status": allocation_context.get("allocation_status"),
+                "allocation_decision_id": allocation_context.get("allocation_decision_id"),
+                "allocation_reason_codes": list(allocation_context.get("allocation_reason_codes") or []),
+                "budget_impact": dict(allocation_context.get("budget_impact") or {}),
+                "policy_id": allocation_context.get("policy_id"),
+                "policy_version": allocation_context.get("policy_version"),
+            }
+        )
     semantic_payload = {
+        "allocation_decision_id": allocation_context.get("allocation_decision_id") if allocation_context else None,
+        "allocation_status": allocation_context.get("allocation_status") if allocation_context else None,
         "decision_rank": decision.decision_rank,
         "edge_bps": decision.edge_bps,
         "fair_value": str(decision.fair_value),
@@ -34,7 +52,7 @@ def build_trade_ticket(
         "run_id": decision.run_id,
         "side": decision.side,
         "signal_ts_ms": decision.signal_ts_ms,
-        "size": str(decision.size),
+        "size": str(effective_size),
         "strategy_id": decision.strategy_id,
         "strategy_version": decision.strategy_version,
         "threshold_bps": decision.threshold_bps,
@@ -57,7 +75,7 @@ def build_trade_ticket(
         edge_bps=decision.edge_bps,
         threshold_bps=decision.threshold_bps,
         route_action=decision.route_action,
-        size=decision.size,
+        size=effective_size,
         signal_ts_ms=decision.signal_ts_ms,
         forecast_run_id=decision.forecast_run_id,
         watch_snapshot_id=decision.watch_snapshot_id,

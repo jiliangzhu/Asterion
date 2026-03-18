@@ -430,11 +430,15 @@ def main() -> int:
                     execution_prior_summary=load_execution_prior_summary(
                         con,
                         market_id=item.market_id,
+                        station_id=spec.station_id,
+                        metric=forecast_run.metric,
                         side="BUY" if item.fair_value >= market_prices[item.outcome] else "SELL",
                         forecast_target_time=forecast_run.forecast_target_time,
                         observation_date=forecast_run.observation_date,
                         depth_proxy=0.85 if market.enable_order_book and 0.10 <= market_prices[item.outcome] <= 0.90 else 0.55,
                         spread_bps=None,
+                        calibration_quality_bucket=None if calibration_summary is None else calibration_summary.calibration_health_status,
+                        source_freshness_bucket=source_health_snapshot.source_freshness_status,
                     ),
                     pricing_context={
                         "calibration_health_status": None if calibration_summary is None else calibration_summary.calibration_health_status,

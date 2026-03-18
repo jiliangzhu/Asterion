@@ -64,6 +64,8 @@ from .observations import (
     ExternalFillObservationKind,
 )
 from .opportunity import (
+    AllocationDecision,
+    CapitalAllocationRun,
     CohortDistortionSummary,
     ExecutionPriorKey,
     ExecutionFeedbackMaterializationStatus,
@@ -71,6 +73,10 @@ from .opportunity import (
     ExecutionPriorSummary,
     MarketQualityAssessment,
     OpportunityAssessment,
+    PositionLimitCheck,
+    RankingRetrospectiveRow,
+    RankingRetrospectiveRun,
+    RankingRetrospectiveSummary,
     RankingScoreV2Decomposition,
 )
 from .weather import (
@@ -107,7 +113,9 @@ from .weather import (
 
 __all__ = [
     "AccountTradingCapability",
+    "AllocationDecision",
     "BalanceType",
+    "CapitalAllocationRun",
     "CanonicalOrderContract",
     "CalibrationLookupKey",
     "CohortDistortionSummary",
@@ -142,7 +150,11 @@ __all__ = [
     "OrderStateTransition",
     "OrderStatus",
     "OpportunityAssessment",
+    "PositionLimitCheck",
     "ProposalStatus",
+    "RankingRetrospectiveRow",
+    "RankingRetrospectiveRun",
+    "RankingRetrospectiveSummary",
     "RankingScoreV2Decomposition",
     "ReconciliationResult",
     "ReconciliationStatus",

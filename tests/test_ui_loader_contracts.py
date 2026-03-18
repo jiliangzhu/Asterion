@@ -39,7 +39,7 @@ class UiLoaderContractsTest(unittest.TestCase):
                 ), patch("ui.data_access.load_wallet_readiness_data", return_value=pd.DataFrame()):
                     readiness_contract = load_readiness_surface_contract()
                 with patch("ui.data_access.load_system_runtime_status", return_value={"ui_lite_exists": True}), patch(
-                    "ui.data_access.load_boundary_sidebar_truth", return_value={"truth_source_doc": "docs/10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md"}
+                    "ui.data_access.load_boundary_sidebar_truth", return_value={"truth_source_doc": "docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md"}
                 ), patch("ui.data_access.load_operator_surface_status", return_value={"overall": {"status": "ok"}}):
                     system_contract = load_system_surface_contract()
 

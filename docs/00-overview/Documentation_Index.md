@@ -1,10 +1,10 @@
 # Asterion Documentation Index
 
 **版本**: v1.5
-**更新日期**: 2026-03-17
+**更新日期**: 2026-03-18
 **目标**: 统一 Asterion 文档的目录结构、分类规则和 source-of-truth，避免后续开发中出现重复文档、重复接口定义和失效导航。
 
-> 当前仓库阶段状态：`P4 accepted; post-P4 remediation accepted; v2.0 planning`
+> 当前仓库阶段状态：`P4 accepted; post-P4 remediation accepted; v2.0 implementation active`
 
 ---
 
@@ -25,92 +25,51 @@
 用途：
 
 - 项目级总览
-- 主计划
-- 开发路线图
+- 版本导航
+- 当前 active version 的 overview
 - 文档索引
 
 当前文档：
 
 - `Documentation_Index.md`
-- `Asterion_Project_Plan.md`
-- `DEVELOPMENT_ROADMAP.md`
+- `Version_Index.md`
+- `versions/v1.0/Version_Summary.md`
+- `versions/v1.0-remediation/Version_Summary.md`
+- `versions/v2.0/Asterion_Project_Plan.md`
+- `versions/v2.0/DEVELOPMENT_ROADMAP.md`
 
 source-of-truth：
 
 - 项目范围、阶段、总体边界
-- 文档归档规则
-- 跨模块的开发顺序
+- 版本树与归档规则
+- 跨模块开发顺序
 
 ### `docs/10-implementation/`
 
 用途：
 
-- 按阶段拆解的实施文档
+- 按版本桶组织的实施文档
 - 任务顺序
 - 交付物与验收动作
 - 迁移说明、module notes、实施检查表
 - runbook / 运行交接文档
 
-当前文档：
+当前目录模型：
 
 - `Implementation_Index.md`
-- `phase-plans/V2_Implementation_Plan.md`
-- `phase-plans/P0_Implementation_Plan.md`
-- `phase-plans/P1_Implementation_Plan.md`
-- `phase-plans/P2_Implementation_Plan.md`
-- `phase-plans/P3_Implementation_Plan.md`
-- `phase-plans/P4_Implementation_Plan.md`
-- `phase-plans/Post_P4_Remediation_Implementation_Plan.md`
-- `checklists/V2_Closeout_Checklist.md`
-- `checklists/P0_Closeout_Checklist.md`
 - `checklists/Checklist_Index.md`
-- `checklists/P1_Closeout_Checklist.md`
-- `checklists/P2_Closeout_Checklist.md`
-- `checklists/P3_Closeout_Checklist.md`
-- `checklists/P4_Closeout_Checklist.md`
-- `checklists/Post_P4_P10_Closeout_Checklist.md`
-- `checklists/Post_P4_P11_Closeout_Checklist.md`
-- `checklists/Post_P4_P12_Closeout_Checklist.md`
-- `checklists/Post_P4_P13_Closeout_Checklist.md`
-- `checklists/Post_P4_P14_Closeout_Checklist.md`
-- `checklists/Post_P4_P15_Closeout_Checklist.md`
-- `runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md`
-- `runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md`
-- `runbooks/P3_Paper_Execution_Runbook.md`
-- `runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md`
-- `runbooks/P4_Controlled_Live_Smoke_Runbook.md`
-- `runbooks/P4_Controlled_Rollout_Decision_Runbook.md`
-- `migration-ledger/AlphaDesk_Migration_Ledger.md`
-- `module-notes/AlphaDesk_bronze_Module_Note.md`
-- `module-notes/AlphaDesk_clients_data_api_Module_Note.md`
-- `module-notes/AlphaDesk_database_Module_Note.md`
-- `module-notes/AlphaDesk_db_migrate_Module_Note.md`
-- `module-notes/AlphaDesk_determinism_Module_Note.md`
-- `module-notes/AlphaDesk_write_guard_audit_Module_Note.md`
-- `module-notes/AlphaDesk_write_queue_Module_Note.md`
-- `module-notes/AlphaDesk_writerd_Module_Note.md`
-- `module-notes/AlphaDesk_clients_gamma_Module_Note.md`
-- `module-notes/AlphaDesk_strategy_base_Module_Note.md`
-- `module-notes/AlphaDesk_ws_subscribe_Module_Note.md`
-- `module-notes/AlphaDesk_ws_agg_v3_Module_Note.md`
-- `module-notes/AlphaDesk_watch_only_gate_v3_Module_Note.md`
-- `module-notes/AlphaDesk_health_monitor_v1_Module_Note.md`
-- `module-notes/AlphaDesk_readiness_checker_v1_Module_Note.md`
-- `module-notes/AlphaDesk_ui_db_replica_Module_Note.md`
-- `module-notes/AlphaDesk_ui_lite_db_Module_Note.md`
-
-后续建议新增：
-
-- `module-notes/AlphaDesk_<Module>_Module_Note.md`
+- `versions/v1.0/`
+- `versions/v1.0-remediation/`
+- `versions/v2.0/`
 
 source-of-truth：
 
-- “这一阶段具体先做什么、后做什么、交付什么”
-- “每个阶段计划、检查清单、迁移台账分别放在哪里”
-- `v2.0` 的 active planning entry，以及 `P4` / post-P4 remediation 的历史 accepted 记录
+- “这一版本具体先做什么、后做什么、交付什么”
+- “每个版本桶中的阶段计划、检查清单、迁移台账分别放在哪里”
+- `v2.0` 的 active implementation entry，以及 `v1.0` / `v1.0-remediation` 的历史 accepted 记录
 - historical remediation 路径已完成到 `Post-P4 Phase 15`
-- reassessment 后续 `Phase 5+` 路线保留在历史 remediation record 中，不再作为当前 active planning entry
-- 当前状态与 operator 边界的 truth-source，以 `V2_Implementation_Plan.md` 和入口文档同步口径为准；`Post_P4_Remediation_Implementation_Plan.md` 保留为 historical accepted remediation record
+- 当前状态与 operator 边界的 truth-source，以 `docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md` 和入口文档同步口径为准；`docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md` 保留为 historical accepted remediation record
+- `versions/v1.0-remediation/checklists/Post_P4_P10_Closeout_Checklist.md` 到 `Post_P4_P15_Closeout_Checklist.md` 保留为 remediation historical accepted closeout set
 - `docs/analysis/*.md` 固定作为 analysis input，不升格为 implementation truth-source
 - `checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md` 当前只保留为 archive redirect note；不要把它当成 active closeout 入口
 
@@ -222,8 +181,8 @@ source-of-truth：
 source-of-truth：
 
 - 这些文档只作为 analysis input 和历史材料
-- 当前 planning truth-source 是 `docs/10-implementation/phase-plans/V2_Implementation_Plan.md`
-- `docs/10-implementation/phase-plans/Post_P4_Remediation_Implementation_Plan.md` 继续保留为 historical accepted remediation record
+- 当前 implementation truth-source 是 `docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md`
+- `docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md` 继续保留为 historical accepted remediation record
 
 ---
 
@@ -241,7 +200,7 @@ source-of-truth：
 
 建议路径：
 
-- `docs/10-implementation/phase-plans/`
+- `docs/10-implementation/versions/<version>/phase-plans/`
 
 ### Analysis 文档
 
@@ -257,7 +216,7 @@ source-of-truth：
 
 建议路径：
 
-- `docs/10-implementation/module-notes/`
+- `docs/10-implementation/versions/v1.0/module-notes/`
 
 ### Runbook
 
@@ -266,7 +225,7 @@ source-of-truth：
 
 建议路径：
 
-- `docs/10-implementation/runbooks/`
+- `docs/10-implementation/versions/<version>/runbooks/`
 
 ### 决策记录
 
@@ -281,14 +240,14 @@ source-of-truth：
 
 更新：
 
-- `docs/00-overview/Asterion_Project_Plan.md`
-- `docs/00-overview/DEVELOPMENT_ROADMAP.md`
+- `docs/00-overview/versions/v2.0/Asterion_Project_Plan.md`
+- `docs/00-overview/versions/v2.0/DEVELOPMENT_ROADMAP.md`
 
 ### 阶段实施顺序变化
 
 更新：
 
-- 对应 `docs/10-implementation/phase-plans/P*_Implementation_Plan.md`
+- 对应 `docs/10-implementation/versions/<version>/phase-plans/P*_Implementation_Plan.md`
 - 如影响整体顺序，再同步 `DEVELOPMENT_ROADMAP.md`
 
 ### 接口、数据契约、状态机变化
@@ -311,16 +270,16 @@ source-of-truth：
 
 1. `README.md`
 2. `docs/00-overview/Documentation_Index.md`
-3. `docs/00-overview/Asterion_Project_Plan.md`
-4. `docs/00-overview/DEVELOPMENT_ROADMAP.md`
+3. `docs/00-overview/versions/v2.0/Asterion_Project_Plan.md`
+4. `docs/00-overview/versions/v2.0/DEVELOPMENT_ROADMAP.md`
 5. `docs/10-implementation/Implementation_Index.md`
-6. `docs/10-implementation/phase-plans/P4_Implementation_Plan.md`
-7. `docs/10-implementation/checklists/P4_Closeout_Checklist.md`
-8. `docs/10-implementation/runbooks/P4_Controlled_Rollout_Decision_Runbook.md`
-9. `docs/10-implementation/runbooks/P4_Controlled_Live_Smoke_Runbook.md`
-10. `docs/10-implementation/checklists/P3_Closeout_Checklist.md`
-11. `docs/10-implementation/runbooks/P3_Paper_Execution_Runbook.md`
-12. `docs/10-implementation/phase-plans/P3_Implementation_Plan.md`
+6. `docs/10-implementation/versions/v1.0/phase-plans/P4_Implementation_Plan.md`
+7. `docs/10-implementation/versions/v1.0/checklists/P4_Closeout_Checklist.md`
+8. `docs/10-implementation/versions/v1.0/runbooks/P4_Controlled_Rollout_Decision_Runbook.md`
+9. `docs/10-implementation/versions/v1.0/runbooks/P4_Controlled_Live_Smoke_Runbook.md`
+10. `docs/10-implementation/versions/v1.0/checklists/P3_Closeout_Checklist.md`
+11. `docs/10-implementation/versions/v1.0/runbooks/P3_Paper_Execution_Runbook.md`
+12. `docs/10-implementation/versions/v1.0/phase-plans/P3_Implementation_Plan.md`
 13. 进入对应模块设计文档
 
 ---

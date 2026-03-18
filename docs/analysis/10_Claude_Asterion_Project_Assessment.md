@@ -2,7 +2,7 @@
 
 > Analysis input only.
 > Not implementation truth-source.
-> Active planning entry: `docs/10-implementation/phase-plans/V2_Implementation_Plan.md`
+> Active implementation entry: `docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md`
 
 **状态**: historical assessment snapshot (`2026-03-13`)
 
@@ -579,7 +579,7 @@ DuckDB (canonical) ──copy──→ ui_db_replica ──build──→ ui_lit
    - 优先级：P0（阻塞所有信号研究能力）
 
 2. **验证 P3/P4 Closeout Checklist**
-   - 文件：`docs/10-implementation/checklists/P3_Closeout_Checklist.md`, `P4_Closeout_Checklist.md`
+   - 文件：`docs/10-implementation/versions/v1.0/checklists/P3_Closeout_Checklist.md`, `P4_Closeout_Checklist.md`
    - 方案：逐项运行验证，勾选或标注未通过项
    - 优先级：P0（消除文档漂移）
 
@@ -688,7 +688,7 @@ P4: 全自动交易（需要完整风控和 live execution）
 
 ### 2. 验证并勾选 P3/P4 Closeout Checklist
 **为什么**：文档声称 P3/P4 已关闭，但 checklist 全部 `[ ]`。这不仅是文档问题，更是项目管理的信任问题。如果 closeout 未真正验证，后续所有基于"P4 已关闭"的决策都缺乏基础。
-**文件**：`docs/10-implementation/checklists/P3_Closeout_Checklist.md`, `P4_Closeout_Checklist.md`
+**文件**：`docs/10-implementation/versions/v1.0/checklists/P3_Closeout_Checklist.md`, `P4_Closeout_Checklist.md`
 **工作量**：2-3 天
 
 ### 3. 用真实历史数据做一次完整回测
@@ -733,8 +733,8 @@ P4: 全自动交易（需要完整风控和 live execution）
 - `README.md`, `AGENTS.md`
 - `docs/00-overview/` 下全部 3 个文档
 - `docs/10-implementation/Implementation_Index.md`
-- `docs/10-implementation/phase-plans/P3_Implementation_Plan.md`, `P4_Implementation_Plan.md`
-- `docs/10-implementation/checklists/P3_Closeout_Checklist.md`, `P4_Closeout_Checklist.md`
+- `docs/10-implementation/versions/v1.0/phase-plans/P3_Implementation_Plan.md`, `P4_Implementation_Plan.md`
+- `docs/10-implementation/versions/v1.0/checklists/P3_Closeout_Checklist.md`, `P4_Closeout_Checklist.md`
 - `docs/10-implementation/runbooks/` 下全部 3 个 P4 runbook
 
 **代码**（完整阅读或结构分析）：

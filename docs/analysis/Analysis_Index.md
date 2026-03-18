@@ -1,12 +1,12 @@
 # Analysis Index
 
-**版本**: v1.0  
-**更新日期**: 2026-03-17  
+**版本**: v1.0
+**更新日期**: 2026-03-17
 **目标**: 作为 `docs/analysis/` 的统一入口，明确 current analysis input 与历史评估快照的边界。
 
-> Analysis input only.  
-> Not implementation truth-source.  
-> Active planning entry: `docs/10-implementation/phase-plans/V2_Implementation_Plan.md`
+> Analysis input only.
+> Not implementation truth-source.
+> Active implementation entry: `docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md`
 
 ---
 

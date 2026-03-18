@@ -318,6 +318,8 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_watcher_backfill",
             "weather_resolution_reconciliation",
             "weather_execution_priors_refresh",
+            "weather_ranking_retrospective_refresh",
+            "weather_allocation_preview_refresh",
             "weather_forecast_calibration_profiles_v2_refresh",
             "weather_rule2spec_review",
             "weather_data_qa_review",
@@ -356,7 +358,12 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_execution_priors_refresh"].mode, "scheduled")
         self.assertEqual(jobs["weather_execution_priors_refresh"].default_schedule_key, "weather_execution_priors_nightly")
         self.assertIn("runtime.execution_feedback_materializations", jobs["weather_execution_priors_refresh"].output_tables)
+        self.assertEqual(jobs["weather_ranking_retrospective_refresh"].mode, "manual")
+        self.assertIn("runtime.ranking_retrospective_runs", jobs["weather_ranking_retrospective_refresh"].output_tables)
+        self.assertEqual(jobs["weather_allocation_preview_refresh"].mode, "manual")
+        self.assertIn("runtime.allocation_decisions", jobs["weather_allocation_preview_refresh"].output_tables)
         self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
+        self.assertIn("runtime.capital_allocation_runs", jobs["weather_paper_execution"].output_tables)
         self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
         self.assertEqual(jobs["weather_data_qa_review"].upstream_jobs, ["weather_forecast_replay"])
         self.assertEqual(jobs["weather_resolution_review"].upstream_jobs, ["weather_resolution_reconciliation"])
@@ -1540,7 +1547,41 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             stack.enter_context(patch("dagster_asterion.handlers.load_account_trading_capability", return_value=account_capability))
             stack.enter_context(patch("dagster_asterion.handlers.load_market_capability", return_value=market_capability))
             stack.enter_context(patch("dagster_asterion.handlers.load_inventory_positions", return_value=[]))
-            stack.enter_context(patch("dagster_asterion.handlers.run_strategy_engine", return_value=(strategy_run, [object(), object()])))
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.run_strategy_engine",
+                    return_value=(
+                        strategy_run,
+                        [
+                            type("DecisionStub", (), {"decision_id": "dec_1"})(),
+                            type("DecisionStub", (), {"decision_id": "dec_2"})(),
+                        ],
+                    ),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.materialize_capital_allocation",
+                    return_value=(
+                        type(
+                            "AllocationRunStub",
+                            (),
+                            {
+                                "allocation_run_id": "allocrun_1",
+                                "approved_count": 2,
+                                "resized_count": 0,
+                                "blocked_count": 0,
+                                "policy_missing_count": 0,
+                            },
+                        )(),
+                        [],
+                        [],
+                    ),
+                )
+            )
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_capital_allocation_run_upserts", return_value=None))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_allocation_decision_upserts", return_value=None))
+            stack.enter_context(patch("dagster_asterion.handlers.enqueue_position_limit_check_upserts", return_value=None))
             stack.enter_context(patch("dagster_asterion.handlers.build_trade_ticket", side_effect=tickets))
             build_context = stack.enter_context(patch("dagster_asterion.handlers.build_execution_context", return_value=object()))
             build_record = stack.enter_context(patch("dagster_asterion.handlers.build_execution_context_record", return_value=fake_record))

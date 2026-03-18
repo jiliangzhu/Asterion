@@ -873,6 +873,89 @@ class ExecutionGateAndPortfolioTest(unittest.TestCase):
         self.assertIn("insufficient_inventory", decision.reason_codes)
         self.assertIn("economic_edge_below_threshold", decision.reason_codes)
 
+    def test_execution_gate_blocks_policy_missing_allocation_context(self) -> None:
+        _, decisions = run_strategy_engine(
+            ctx=StrategyContext(
+                data_snapshot_id="snap_weather_1",
+                universe_snapshot_id=None,
+                asof_ts_ms=1_710_000_000_000,
+                dq_level="PASS",
+                quote_snapshot_refs=[],
+            ),
+            snapshots=[_watch_snapshot(snapshot_id="snap_yes", token_id="tok_yes", outcome="YES", side="BUY", edge_bps=900)],
+            strategies=[
+                StrategyRegistration(
+                    strategy_id="weather_primary",
+                    strategy_version="v1",
+                    priority=1,
+                    route_action=RouteAction.FAK,
+                    size=Decimal("10"),
+                )
+            ],
+        )
+        ticket = build_trade_ticket(decisions[0])
+        intent = build_signal_order_intent(
+            ticket,
+            market_capability=_market_capability(),
+            account_capability=_account_capability(),
+        )
+        gate = evaluate_execution_gate(
+            ticket=ticket,
+            intent=intent,
+            watch_only_active=False,
+            degrade_active=False,
+            available_quantity=Decimal("100"),
+            allocation_context={
+                "requested_size": 10.0,
+                "recommended_size": 0.0,
+                "allocation_status": "policy_missing",
+                "allocation_reason_codes": ["policy_missing"],
+            },
+        )
+        self.assertFalse(gate.allowed)
+        self.assertIn("allocation_blocked", gate.reason_codes)
+        self.assertEqual(gate.metrics_json["allocation_status"], "policy_missing")
+
+    def test_trade_ticket_provenance_includes_allocation_payload(self) -> None:
+        _, decisions = run_strategy_engine(
+            ctx=StrategyContext(
+                data_snapshot_id="snap_weather_1",
+                universe_snapshot_id=None,
+                asof_ts_ms=1_710_000_000_000,
+                dq_level="PASS",
+                quote_snapshot_refs=[],
+            ),
+            snapshots=[_watch_snapshot(snapshot_id="snap_yes", token_id="tok_yes", outcome="YES", side="BUY", edge_bps=900)],
+            strategies=[
+                StrategyRegistration(
+                    strategy_id="weather_primary",
+                    strategy_version="v1",
+                    priority=1,
+                    route_action=RouteAction.FAK,
+                    size=Decimal("10"),
+                )
+            ],
+        )
+        ticket = build_trade_ticket(
+            decisions[0],
+            size_override=Decimal("4"),
+            allocation_context={
+                "requested_size": 10.0,
+                "recommended_size": 4.0,
+                "allocation_status": "resized",
+                "allocation_decision_id": "alloc_1",
+                "allocation_reason_codes": ["per_ticket_budget_cap"],
+                "budget_impact": {"remaining_run_budget": 0.0},
+                "policy_id": "policy_exact",
+                "policy_version": "alloc_v1",
+            },
+        )
+        self.assertEqual(ticket.size, Decimal("4"))
+        self.assertEqual(ticket.provenance_json["allocation_status"], "resized")
+        self.assertEqual(ticket.provenance_json["recommended_size"], "4.0")
+        self.assertEqual(ticket.provenance_json["policy_id"], "policy_exact")
+        self.assertEqual(ticket.provenance_json["budget_impact"]["remaining_run_budget"], 0.0)
+
     def test_portfolio_buy_and_sell_reservations_follow_inventory_semantics(self) -> None:
         buy_intent = build_signal_order_intent(
             build_trade_ticket(
@@ -1333,6 +1416,24 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     )
                     con.execute(
                         """
+                        INSERT INTO trading.allocation_policies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            "policy_weather_primary",
+                            "wallet_weather_1",
+                            "weather_primary",
+                            "active",
+                            "alloc_v1",
+                            100.0,
+                            100.0,
+                            1.0,
+                            1.0,
+                            datetime(2026, 3, 10, 10, 0),
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
+                    con.execute(
+                        """
                         INSERT INTO weather.weather_watch_only_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
@@ -1444,6 +1545,9 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             allow_tables = ",".join(
                 [
                     "runtime.strategy_runs",
+                    "runtime.capital_allocation_runs",
+                    "runtime.allocation_decisions",
+                    "runtime.position_limit_checks",
                     "runtime.trade_tickets",
                     "runtime.gate_decisions",
                     "trading.orders",
@@ -1552,14 +1656,13 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                         FROM trading.orders
                         """
                     ).fetchone()
-                    latest_transition = con.execute(
+                    transitions = con.execute(
                         """
                         SELECT from_status, to_status
                         FROM trading.order_state_transitions
-                        ORDER BY timestamp DESC, transition_id DESC
-                        LIMIT 1
+                        ORDER BY from_status ASC, to_status ASC
                         """
-                    ).fetchone()
+                    ).fetchall()
                 finally:
                     con.close()
             handoff_payload = json.loads(handoff_event[0])
@@ -1595,7 +1698,10 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertEqual(reconciliation_payload["status"], "ok")
             self.assertEqual(reconciliation_payload["discrepancy"], "0.00000000")
             self.assertEqual(order_row[0], "filled")
-            self.assertEqual(tuple(latest_transition), ("posted", "filled"))
+            self.assertEqual(
+                set(tuple(item) for item in transitions),
+                {("created", "posted"), ("posted", "filled")},
+            )
             self.assertTrue(handoff_payload["canonical_order_hash"].startswith("coh_"))
 
     def test_ui_execution_ticket_summary_surfaces_reconciliation_status(self) -> None:
@@ -1621,6 +1727,10 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     con.execute(
                         "INSERT INTO capability.account_trading_capabilities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         ["wallet_weather_1", "eoa", 1, "0xfunder", "[\"0xrelayer\"]", True, True, None, datetime(2026, 3, 10, 10, 0)],
+                    )
+                    con.execute(
+                        "INSERT INTO trading.allocation_policies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ["policy_weather_primary", "wallet_weather_1", "weather_primary", "active", "alloc_v1", 100.0, 100.0, 1.0, 1.0, datetime(2026, 3, 10, 10, 0), datetime(2026, 3, 10, 10, 0)],
                     )
                     con.execute(
                         "INSERT INTO weather.weather_watch_only_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1665,6 +1775,9 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             allow_tables = ",".join(
                 [
                     "runtime.strategy_runs",
+                    "runtime.capital_allocation_runs",
+                    "runtime.allocation_decisions",
+                    "runtime.position_limit_checks",
                     "runtime.trade_tickets",
                     "runtime.gate_decisions",
                     "trading.orders",
@@ -1772,6 +1885,10 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                         ["wallet_weather_1", "eoa", 1, "0xfunder", "[\"0xrelayer\"]", True, True, None, datetime(2026, 3, 10, 10, 0)],
                     )
                     con.execute(
+                        "INSERT INTO trading.allocation_policies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ["policy_weather_primary", "wallet_weather_1", "weather_primary", "active", "alloc_v1", 100.0, 100.0, 1.0, 1.0, datetime(2026, 3, 10, 10, 0), datetime(2026, 3, 10, 10, 0)],
+                    )
+                    con.execute(
                         "INSERT INTO weather.weather_watch_only_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         ["snap_yes", "fv_yes", "frun_weather_1", "mkt_weather_1", "cond_weather_1", "tok_yes", "YES", 0.55, 0.63, 800, 500, "TAKE", "BUY", "ui mismatch", "{\"signal_ts_ms\":1710000000000}", datetime(2026, 3, 10, 10, 0)],
                     )
@@ -1814,6 +1931,9 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             allow_tables = ",".join(
                 [
                     "runtime.strategy_runs",
+                    "runtime.capital_allocation_runs",
+                    "runtime.allocation_decisions",
+                    "runtime.position_limit_checks",
                     "runtime.trade_tickets",
                     "runtime.gate_decisions",
                     "trading.orders",
@@ -1951,6 +2071,24 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     )
                     con.execute(
                         """
+                        INSERT INTO trading.allocation_policies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            "policy_weather_primary",
+                            "wallet_weather_1",
+                            "weather_primary",
+                            "active",
+                            "alloc_v1",
+                            100.0,
+                            100.0,
+                            1.0,
+                            1.0,
+                            datetime(2026, 3, 10, 10, 0),
+                            datetime(2026, 3, 10, 10, 0),
+                        ],
+                    )
+                    con.execute(
+                        """
                         INSERT INTO weather.weather_watch_only_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
@@ -2032,6 +2170,9 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                 allow_tables = ",".join(
                     [
                         "runtime.strategy_runs",
+                        "runtime.capital_allocation_runs",
+                        "runtime.allocation_decisions",
+                        "runtime.position_limit_checks",
                         "runtime.trade_tickets",
                         "runtime.gate_decisions",
                         "trading.orders",
@@ -2242,6 +2383,9 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             allow_tables = ",".join(
                 [
                     "runtime.strategy_runs",
+                    "runtime.capital_allocation_runs",
+                    "runtime.allocation_decisions",
+                    "runtime.position_limit_checks",
                     "runtime.trade_tickets",
                     "runtime.gate_decisions",
                     "trading.orders",
@@ -2296,6 +2440,7 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
             self.assertEqual(
                 by_type,
                 {
+                    "allocation.blocked": 1,
                     "canonical_order.routed": 1,
                     "gate.decision": 1,
                     "order.rejected_by_gate": 1,
