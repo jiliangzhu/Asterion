@@ -44,6 +44,11 @@ class MigrationFilesTest(unittest.TestCase):
                 "0024_runtime_ranking_retrospective.sql",
                 "0025_trading_allocation_policies.sql",
                 "0026_runtime_allocation_artifacts.sql",
+                "0027_runtime_calibration_profile_materializations.sql",
+                "0028_resolution_operator_review_decisions.sql",
+                "0029_runtime_allocation_decisions_phase6.sql",
+                "0030_runtime_allocation_decisions_phase7.sql",
+                "0031_trading_capital_budget_policies.sql",
             ],
         )
 
@@ -109,6 +114,17 @@ class MigrationFilesTest(unittest.TestCase):
         self.assertIn("runtime.capital_allocation_runs", contents["0026_runtime_allocation_artifacts.sql"])
         self.assertIn("runtime.allocation_decisions", contents["0026_runtime_allocation_artifacts.sql"])
         self.assertIn("runtime.position_limit_checks", contents["0026_runtime_allocation_artifacts.sql"])
+        self.assertIn("runtime.calibration_profile_materializations", contents["0027_runtime_calibration_profile_materializations.sql"])
+        self.assertIn("fresh_profile_count BIGINT NOT NULL", contents["0027_runtime_calibration_profile_materializations.sql"])
+        self.assertIn("resolution.operator_review_decisions", contents["0028_resolution_operator_review_decisions.sql"])
+        self.assertIn("decision_status TEXT NOT NULL", contents["0028_resolution_operator_review_decisions.sql"])
+        self.assertIn("ALTER TABLE runtime.allocation_decisions ADD COLUMN IF NOT EXISTS base_ranking_score", contents["0029_runtime_allocation_decisions_phase6.sql"])
+        self.assertIn("ALTER TABLE runtime.allocation_decisions ADD COLUMN IF NOT EXISTS deployable_expected_pnl", contents["0029_runtime_allocation_decisions_phase6.sql"])
+        self.assertIn("ALTER TABLE runtime.allocation_decisions ADD COLUMN IF NOT EXISTS pre_budget_deployable_size", contents["0030_runtime_allocation_decisions_phase7.sql"])
+        self.assertIn("ALTER TABLE runtime.allocation_decisions ADD COLUMN IF NOT EXISTS rerank_position", contents["0030_runtime_allocation_decisions_phase7.sql"])
+        self.assertIn("trading.capital_budget_policies", contents["0031_trading_capital_budget_policies.sql"])
+        self.assertIn("ALTER TABLE runtime.allocation_decisions ADD COLUMN IF NOT EXISTS calibration_gate_status", contents["0031_trading_capital_budget_policies.sql"])
+        self.assertIn("ALTER TABLE runtime.allocation_decisions ADD COLUMN IF NOT EXISTS capital_scaling_reason_codes_json", contents["0031_trading_capital_budget_policies.sql"])
 
 
 @unittest.skipUnless(HAS_DUCKDB, "duckdb is required for migration application tests")
@@ -127,7 +143,7 @@ class ApplyMigrationsTest(unittest.TestCase):
                 clear=False,
             ):
                 applied = apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=str(root)))
-            self.assertEqual(len(applied), 26)
+            self.assertEqual(len(applied), 31)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from .rule2spec import (
     parse_rule2spec_draft,
     weather_market_spec_to_row,
 )
+from .rule2spec_validation import validate_rule2spec_draft
 from .station_mapper import (
     WEATHER_STATION_MAP_COLUMNS,
     StationMapper,
@@ -43,5 +44,6 @@ __all__ = [
     "normalize_location_key",
     "parse_rule2spec_draft",
     "station_mapping_to_row",
+    "validate_rule2spec_draft",
     "weather_market_spec_to_row",
 ]

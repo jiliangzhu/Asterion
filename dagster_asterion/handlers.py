@@ -12,12 +12,8 @@ from web3 import Web3
 
 from agents.common import build_agent_client_from_env, enqueue_agent_artifact_upserts
 from agents.weather import (
-    load_data_qa_agent_requests,
     load_resolution_agent_requests,
-    load_rule2spec_agent_requests,
-    run_data_qa_agent_review,
     run_resolution_agent_review,
-    run_rule2spec_agent_review,
 )
 from asterion_core.blockchain import (
     ChainTxKind,
@@ -165,8 +161,11 @@ from asterion_core.storage.write_queue import WriteQueueConfig
 from asterion_core.ui import build_ui_lite_db_once, refresh_ui_db_replica_once
 from domains.weather.forecast import (
     AdapterRouter,
+    CalibrationProfileMaterializationStatus,
     ForecastService,
     build_forecast_calibration_sample,
+    calibration_profile_freshness_status,
+    enqueue_calibration_profile_materialization_upserts,
     enqueue_forecast_calibration_profile_v2_upserts,
     build_forecast_replay_diff_records,
     build_forecast_replay_record,
@@ -1931,10 +1930,59 @@ def run_weather_forecast_calibration_profiles_v2_refresh_job(
     run_id: str | None = None,
 ) -> ColdPathHandlerResult:
     request_id = run_id or new_request_id()
+    materialized_at = as_of or datetime.now(UTC)
     materialized = materialize_forecast_calibration_profiles_v2(
         con,
-        as_of=as_of or datetime.now(UTC),
+        as_of=materialized_at,
         lookback_days=lookback_days,
+    )
+    source_window_start = materialized_at - timedelta(days=max(1, int(lookback_days)))
+    input_sample_count = 0
+    try:
+        row = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM weather.forecast_calibration_samples
+            WHERE created_at >= ? AND created_at <= ?
+            """,
+            [source_window_start, materialized_at],
+        ).fetchone()
+        input_sample_count = int(row[0]) if row is not None and row[0] is not None else 0
+    except Exception:  # noqa: BLE001
+        input_sample_count = 0
+    freshness_counts = {
+        "fresh": 0,
+        "stale": 0,
+        "degraded_or_missing": 0,
+    }
+    latest_window_end = None
+    for profile in materialized:
+        freshness_counts[calibration_profile_freshness_status(profile.materialized_at, as_of=materialized_at)] += 1
+        if latest_window_end is None or profile.window_end > latest_window_end:
+            latest_window_end = profile.window_end
+    materialization_status = CalibrationProfileMaterializationStatus(
+        materialization_id=stable_object_id(
+            "calmat",
+            {
+                "job_name": "weather_forecast_calibration_profiles_v2_refresh",
+                "lookback_days": int(lookback_days),
+                "materialized_at": materialized_at.isoformat(),
+                "run_id": request_id,
+            },
+        ),
+        run_id=request_id,
+        job_name="weather_forecast_calibration_profiles_v2_refresh",
+        status="ok",
+        lookback_days=int(lookback_days),
+        source_window_start=source_window_start,
+        source_window_end=latest_window_end or materialized_at,
+        input_sample_count=input_sample_count,
+        output_profile_count=len(materialized),
+        fresh_profile_count=freshness_counts["fresh"],
+        stale_profile_count=freshness_counts["stale"],
+        degraded_profile_count=freshness_counts["degraded_or_missing"],
+        materialized_at=materialized_at,
+        error=None,
     )
     task_ids = _append_task_id(
         enqueue_forecast_calibration_profile_v2_upserts(
@@ -1943,14 +1991,28 @@ def run_weather_forecast_calibration_profiles_v2_refresh_job(
             run_id=request_id,
         )
     )
+    task_ids.extend(
+        _append_task_id(
+            enqueue_calibration_profile_materialization_upserts(
+                queue_cfg,
+                records=[materialization_status],
+                run_id=request_id,
+            )
+        )
+    )
     return ColdPathHandlerResult(
         job_name="weather_forecast_calibration_profiles_v2_refresh",
         run_id=request_id,
         task_ids=task_ids,
         item_count=len(materialized),
         metadata={
+            "materialization_id": materialization_status.materialization_id,
             "lookback_days": int(lookback_days),
             "profile_count": len(materialized),
+            "latest_window_end": None if latest_window_end is None else latest_window_end.isoformat(),
+            "fresh_profile_count": freshness_counts["fresh"],
+            "stale_profile_count": freshness_counts["stale"],
+            "degraded_profile_count": freshness_counts["degraded_or_missing"],
         },
     )
 
@@ -2122,12 +2184,28 @@ def run_weather_paper_execution_job(
     allocation_decision_by_decision_id = {
         item.decision_id: item for item in allocation_decisions
     }
+    decision_by_id = {item.decision_id: item for item in decisions}
+    ordered_decisions = [
+        decision_by_id[item.decision_id]
+        for item in allocation_decisions
+        if item.decision_id in decision_by_id
+    ]
+    remaining_decisions = [
+        item for item in decisions if item.decision_id not in allocation_decision_by_decision_id
+    ]
     tickets = []
-    for decision in decisions:
+    for decision in [*ordered_decisions, *remaining_decisions]:
         allocation_decision = allocation_decision_by_decision_id.get(decision.decision_id)
         allocation_context = None
         size_override = None
         if allocation_decision is not None:
+            preview_budget = (
+                allocation_decision.budget_impact.get("preview")
+                if isinstance(allocation_decision.budget_impact, dict)
+                else {}
+            )
+            if not isinstance(preview_budget, dict):
+                preview_budget = {}
             allocation_context = {
                 "requested_size": allocation_decision.requested_size,
                 "recommended_size": allocation_decision.recommended_size,
@@ -2137,6 +2215,26 @@ def run_weather_paper_execution_job(
                 "budget_impact": dict(allocation_decision.budget_impact),
                 "policy_id": allocation_decision.policy_id,
                 "policy_version": allocation_decision.policy_version,
+                "base_ranking_score": allocation_decision.base_ranking_score,
+                "deployable_expected_pnl": allocation_decision.deployable_expected_pnl,
+                "deployable_notional": allocation_decision.deployable_notional,
+                "max_deployable_size": allocation_decision.max_deployable_size,
+                "capital_scarcity_penalty": allocation_decision.capital_scarcity_penalty,
+                "concentration_penalty": allocation_decision.concentration_penalty,
+                "pre_budget_deployable_size": allocation_decision.pre_budget_deployable_size,
+                "pre_budget_deployable_notional": allocation_decision.pre_budget_deployable_notional,
+                "pre_budget_deployable_expected_pnl": allocation_decision.pre_budget_deployable_expected_pnl,
+                "preview_binding_limit_scope": preview_budget.get("preview_binding_limit_scope"),
+                "preview_binding_limit_key": preview_budget.get("preview_binding_limit_key"),
+                "rerank_position": allocation_decision.rerank_position,
+                "rerank_reason_codes": list(allocation_decision.rerank_reason_codes),
+                "binding_limit_scope": allocation_decision.binding_limit_scope,
+                "binding_limit_key": allocation_decision.binding_limit_key,
+                "capital_policy_id": allocation_decision.capital_policy_id,
+                "capital_policy_version": allocation_decision.capital_policy_version,
+                "capital_scaling_reason_codes": list(allocation_decision.capital_scaling_reason_codes),
+                "regime_bucket": allocation_decision.regime_bucket,
+                "calibration_gate_status": allocation_decision.calibration_gate_status,
             }
             if allocation_decision.allocation_status in {"approved", "resized"} and allocation_decision.recommended_size > 0.0:
                 size_override = Decimal(str(allocation_decision.recommended_size))
@@ -2210,6 +2308,34 @@ def run_weather_paper_execution_job(
                 "budget_impact": dict(allocation_decision.budget_impact),
                 "policy_id": allocation_decision.policy_id,
                 "policy_version": allocation_decision.policy_version,
+                "base_ranking_score": allocation_decision.base_ranking_score,
+                "deployable_expected_pnl": allocation_decision.deployable_expected_pnl,
+                "deployable_notional": allocation_decision.deployable_notional,
+                "max_deployable_size": allocation_decision.max_deployable_size,
+                "capital_scarcity_penalty": allocation_decision.capital_scarcity_penalty,
+                "concentration_penalty": allocation_decision.concentration_penalty,
+                "pre_budget_deployable_size": allocation_decision.pre_budget_deployable_size,
+                "pre_budget_deployable_notional": allocation_decision.pre_budget_deployable_notional,
+                "pre_budget_deployable_expected_pnl": allocation_decision.pre_budget_deployable_expected_pnl,
+                "preview_binding_limit_scope": (
+                    allocation_decision.budget_impact.get("preview", {}).get("preview_binding_limit_scope")
+                    if isinstance(allocation_decision.budget_impact, dict)
+                    else None
+                ),
+                "preview_binding_limit_key": (
+                    allocation_decision.budget_impact.get("preview", {}).get("preview_binding_limit_key")
+                    if isinstance(allocation_decision.budget_impact, dict)
+                    else None
+                ),
+                "rerank_position": allocation_decision.rerank_position,
+                "rerank_reason_codes": list(allocation_decision.rerank_reason_codes),
+                "binding_limit_scope": allocation_decision.binding_limit_scope,
+                "binding_limit_key": allocation_decision.binding_limit_key,
+                "capital_policy_id": allocation_decision.capital_policy_id,
+                "capital_policy_version": allocation_decision.capital_policy_version,
+                "capital_scaling_reason_codes": list(allocation_decision.capital_scaling_reason_codes),
+                "regime_bucket": allocation_decision.regime_bucket,
+                "calibration_gate_status": allocation_decision.calibration_gate_status,
             }
             if allocation_decision is not None
             else None
@@ -2734,86 +2860,6 @@ def run_weather_paper_execution_job(
             "execution_context_count": len(execution_context_records_by_id),
             "ticket_execution_context_ids": ticket_execution_context_ids,
             "strategy_run_id": strategy_run.run_id,
-        },
-    )
-
-
-def run_weather_rule2spec_review_job(
-    con,
-    queue_cfg: WriteQueueConfig,
-    *,
-    client=None,
-    mapper: StationMapper | None = None,
-    market_ids: list[str] | None = None,
-    active_only: bool = False,
-    limit: int | None = None,
-    force_rerun: bool = False,
-    now: datetime | None = None,
-    run_id: str | None = None,
-) -> ColdPathHandlerResult:
-    request_id = run_id or new_request_id()
-    active_client = client or build_agent_client_from_env()
-    requests = load_rule2spec_agent_requests(
-        con,
-        mapper=mapper,
-        market_ids=market_ids,
-        active_only=active_only,
-        limit=limit,
-    )
-    artifacts = [
-        run_rule2spec_agent_review(
-            active_client,
-            request,
-            force_rerun=force_rerun,
-            now=now,
-        )
-        for request in requests
-    ]
-    task_ids = enqueue_agent_artifact_upserts(queue_cfg, artifacts=artifacts, run_id=request_id)
-    return ColdPathHandlerResult(
-        job_name="weather_rule2spec_review",
-        run_id=request_id,
-        task_ids=task_ids,
-        item_count=len(artifacts),
-        metadata={
-            "output_count": sum(1 for item in artifacts if item.output is not None),
-            "subject_ids": [item.invocation.subject_id for item in artifacts],
-        },
-    )
-
-
-def run_weather_data_qa_review_job(
-    con,
-    queue_cfg: WriteQueueConfig,
-    *,
-    client=None,
-    replay_ids: list[str] | None = None,
-    limit: int | None = None,
-    force_rerun: bool = False,
-    now: datetime | None = None,
-    run_id: str | None = None,
-) -> ColdPathHandlerResult:
-    request_id = run_id or new_request_id()
-    active_client = client or build_agent_client_from_env()
-    requests = load_data_qa_agent_requests(con, replay_ids=replay_ids, limit=limit)
-    artifacts = [
-        run_data_qa_agent_review(
-            active_client,
-            request,
-            force_rerun=force_rerun,
-            now=now,
-        )
-        for request in requests
-    ]
-    task_ids = enqueue_agent_artifact_upserts(queue_cfg, artifacts=artifacts, run_id=request_id)
-    return ColdPathHandlerResult(
-        job_name="weather_data_qa_review",
-        run_id=request_id,
-        task_ids=task_ids,
-        item_count=len(artifacts),
-        metadata={
-            "output_count": sum(1 for item in artifacts if item.output is not None),
-            "subject_ids": [item.invocation.subject_id for item in artifacts],
         },
     )
 

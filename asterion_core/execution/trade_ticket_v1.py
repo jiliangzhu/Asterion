@@ -27,6 +27,11 @@ def build_trade_ticket(
         "watch_snapshot_id": decision.watch_snapshot_id,
     }
     if allocation_context:
+        preview_budget = allocation_context.get("budget_impact") or {}
+        if isinstance(preview_budget, dict):
+            preview_budget = preview_budget.get("preview") or {}
+        else:
+            preview_budget = {}
         provenance.update(
             {
                 "requested_size": str(decision.size),
@@ -37,6 +42,26 @@ def build_trade_ticket(
                 "budget_impact": dict(allocation_context.get("budget_impact") or {}),
                 "policy_id": allocation_context.get("policy_id"),
                 "policy_version": allocation_context.get("policy_version"),
+                "base_ranking_score": allocation_context.get("base_ranking_score"),
+                "deployable_expected_pnl": allocation_context.get("deployable_expected_pnl"),
+                "deployable_notional": allocation_context.get("deployable_notional"),
+                "max_deployable_size": allocation_context.get("max_deployable_size"),
+                "capital_scarcity_penalty": allocation_context.get("capital_scarcity_penalty"),
+                "concentration_penalty": allocation_context.get("concentration_penalty"),
+                "pre_budget_deployable_size": allocation_context.get("pre_budget_deployable_size"),
+                "pre_budget_deployable_notional": allocation_context.get("pre_budget_deployable_notional"),
+                "pre_budget_deployable_expected_pnl": allocation_context.get("pre_budget_deployable_expected_pnl"),
+                "preview_binding_limit_scope": allocation_context.get("preview_binding_limit_scope") or preview_budget.get("preview_binding_limit_scope"),
+                "preview_binding_limit_key": allocation_context.get("preview_binding_limit_key") or preview_budget.get("preview_binding_limit_key"),
+                "rerank_position": allocation_context.get("rerank_position"),
+                "rerank_reason_codes": list(allocation_context.get("rerank_reason_codes") or []),
+                "binding_limit_scope": allocation_context.get("binding_limit_scope"),
+                "binding_limit_key": allocation_context.get("binding_limit_key"),
+                "capital_policy_id": allocation_context.get("capital_policy_id"),
+                "capital_policy_version": allocation_context.get("capital_policy_version"),
+                "capital_scaling_reason_codes": list(allocation_context.get("capital_scaling_reason_codes") or []),
+                "regime_bucket": allocation_context.get("regime_bucket"),
+                "calibration_gate_status": allocation_context.get("calibration_gate_status"),
             }
         )
     semantic_payload = {

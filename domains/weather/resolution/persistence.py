@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from asterion_core.contracts import EvidencePackageLinkRecord, RedeemReadinessRecord, SettlementVerificationRecord
+from asterion_core.contracts import (
+    EvidencePackageLinkRecord,
+    RedeemReadinessRecord,
+    ResolutionOperatorReviewDecisionRecord,
+    SettlementVerificationRecord,
+)
 from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.write_queue import WriteQueueConfig
 from asterion_core.storage.utils import safe_json_dumps
@@ -39,6 +44,19 @@ REDEEM_READINESS_COLUMNS = [
     "safe_redeem_after",
     "human_review_required",
     "created_at",
+]
+
+RESOLUTION_OPERATOR_REVIEW_DECISION_COLUMNS = [
+    "review_decision_id",
+    "proposal_id",
+    "invocation_id",
+    "suggestion_id",
+    "decision_status",
+    "operator_action",
+    "reason",
+    "actor",
+    "created_at",
+    "updated_at",
 ]
 
 
@@ -99,6 +117,25 @@ def enqueue_redeem_readiness_upserts(
     )
 
 
+def enqueue_resolution_operator_review_decision_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    decisions: list[ResolutionOperatorReviewDecisionRecord],
+    run_id: str | None = None,
+) -> str | None:
+    if not decisions:
+        return None
+    rows = [resolution_operator_review_decision_to_row(item) for item in decisions]
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="resolution.operator_review_decisions",
+        pk_cols=["review_decision_id"],
+        columns=list(RESOLUTION_OPERATOR_REVIEW_DECISION_COLUMNS),
+        rows=rows,
+        run_id=run_id,
+    )
+
+
 def settlement_verification_to_row(record: SettlementVerificationRecord) -> list[Any]:
     return [
         record.verification_id,
@@ -134,6 +171,21 @@ def redeem_readiness_to_row(record: RedeemReadinessRecord) -> list[Any]:
         _sql_ts(record.safe_redeem_after),
         record.human_review_required,
         _sql_ts(record.created_at),
+    ]
+
+
+def resolution_operator_review_decision_to_row(record: ResolutionOperatorReviewDecisionRecord) -> list[Any]:
+    return [
+        record.review_decision_id,
+        record.proposal_id,
+        record.invocation_id,
+        record.suggestion_id,
+        record.decision_status.value,
+        record.operator_action,
+        record.reason,
+        record.actor,
+        _sql_ts(record.created_at),
+        _sql_ts(record.updated_at),
     ]
 
 

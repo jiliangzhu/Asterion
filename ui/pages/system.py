@@ -58,6 +58,17 @@ def _build_component_rows(status: dict[str, object], readiness: dict[str, object
             "来源": status.get("weather_smoke_report_path"),
             "详情": "real ingress smoke 辅助视图",
         },
+        {
+            "组件": "Calibration Profiles v2",
+            "状态": (status.get("latest_calibration_freshness_status") or "MISSING").upper(),
+            "来源": status.get("latest_calibration_materialized_at"),
+            "详情": (
+                f"window_end={status.get('latest_calibration_window_end')} "
+                f"profile_age_hours={status.get('latest_calibration_profile_age_hours')} "
+                f"impacted={status.get('calibration_impacted_market_count')} "
+                f"hard_gate={status.get('calibration_hard_gate_market_count')}"
+            ),
+        },
     ]
 
 
@@ -98,7 +109,11 @@ def show() -> None:
     with c3:
         st.metric("UI Lite DB", "READY" if status["ui_lite_exists"] else "MISSING", delta=Path(status["ui_lite_db_path"]).name)
     with c4:
-        st.metric("Weather Smoke", status.get("weather_smoke_status") or "unknown", delta="real weather chain")
+        st.metric(
+            "Weather Smoke",
+            status.get("weather_smoke_status") or "unknown",
+            delta=f"hard_gate={status.get('calibration_hard_gate_market_count', 0)}",
+        )
 
     st.markdown("#### Decision")
     st.info(evidence.get("decision_reason") or readiness.get("decision_reason") or "尚未生成 readiness 证据包。")
@@ -140,6 +155,15 @@ def show() -> None:
     else:
         st.info("当前还没有 readiness evidence dependency rows。")
 
+    st.markdown("#### Calibration Gate Summary")
+    gate_rows = [
+        {"Metric": "Impacted Markets", "Value": status.get("calibration_impacted_market_count", 0)},
+        {"Metric": "Hard-Gated Markets", "Value": status.get("calibration_hard_gate_market_count", 0)},
+        {"Metric": "Review Required Markets", "Value": status.get("calibration_review_required_market_count", 0)},
+        {"Metric": "Research Only Markets", "Value": status.get("calibration_research_only_market_count", 0)},
+    ]
+    st.dataframe(pd.DataFrame(gate_rows), width="stretch", hide_index=True)
+
     st.markdown("#### Evidence Paths")
     path_rows = [{"路径类型": key, "路径": value} for key, value in (evidence.get("evidence_paths") or {}).items()]
     if path_rows:
@@ -166,7 +190,11 @@ def show() -> None:
     health_rows = [
         {"组件": "Opportunity Surface", "值": status.get("opportunity_row_count"), "说明": "当前机会排序读面行数"},
         {"组件": "Actionable Markets", "值": status.get("actionable_market_count"), "说明": "当前可优先 review 的市场数"},
-        {"组件": "Agent Work Rows", "值": status.get("agent_row_count"), "说明": "agent workbench 当前可见产出"},
+        {"组件": "Resolution Review Rows", "值": status.get("agent_row_count"), "说明": "Resolution Agent 当前可见 review rows"},
+        {"组件": "Pending Operator Review", "值": status.get("pending_operator_review_count"), "说明": "建议 hold/manual/dispute 且尚未 operator 接纳的 proposal"},
+        {"组件": "Blocked By Operator", "值": status.get("blocked_by_operator_review_count"), "说明": "operator 已明确阻断的 proposal"},
+        {"组件": "Ready For Redeem Review", "值": status.get("ready_for_redeem_review_count"), "说明": "operator 已放行到 redeem review 的 proposal"},
+        {"组件": "Calibration Freshness", "值": status.get("latest_calibration_freshness_status"), "说明": "最新 calibration profile materialization freshness"},
     ]
     st.dataframe(pd.DataFrame(health_rows), width="stretch", hide_index=True)
 

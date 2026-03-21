@@ -16,7 +16,7 @@
 - `runtime.live_boundary_attestations` 审计落库
 - UI / web 最小只读环境
 
-但当前深度审计仍指出 3 条边界薄弱点：
+当时深度审计指出的 3 条边界薄弱点是：
 
 1. attestation 仍然是 caller-trusted artifact，缺少 expiry、single-use 和 tamper-resistant proof
 2. signer 仍然信任 payload 里的 `private_key_env_var`
@@ -38,17 +38,17 @@
   - live submit shell 负责生成并写入 attestation
   - `RealClobSubmitterBackend` 校验 approved attestation
 - `asterion_core/signer/signer_service_v1.py`
-  - controlled-live signer 仍从 request payload 读取 `private_key_env_var`
+  - controlled-live signer 已切到 `wallet_id -> ASTERION_CONTROLLED_LIVE_SECRET_PK_<WALLET_ID_UPPER_SNAKE>` 映射
 - `ui/runtime_env.py`
   - UI 当前只 allowlist 最小只读 env
-  - 但还没有 banned-env detector 和 public bind policy
+  - banned-env detection 与 public bind opt-in 已落地
 
 当前事实判断：
 
 - live submit 已经不是 handler-only gate，shell 和 backend 都在参与边界校验
-- 但 attestation 还没有 nonce / expiry / consume-once
-- signer secret name 仍可被调用方影响
-- UI 不再自动读取 full `.env`，但还缺“部署时自检 + 明确拒绝暴露敏感项”的第二层保护
+- attestation v2 的 nonce / expiry / consume-once 已经落地
+- signer secret name 已不再接受调用方注入
+- UI 不再自动读取 full `.env`，banned-env detection 与 public bind opt-in 也已落地
 
 ---
 

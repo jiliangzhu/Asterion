@@ -28,6 +28,37 @@ def _json_dict(value: object) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _json_list(value: object) -> list[object]:
+    if isinstance(value, list):
+        return value
+    if value in {None, ""}:
+        return []
+    try:
+        parsed = json.loads(str(value))
+    except Exception:  # noqa: BLE001
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _allocation_overlay_summary(row: dict[str, object]) -> list[str]:
+    budget_impact = _json_dict(row.get("budget_impact"))
+    preview_budget = _json_dict(budget_impact.get("preview"))
+    rerank_reason_codes = _json_list(row.get("rerank_reason_codes_json")) or _json_list(budget_impact.get("rerank_reason_codes"))
+    requested_size = row.get("requested_size")
+    if requested_size in {None, ""}:
+        requested_size = preview_budget.get("requested_size")
+    return [
+        f"base_score={_format_metric_value(row.get('base_ranking_score'))}",
+        f"pre_budget_pnl={_format_metric_value(row.get('pre_budget_deployable_expected_pnl'))}",
+        f"final_score={_format_metric_value(row.get('ranking_score'))}",
+        f"calibration_gate={row.get('calibration_gate_status') or 'clear'}",
+        f"preview_limit={preview_budget.get('preview_binding_limit_scope') or row.get('preview_binding_limit_scope') or 'none'}",
+        f"final_limit={row.get('binding_limit_scope') or budget_impact.get('binding_limit_scope') or 'none'}",
+        f"rerank={', '.join(str(item) for item in rerank_reason_codes) or 'none'}",
+        f"size={_format_metric_value(requested_size)} -> {_format_metric_value(row.get('recommended_size'))}",
+    ]
+
+
 def show() -> None:
     overview = load_home_decision_snapshot()
     surface_status = overview.get("surface_status", {})
@@ -105,7 +136,11 @@ def show() -> None:
                     "edge_bps",
                     "edge_bps_model",
                     "ranking_score",
+                    "base_ranking_score",
                     "expected_dollar_pnl",
+                    "deployable_expected_pnl",
+                    "deployable_notional",
+                    "max_deployable_size",
                     "capture_probability",
                     "recommended_size",
                     "allocation_status",
@@ -131,6 +166,7 @@ def show() -> None:
                     f"risk={_format_metric_value(why_ranked.get('risk_penalty'))}, "
                     f"feedback={_format_metric_value(why_ranked.get('feedback_penalty'))}"
                 )
+            st.caption("deployable: " + " | ".join(_allocation_overlay_summary(top_row)))
 
     with row2_right:
         st.markdown("#### Predicted vs Realized Snapshot")
@@ -193,39 +229,83 @@ def show() -> None:
     with row3b_left:
         st.markdown("#### Action Queue")
         if action_queue.empty:
-            st.info("当前没有 approved / resized allocation rows。")
+            st.info("当前没有进入 operator action queue 的 persisted rows。")
         else:
+            bucket_counts = (
+                action_queue["operator_bucket"].value_counts().to_dict()
+                if "operator_bucket" in action_queue.columns
+                else {}
+            )
+            st.caption(
+                " | ".join(
+                    [
+                        f"ready_now={bucket_counts.get('ready_now', 0)}",
+                        f"high_risk={bucket_counts.get('high_risk', 0)}",
+                        f"review_required={bucket_counts.get('review_required', 0)}",
+                    ]
+                )
+            )
             columns = [
                 column
                 for column in [
+                    "operator_bucket",
                     "location_name",
                     "question",
                     "best_side",
                     "ranking_score",
+                    "base_ranking_score",
+                    "pre_budget_deployable_expected_pnl",
+                    "deployable_expected_pnl",
+                    "calibration_gate_status",
+                    "requested_size",
                     "recommended_size",
+                    "preview_binding_limit_scope",
                     "allocation_status",
+                    "binding_limit_scope",
+                    "rerank_position",
                     "actionability_status",
+                    "queue_reason_codes_json",
                 ]
                 if column in action_queue.columns
             ]
-            st.dataframe(action_queue[columns].head(5), width="stretch", hide_index=True)
+            st.dataframe(action_queue[columns].head(10), width="stretch", hide_index=True)
     with row3b_right:
         st.markdown("#### Allocation Overlay")
-        st.metric("Queued Actions", metrics.get("action_queue_count", 0), delta="approved/resized")
+        st.metric("Queued Actions", metrics.get("action_queue_count", 0), delta="persisted workflow queue")
+        st.write(f"ready_now: `{_format_metric_value(metrics.get('ready_now_count'))}`")
+        st.write(f"high_risk: `{_format_metric_value(metrics.get('high_risk_count'))}`")
+        st.write(f"review_required: `{_format_metric_value(metrics.get('review_required_count'))}`")
+        st.write(f"blocked: `{_format_metric_value(metrics.get('blocked_count'))}`")
+        st.write(f"research_only: `{_format_metric_value(metrics.get('research_only_count'))}`")
         if not top_opportunities.empty:
             top_row = top_opportunities.iloc[0].to_dict()
             st.write(f"recommended_size: `{_format_metric_value(top_row.get('recommended_size'))}`")
             st.write(f"allocation_status: `{_format_metric_value(top_row.get('allocation_status'))}`")
+            st.write(f"deployable_expected_pnl: `{_format_metric_value(top_row.get('deployable_expected_pnl'))}`")
+            st.write(f"max_deployable_size: `{_format_metric_value(top_row.get('max_deployable_size'))}`")
+            st.write(f"base_ranking_score: `{_format_metric_value(top_row.get('base_ranking_score'))}`")
+            st.write(f"pre_budget_deployable_expected_pnl: `{_format_metric_value(top_row.get('pre_budget_deployable_expected_pnl'))}`")
+            st.write(f"calibration_gate_status: `{_format_metric_value(top_row.get('calibration_gate_status'))}`")
+            st.write(f"capital_policy_id: `{_format_metric_value(top_row.get('capital_policy_id'))}`")
+            st.write(f"requested_size: `{_format_metric_value(top_row.get('requested_size') or _json_dict(_json_dict(top_row.get('budget_impact')).get('preview')).get('requested_size'))}`")
             budget_impact = _json_dict(top_row.get("budget_impact"))
             if budget_impact:
+                preview_budget = _json_dict(budget_impact.get("preview"))
+                rerank_reason_codes = _json_list(top_row.get("rerank_reason_codes_json")) or _json_list(budget_impact.get("rerank_reason_codes"))
+                scaling_reason_codes = _json_list(top_row.get("capital_scaling_reason_codes_json")) or _json_list(budget_impact.get("capital_scaling_reason_codes"))
                 st.caption(
                     " | ".join(
                         [
+                            f"preview_binding_limit={preview_budget.get('preview_binding_limit_scope') or top_row.get('preview_binding_limit_scope') or 'none'}",
+                            f"preview_binding_key={preview_budget.get('preview_binding_limit_key') or top_row.get('preview_binding_limit_key') or 'none'}",
                             f"binding_limit={budget_impact.get('binding_limit_scope') or 'none'}",
+                            f"binding_key={budget_impact.get('binding_limit_key') or 'none'}",
                             f"remaining_budget={_format_metric_value(budget_impact.get('remaining_run_budget'))}",
                         ]
                     )
                 )
+                st.caption(f"rerank_reason={', '.join(str(item) for item in rerank_reason_codes) or 'none'}")
+                st.caption(f"scaling_reason={', '.join(str(item) for item in scaling_reason_codes) or 'none'}")
 
     row4_left, row4_right = st.columns([1.1, 1.1])
     with row4_left:

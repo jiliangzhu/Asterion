@@ -24,13 +24,22 @@ class UiLoaderContractsTest(unittest.TestCase):
             db_path = Path(tmpdir) / "ui_lite.duckdb"
             build_minimal_ui_read_model_db(db_path)
             with patch.dict(os.environ, {"ASTERION_UI_LITE_DB_PATH": str(db_path)}, clear=False):
-                with patch("ui.data_access.load_home_decision_snapshot", return_value={"top_opportunities": pd.DataFrame(), "market_data": {"market_opportunity_source": "ui_lite"}}):
+                with patch(
+                    "ui.loaders.home_loader.load_home_decision_snapshot",
+                    return_value={"top_opportunities": pd.DataFrame(), "market_data": {"market_opportunity_source": "ui_lite"}, "action_queue": pd.DataFrame()},
+                ):
                     home_contract = load_home_surface_contract()
-                with patch("ui.data_access.load_market_chain_analysis_data", return_value={"market_opportunities": pd.DataFrame(), "market_opportunity_source": "ui_lite"}):
+                with patch(
+                    "ui.loaders.markets_loader.load_market_chain_analysis_data",
+                    return_value={"market_opportunities": pd.DataFrame(), "market_opportunity_source": "ui_lite", "market_rows": [], "cohort_history": pd.DataFrame()},
+                ):
                     markets_contract = load_markets_surface_contract()
-                with patch("ui.data_access.load_execution_console_data", return_value={"execution_science": pd.DataFrame()}):
+                with patch(
+                    "ui.loaders.execution_loader.load_execution_console_data",
+                    return_value={"execution_science": pd.DataFrame(), "cohort_history": pd.DataFrame()},
+                ):
                     execution_contract = load_execution_surface_contract()
-                with patch("ui.data_access.load_agent_review_data", return_value={"source": "ui_lite", "frame": pd.DataFrame()}), patch(
+                with patch("ui.data_access.load_resolution_review_data", return_value={"source": "ui_lite", "frame": pd.DataFrame()}), patch(
                     "ui.data_access.load_agent_runtime_status", return_value={"mode": "review_only"}
                 ):
                     agents_contract = load_agents_surface_contract()
@@ -50,6 +59,10 @@ class UiLoaderContractsTest(unittest.TestCase):
         self.assertEqual(home_contract.primary_dataframe_name, "top_opportunities")
         self.assertEqual(markets_contract.primary_dataframe_name, "market_opportunities")
         self.assertEqual(execution_contract.primary_dataframe_name, "execution_science")
+        self.assertIn("action_queue", home_contract.supporting_payload)
+        self.assertIn("market_rows", markets_contract.supporting_payload)
+        self.assertIn("cohort_history", markets_contract.supporting_payload)
+        self.assertIn("cohort_history", execution_contract.supporting_payload)
 
 
 if __name__ == "__main__":

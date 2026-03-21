@@ -16,6 +16,7 @@ from .execution_priors import (
     materialize_execution_priors,
 )
 from .ranking_retrospective import (
+    compare_retrospective_uplift,
     enqueue_ranking_retrospective_row_upserts,
     enqueue_ranking_retrospective_run_upserts,
     materialize_ranking_retrospective,
@@ -46,6 +47,7 @@ __all__ = [
     "load_execution_prior_summary",
     "enqueue_ranking_retrospective_row_upserts",
     "enqueue_ranking_retrospective_run_upserts",
+    "compare_retrospective_uplift",
     "materialize_execution_priors",
     "materialize_ranking_retrospective",
 ]

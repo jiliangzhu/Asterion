@@ -56,7 +56,6 @@ from dagster_asterion.handlers import (
     run_weather_chain_tx_smoke_job,
     run_weather_controlled_live_smoke_job,
     run_weather_paper_execution_job,
-    run_weather_data_qa_review_job,
     run_weather_external_execution_reconciliation_job,
     run_weather_live_prereq_readiness_job,
     run_weather_market_discovery_job,
@@ -68,7 +67,6 @@ from dagster_asterion.handlers import (
     run_weather_wallet_state_refresh_job,
     run_weather_resolution_review_job,
     run_weather_resolution_reconciliation,
-    run_weather_rule2spec_review_job,
     run_weather_spec_sync,
     run_weather_watcher_backfill_job,
 )
@@ -298,7 +296,7 @@ def _proposal() -> UMAProposal:
 
 
 class ColdPathJobMapTest(unittest.TestCase):
-    def test_job_map_contains_agent_manual_jobs(self) -> None:
+    def test_job_map_contains_resolution_only_review_job(self) -> None:
         jobs = build_weather_cold_path_job_map()
         self.assertEqual(set(jobs), {
             "weather_market_discovery",
@@ -321,8 +319,6 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_ranking_retrospective_refresh",
             "weather_allocation_preview_refresh",
             "weather_forecast_calibration_profiles_v2_refresh",
-            "weather_rule2spec_review",
-            "weather_data_qa_review",
             "weather_resolution_review",
         })
         self.assertEqual(jobs["weather_spec_sync"].upstream_jobs, ["weather_market_discovery"])
@@ -362,12 +358,21 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertIn("runtime.ranking_retrospective_runs", jobs["weather_ranking_retrospective_refresh"].output_tables)
         self.assertEqual(jobs["weather_allocation_preview_refresh"].mode, "manual")
         self.assertIn("runtime.allocation_decisions", jobs["weather_allocation_preview_refresh"].output_tables)
+        self.assertEqual(jobs["weather_forecast_calibration_profiles_v2_refresh"].mode, "scheduled")
+        self.assertEqual(
+            jobs["weather_forecast_calibration_profiles_v2_refresh"].default_schedule_key,
+            "weather_forecast_calibration_profiles_v2_nightly",
+        )
+        self.assertIn(
+            "runtime.calibration_profile_materializations",
+            jobs["weather_forecast_calibration_profiles_v2_refresh"].output_tables,
+        )
         self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
         self.assertIn("runtime.capital_allocation_runs", jobs["weather_paper_execution"].output_tables)
-        self.assertEqual(jobs["weather_rule2spec_review"].mode, "manual")
-        self.assertEqual(jobs["weather_data_qa_review"].upstream_jobs, ["weather_forecast_replay"])
         self.assertEqual(jobs["weather_resolution_review"].upstream_jobs, ["weather_resolution_reconciliation"])
         self.assertIn("resolution.watcher_continuity_checks", jobs["weather_watcher_backfill"].output_tables)
+        self.assertNotIn("weather_rule2spec_review", jobs)
+        self.assertNotIn("weather_data_qa_review", jobs)
 
     def test_schedule_specs_keep_replay_manual_by_default(self) -> None:
         schedules = {item.schedule_key: item for item in list_weather_cold_path_schedules()}
@@ -383,9 +388,12 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_watcher_backfill_bihourly",
             "weather_resolution_reconciliation_bihourly",
             "weather_execution_priors_nightly",
+            "weather_forecast_calibration_profiles_v2_nightly",
         ])
         self.assertEqual(schedules["weather_execution_priors_nightly"].cron_schedule, "5 3 * * *")
         self.assertTrue(schedules["weather_execution_priors_nightly"].enabled_by_default)
+        self.assertEqual(schedules["weather_forecast_calibration_profiles_v2_nightly"].cron_schedule, "15 3 * * *")
+        self.assertTrue(schedules["weather_forecast_calibration_profiles_v2_nightly"].enabled_by_default)
 
 
 class ColdPathResourcesTest(unittest.TestCase):
@@ -1532,6 +1540,74 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                 created_at=datetime(2026, 3, 10, 10, 1, tzinfo=timezone.utc),
             ),
         ]
+        allocation_decisions = [
+            type(
+                "AllocationDecisionStub",
+                (),
+                {
+                    "decision_id": "dec_1",
+                    "requested_size": 10.0,
+                    "recommended_size": 8.0,
+                    "allocation_status": "resized",
+                    "allocation_decision_id": "alloc_1",
+                    "reason_codes": ["run_budget_resized"],
+                    "budget_impact": {"preview": {"preview_binding_limit_scope": "market", "preview_binding_limit_key": "mkt_weather_1"}},
+                    "policy_id": "alloc_policy_1",
+                    "policy_version": "v1",
+                    "base_ranking_score": 0.91,
+                    "deployable_expected_pnl": 4.0,
+                    "deployable_notional": 3.2,
+                    "max_deployable_size": 8.0,
+                    "capital_scarcity_penalty": 0.2,
+                    "concentration_penalty": 0.1,
+                    "pre_budget_deployable_size": 10.0,
+                    "pre_budget_deployable_notional": 4.0,
+                    "pre_budget_deployable_expected_pnl": 5.0,
+                    "rerank_position": 1,
+                    "rerank_reason_codes": ["pre_budget_deployable_expected_pnl_desc"],
+                    "binding_limit_scope": "run_budget",
+                    "binding_limit_key": "alloc_policy_1",
+                    "capital_policy_id": "cap_policy_tight",
+                    "capital_policy_version": "cap_v1",
+                    "capital_scaling_reason_codes": ["regime_bucket:tight"],
+                    "regime_bucket": "tight",
+                    "calibration_gate_status": "clear",
+                },
+            )(),
+            type(
+                "AllocationDecisionStub",
+                (),
+                {
+                    "decision_id": "dec_2",
+                    "requested_size": 10.0,
+                    "recommended_size": 0.0,
+                    "allocation_status": "blocked",
+                    "allocation_decision_id": "alloc_2",
+                    "reason_codes": ["calibration_gate:review_required"],
+                    "budget_impact": {"preview": {"preview_binding_limit_scope": "station", "preview_binding_limit_key": "KSEA"}},
+                    "policy_id": "alloc_policy_1",
+                    "policy_version": "v1",
+                    "base_ranking_score": 0.84,
+                    "deployable_expected_pnl": 0.0,
+                    "deployable_notional": 0.0,
+                    "max_deployable_size": 0.0,
+                    "capital_scarcity_penalty": 0.0,
+                    "concentration_penalty": 0.0,
+                    "pre_budget_deployable_size": 6.0,
+                    "pre_budget_deployable_notional": 2.4,
+                    "pre_budget_deployable_expected_pnl": 2.1,
+                    "rerank_position": 2,
+                    "rerank_reason_codes": ["calibration_gate_review_required"],
+                    "binding_limit_scope": "station",
+                    "binding_limit_key": "KSEA",
+                    "capital_policy_id": "cap_policy_tight",
+                    "capital_policy_version": "cap_v1",
+                    "capital_scaling_reason_codes": ["gate_blocked:review_required"],
+                    "regime_bucket": "tight",
+                    "calibration_gate_status": "review_required",
+                },
+            )(),
+        ]
         fake_record = type("ExecutionContextRecordStub", (), {"execution_context_id": "ectx_1", "execution_context": object()})()
         with ExitStack() as stack:
             stack.enter_context(
@@ -1574,7 +1650,7 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                                 "policy_missing_count": 0,
                             },
                         )(),
-                        [],
+                        allocation_decisions,
                         [],
                     ),
                 )
@@ -1582,7 +1658,7 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_capital_allocation_run_upserts", return_value=None))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_allocation_decision_upserts", return_value=None))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_position_limit_check_upserts", return_value=None))
-            stack.enter_context(patch("dagster_asterion.handlers.build_trade_ticket", side_effect=tickets))
+            build_trade_ticket = stack.enter_context(patch("dagster_asterion.handlers.build_trade_ticket", side_effect=tickets))
             build_context = stack.enter_context(patch("dagster_asterion.handlers.build_execution_context", return_value=object()))
             build_record = stack.enter_context(patch("dagster_asterion.handlers.build_execution_context_record", return_value=fake_record))
             stack.enter_context(patch("dagster_asterion.handlers.available_inventory_quantity_for_ticket", return_value=Decimal("100")))
@@ -1784,6 +1860,11 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         self.assertEqual(result.metadata["execution_context_count"], 1)
         self.assertEqual(result.metadata["ticket_execution_context_ids"], {"tt_1": "ectx_1", "tt_2": "ectx_1"})
         self.assertEqual(build_context.call_count, 2)
+        first_allocation_context = build_trade_ticket.call_args_list[0].kwargs["allocation_context"]
+        self.assertEqual(first_allocation_context["capital_policy_id"], "cap_policy_tight")
+        self.assertEqual(first_allocation_context["capital_scaling_reason_codes"], ["regime_bucket:tight"])
+        self.assertEqual(first_allocation_context["calibration_gate_status"], "clear")
+        self.assertEqual(first_allocation_context["preview_binding_limit_scope"], "market")
         build_record.assert_called()
         enqueue_contexts.assert_called_once()
 
@@ -1946,42 +2027,6 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         enqueue_samples.assert_called_once()
         self.assertEqual(result.metadata["calibration_sample_count"], 1)
         self.assertEqual(result.task_ids, ["task_verify", "task_calibration", "task_link", "task_redeem"])
-
-    def test_weather_rule2spec_review_routes_to_agent_pipeline(self) -> None:
-        queue_cfg = WriteQueueConfig(path=":memory:")
-        artifacts = [_agent_artifacts("weather_market", "mkt_weather_1")]
-        with (
-            patch("dagster_asterion.handlers.load_rule2spec_agent_requests", return_value=[object()]) as load_requests,
-            patch("dagster_asterion.handlers.run_rule2spec_agent_review", return_value=artifacts[0]) as run_agent,
-            patch("dagster_asterion.handlers.enqueue_agent_artifact_upserts", return_value=["task_agent"]) as enqueue_agent,
-        ):
-            result = run_weather_rule2spec_review_job(
-                object(),
-                queue_cfg,
-                client=object(),
-            )
-        load_requests.assert_called_once()
-        run_agent.assert_called_once()
-        enqueue_agent.assert_called_once()
-        self.assertEqual(result.task_ids, ["task_agent"])
-
-    def test_weather_data_qa_review_routes_to_agent_pipeline(self) -> None:
-        queue_cfg = WriteQueueConfig(path=":memory:")
-        artifacts = [_agent_artifacts("forecast_replay", "freplay_test")]
-        with (
-            patch("dagster_asterion.handlers.load_data_qa_agent_requests", return_value=[object()]) as load_requests,
-            patch("dagster_asterion.handlers.run_data_qa_agent_review", return_value=artifacts[0]) as run_agent,
-            patch("dagster_asterion.handlers.enqueue_agent_artifact_upserts", return_value=["task_agent"]) as enqueue_agent,
-        ):
-            result = run_weather_data_qa_review_job(
-                object(),
-                queue_cfg,
-                client=object(),
-            )
-        load_requests.assert_called_once()
-        run_agent.assert_called_once()
-        enqueue_agent.assert_called_once()
-        self.assertEqual(result.task_ids, ["task_agent"])
 
     def test_weather_resolution_review_routes_to_agent_pipeline(self) -> None:
         queue_cfg = WriteQueueConfig(path=":memory:")

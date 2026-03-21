@@ -73,6 +73,21 @@ class Rule2SpecDraft:
 
 
 @dataclass(frozen=True)
+class Rule2SpecValidationResult:
+    verdict: str
+    risk_flags: list[str]
+    violations: list[str]
+    human_review_required: bool
+    summary: str
+
+    def __post_init__(self) -> None:
+        if self.verdict not in {"pass", "review", "block"}:
+            raise ValueError("verdict must be pass/review/block")
+        if not self.summary:
+            raise ValueError("summary is required")
+
+
+@dataclass(frozen=True)
 class WeatherMarketSpecRecord:
     market_id: str
     condition_id: str
@@ -279,6 +294,20 @@ class SourceHealthSnapshotRecord:
             raise ValueError("source_freshness_status must be fresh/stale/degraded/missing")
         if not isinstance(self.degraded_reason_codes, list):
             raise ValueError("degraded_reason_codes must be a list")
+
+
+@dataclass(frozen=True)
+class ReplayQualityValidationResult:
+    verdict: str
+    findings: list[str]
+    human_review_required: bool
+    summary: str
+
+    def __post_init__(self) -> None:
+        if self.verdict not in {"pass", "review", "block"}:
+            raise ValueError("verdict must be pass/review/block")
+        if not self.summary:
+            raise ValueError("summary is required")
 
 
 @dataclass(frozen=True)
@@ -588,6 +617,12 @@ class RedeemDecision(str, Enum):
     NOT_REDEEMABLE = "not_redeemable"
 
 
+class ResolutionOperatorDecisionStatus(str, Enum):
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    DEFERRED = "deferred"
+
+
 @dataclass(frozen=True)
 class RedeemScheduleInput:
     proposal_status: ProposalStatus
@@ -655,6 +690,36 @@ class RedeemReadinessRecord:
             raise ValueError("suggestion_id and proposal_id are required")
         if not self.reason:
             raise ValueError("reason is required")
+
+
+@dataclass(frozen=True)
+class ResolutionOperatorReviewDecisionRecord:
+    review_decision_id: str
+    proposal_id: str
+    invocation_id: str
+    suggestion_id: str
+    decision_status: ResolutionOperatorDecisionStatus
+    operator_action: str
+    reason: str | None
+    actor: str
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        if not self.review_decision_id or not self.proposal_id:
+            raise ValueError("review_decision_id and proposal_id are required")
+        if not self.invocation_id or not self.suggestion_id:
+            raise ValueError("invocation_id and suggestion_id are required")
+        if self.operator_action not in {
+            "observe",
+            "manual_review",
+            "consider_dispute",
+            "hold_redeem",
+            "ready_for_redeem_review",
+        }:
+            raise ValueError("unsupported operator_action")
+        if not self.actor:
+            raise ValueError("actor is required")
 
 
 @dataclass(frozen=True)

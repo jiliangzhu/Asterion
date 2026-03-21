@@ -15,7 +15,7 @@ from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.utils import safe_json_dumps
 from asterion_core.storage.write_queue import WriteQueueConfig
 
-from .calibration import CalibrationProfileV2
+from .calibration import CalibrationProfileMaterializationStatus, CalibrationProfileV2
 from .service import ForecastDistribution
 
 
@@ -122,6 +122,23 @@ WEATHER_SOURCE_HEALTH_SNAPSHOT_COLUMNS = [
     "source_freshness_status",
     "degraded_reason_codes_json",
     "created_at",
+]
+
+RUNTIME_CALIBRATION_PROFILE_MATERIALIZATION_COLUMNS = [
+    "materialization_id",
+    "run_id",
+    "job_name",
+    "status",
+    "lookback_days",
+    "source_window_start",
+    "source_window_end",
+    "input_sample_count",
+    "output_profile_count",
+    "fresh_profile_count",
+    "stale_profile_count",
+    "degraded_profile_count",
+    "materialized_at",
+    "error",
 ]
 
 
@@ -281,6 +298,25 @@ def enqueue_source_health_snapshot_upserts(
     )
 
 
+def enqueue_calibration_profile_materialization_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    records: list[CalibrationProfileMaterializationStatus],
+    run_id: str | None = None,
+) -> str | None:
+    if not records:
+        return None
+    rows = [calibration_profile_materialization_to_row(item) for item in records]
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="runtime.calibration_profile_materializations",
+        pk_cols=["materialization_id"],
+        columns=list(RUNTIME_CALIBRATION_PROFILE_MATERIALIZATION_COLUMNS),
+        rows=rows,
+        run_id=run_id,
+    )
+
+
 def forecast_run_to_row(record: ForecastRunRecord, *, observed_at: datetime) -> list[Any]:
     return [
         record.run_id,
@@ -395,6 +431,25 @@ def source_health_snapshot_to_row(record: SourceHealthSnapshotRecord) -> list[An
         record.source_freshness_status,
         safe_json_dumps(record.degraded_reason_codes),
         _sql_timestamp(record.created_at),
+    ]
+
+
+def calibration_profile_materialization_to_row(record: CalibrationProfileMaterializationStatus) -> list[Any]:
+    return [
+        record.materialization_id,
+        record.run_id,
+        record.job_name,
+        record.status,
+        record.lookback_days,
+        _sql_timestamp(record.source_window_start),
+        _sql_timestamp(record.source_window_end),
+        record.input_sample_count,
+        record.output_profile_count,
+        record.fresh_profile_count,
+        record.stale_profile_count,
+        record.degraded_profile_count,
+        _sql_timestamp(record.materialized_at),
+        record.error,
     ]
 
 

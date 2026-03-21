@@ -61,6 +61,59 @@ class TruthSourceChecksTest(unittest.TestCase):
                 con.close()
         self.assertEqual({str(row[0]) for row in rows}, {"warn"})
 
+    def test_truth_source_checks_cover_phase4_workflow_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ui_truth_phase4.duckdb"
+            build_minimal_ui_read_model_db(db_path)
+            con = duckdb.connect(str(db_path), read_only=True)
+            try:
+                rows = con.execute(
+                    """
+                    SELECT surface_id, table_name, check_status
+                    FROM ui.truth_source_checks
+                    WHERE table_name IN ('ui.action_queue_summary', 'ui.cohort_history_summary')
+                    ORDER BY surface_id, table_name
+                    """
+                ).fetchall()
+            finally:
+                con.close()
+        self.assertIn(("execution", "ui.cohort_history_summary", "ok"), rows)
+        self.assertIn(("home", "ui.action_queue_summary", "ok"), rows)
+        self.assertIn(("markets", "ui.action_queue_summary", "ok"), rows)
+        self.assertIn(("markets", "ui.cohort_history_summary", "ok"), rows)
+
+    def test_truth_source_checks_lock_p8_gate_and_scaling_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ui_truth_p8.duckdb"
+            build_minimal_ui_read_model_db(
+                db_path,
+                skip_columns={
+                    "ui.market_opportunity_summary": {"calibration_impacted_market"},
+                    "ui.action_queue_summary": {"capital_policy_id"},
+                    "ui.calibration_health_summary": {"research_only_market_count"},
+                },
+            )
+            con = duckdb.connect(str(db_path), read_only=True)
+            try:
+                rows = con.execute(
+                    """
+                    SELECT table_name, check_status, issues_json
+                    FROM ui.truth_source_checks
+                    WHERE table_name IN (
+                        'ui.market_opportunity_summary',
+                        'ui.action_queue_summary',
+                        'ui.calibration_health_summary'
+                    )
+                    ORDER BY table_name
+                    """
+                ).fetchall()
+            finally:
+                con.close()
+        self.assertTrue(all(str(row[1]) == "fail" for row in rows))
+        self.assertTrue(any("calibration_impacted_market" in str(row[2]) for row in rows))
+        self.assertTrue(any("capital_policy_id" in str(row[2]) for row in rows))
+        self.assertTrue(any("research_only_market_count" in str(row[2]) for row in rows))
+
 
 if __name__ == "__main__":
     unittest.main()

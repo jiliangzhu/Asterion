@@ -91,12 +91,12 @@ def execution_feedback_penalty(
 ) -> float:
     slippage_component = _clamp(float(adverse_fill_slippage_bps_p50 or 0.0) / 200.0, 0.0, 0.20)
     penalty = (
-        0.35 * _clamp(float(miss_rate), 0.0, 1.0)
-        + 0.20 * _clamp(1.0 - float(resolution_rate), 0.0, 1.0)
-        + 0.15 * _clamp(float(partial_fill_rate), 0.0, 1.0)
-        + 0.10 * _clamp(float(cancel_rate), 0.0, 1.0)
-        + 0.10 * _clamp(float(distortion_rate), 0.0, 1.0)
-        + 0.10 * slippage_component
+        0.40 * _clamp(float(miss_rate), 0.0, 1.0)
+        + 0.25 * _clamp(float(distortion_rate), 0.0, 1.0)
+        + 0.15 * slippage_component
+        + 0.10 * _clamp(float(partial_fill_rate), 0.0, 1.0)
+        + 0.05 * _clamp(float(cancel_rate), 0.0, 1.0)
+        + 0.05 * _clamp(1.0 - float(resolution_rate), 0.0, 1.0)
     )
     return round(_clamp(penalty, 0.0, 0.75), 6)
 

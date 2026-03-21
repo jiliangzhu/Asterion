@@ -53,9 +53,11 @@ from .verification import (
 from .persistence import (
     PROPOSAL_EVIDENCE_LINK_COLUMNS,
     REDEEM_READINESS_COLUMNS,
+    RESOLUTION_OPERATOR_REVIEW_DECISION_COLUMNS,
     SETTLEMENT_VERIFICATION_COLUMNS,
     enqueue_evidence_link_upserts,
     enqueue_redeem_readiness_upserts,
+    enqueue_resolution_operator_review_decision_upserts,
     enqueue_settlement_verification_upserts,
 )
 
@@ -67,6 +69,7 @@ __all__ = [
     "PROCESSED_EVENT_COLUMNS",
     "PROPOSAL_TRANSITION_COLUMNS",
     "REDEEM_READINESS_COLUMNS",
+    "RESOLUTION_OPERATOR_REVIEW_DECISION_COLUMNS",
     "SETTLEMENT_VERIFICATION_COLUMNS",
     "UMAEvent",
     "UMA_PROPOSAL_COLUMNS",
@@ -83,6 +86,7 @@ __all__ = [
     "enqueue_uma_replay_writes",
     "enqueue_evidence_link_upserts",
     "enqueue_redeem_readiness_upserts",
+    "enqueue_resolution_operator_review_decision_upserts",
     "enqueue_settlement_verification_upserts",
     "evaluate_continuity",
     "load_block_watermark",

@@ -363,6 +363,12 @@ class AllocationDecision:
     token_id: str
     side: str
     ranking_score: float
+    base_ranking_score: float
+    deployable_expected_pnl: float
+    deployable_notional: float
+    max_deployable_size: float
+    capital_scarcity_penalty: float
+    concentration_penalty: float
     requested_size: float
     recommended_size: float
     requested_notional: float
@@ -372,10 +378,20 @@ class AllocationDecision:
     budget_impact: dict[str, Any]
     policy_id: str | None
     policy_version: str | None
+    capital_policy_id: str | None
+    capital_policy_version: str | None
     source_kind: str
     binding_limit_scope: str | None
     binding_limit_key: str | None
+    regime_bucket: str | None
+    calibration_gate_status: str | None
+    capital_scaling_reason_codes: tuple[str, ...]
     created_at: Any
+    pre_budget_deployable_size: float = 0.0
+    pre_budget_deployable_notional: float = 0.0
+    pre_budget_deployable_expected_pnl: float = 0.0
+    rerank_position: int | None = None
+    rerank_reason_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -395,17 +411,47 @@ class AllocationDecision:
                 raise ValueError(f"{name} is required")
         if self.allocation_status not in {"approved", "resized", "blocked", "policy_missing"}:
             raise ValueError("allocation_status must be approved/resized/blocked/policy_missing")
-        for name in ("ranking_score", "requested_size", "recommended_size", "requested_notional", "recommended_notional"):
+        for name in (
+            "ranking_score",
+            "base_ranking_score",
+            "deployable_expected_pnl",
+            "deployable_notional",
+            "max_deployable_size",
+            "capital_scarcity_penalty",
+            "concentration_penalty",
+            "requested_size",
+            "recommended_size",
+            "requested_notional",
+            "recommended_notional",
+            "pre_budget_deployable_size",
+            "pre_budget_deployable_notional",
+            "pre_budget_deployable_expected_pnl",
+        ):
             if float(getattr(self, name)) < 0.0:
                 raise ValueError(f"{name} must be non-negative")
         if not isinstance(self.reason_codes, tuple):
             raise ValueError("reason_codes must be a tuple")
+        if not isinstance(self.rerank_reason_codes, tuple):
+            raise ValueError("rerank_reason_codes must be a tuple")
+        if not isinstance(self.capital_scaling_reason_codes, tuple):
+            raise ValueError("capital_scaling_reason_codes must be a tuple")
         if not isinstance(self.budget_impact, dict):
             raise ValueError("budget_impact must be a dictionary")
-        for name in ("policy_id", "policy_version", "binding_limit_scope", "binding_limit_key"):
+        for name in (
+            "policy_id",
+            "policy_version",
+            "capital_policy_id",
+            "capital_policy_version",
+            "binding_limit_scope",
+            "binding_limit_key",
+            "regime_bucket",
+            "calibration_gate_status",
+        ):
             value = getattr(self, name)
             if value is not None and not str(value).strip():
                 raise ValueError(f"{name} must be non-empty when provided")
+        if self.rerank_position is not None and int(self.rerank_position) <= 0:
+            raise ValueError("rerank_position must be strictly positive when provided")
 
 
 @dataclass(frozen=True)
@@ -466,6 +512,12 @@ class OpportunityAssessment:
     feedback_penalty: float
     feedback_status: str
     cohort_prior_version: str | None
+    base_ranking_score: float | None
+    deployable_expected_pnl: float | None
+    deployable_notional: float | None
+    max_deployable_size: float | None
+    capital_scarcity_penalty: float | None
+    concentration_penalty: float | None
     recommended_size: float | None
     allocation_status: str | None
     budget_impact: dict[str, Any] | None
@@ -473,8 +525,20 @@ class OpportunityAssessment:
     why_ranked_json: dict[str, Any]
     ranking_score: float
     actionability_status: str
+    calibration_gate_status: str
+    calibration_gate_reason_codes: list[str]
+    calibration_impacted_market: bool
+    capital_policy_id: str | None
+    capital_policy_version: str | None
+    capital_scaling_reason_codes: list[str] | None
+    regime_bucket: str | None
     rationale: str
     assessment_context_json: dict[str, Any]
+    pre_budget_deployable_size: float | None = None
+    pre_budget_deployable_notional: float | None = None
+    pre_budget_deployable_expected_pnl: float | None = None
+    rerank_position: int | None = None
+    rerank_reason_codes: list[str] | None = None
 
     def __post_init__(self) -> None:
         if not self.assessment_id:
@@ -528,6 +592,20 @@ class OpportunityAssessment:
             raise ValueError("feedback_status must be heuristic_only/ready/watch/sparse/degraded/missing")
         if self.cohort_prior_version is not None and not str(self.cohort_prior_version).strip():
             raise ValueError("cohort_prior_version must be non-empty when provided")
+        for name in (
+            "base_ranking_score",
+            "deployable_expected_pnl",
+            "deployable_notional",
+            "max_deployable_size",
+            "capital_scarcity_penalty",
+            "concentration_penalty",
+            "pre_budget_deployable_size",
+            "pre_budget_deployable_notional",
+            "pre_budget_deployable_expected_pnl",
+        ):
+            value = getattr(self, name)
+            if value is not None and float(value) < 0.0:
+                raise ValueError(f"{name} must be non-negative when provided")
         if self.recommended_size is not None and float(self.recommended_size) < 0.0:
             raise ValueError("recommended_size must be non-negative when provided")
         if self.allocation_status is not None and self.allocation_status not in {
@@ -547,7 +625,23 @@ class OpportunityAssessment:
             raise ValueError("ranking_score must be non-negative")
         if self.actionability_status not in {"actionable", "review_required", "blocked", "no_trade"}:
             raise ValueError("actionability_status must be actionable/review_required/blocked/no_trade")
+        if self.calibration_gate_status not in {"clear", "review_required", "research_only", "blocked"}:
+            raise ValueError("calibration_gate_status must be clear/review_required/research_only/blocked")
+        if not isinstance(self.calibration_gate_reason_codes, list):
+            raise ValueError("calibration_gate_reason_codes must be a list")
+        if not isinstance(bool(self.calibration_impacted_market), bool):
+            raise ValueError("calibration_impacted_market must be boolean-like")
+        for name in ("capital_policy_id", "capital_policy_version", "regime_bucket"):
+            value = getattr(self, name)
+            if value is not None and not str(value).strip():
+                raise ValueError(f"{name} must be non-empty when provided")
+        if self.capital_scaling_reason_codes is not None and not isinstance(self.capital_scaling_reason_codes, list):
+            raise ValueError("capital_scaling_reason_codes must be a list when provided")
         if not self.rationale:
             raise ValueError("rationale is required")
         if not isinstance(self.assessment_context_json, dict):
             raise ValueError("assessment_context_json must be a dictionary")
+        if self.rerank_position is not None and int(self.rerank_position) <= 0:
+            raise ValueError("rerank_position must be strictly positive when provided")
+        if self.rerank_reason_codes is not None and not isinstance(self.rerank_reason_codes, list):
+            raise ValueError("rerank_reason_codes must be a list when provided")

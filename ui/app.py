@@ -271,7 +271,7 @@ st.sidebar.markdown("---")
 st.sidebar.caption(
     " | ".join(
         [
-            "Asterion v1.2",
+            "Asterion v2.0 / Phase 8 accepted",
             sidebar_truth["current_phase_status"],
             f"truth-source={sidebar_truth['truth_source_doc']}",
         ]

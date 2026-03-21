@@ -117,12 +117,20 @@ def build_watch_only_snapshot(
             price_staleness_ms=int(effective_pricing_context.get("price_staleness_ms") or 0),
             source_freshness_status=str(effective_pricing_context.get("source_freshness_status") or "fresh"),
             spread_bps=int(effective_pricing_context.get("spread_bps") or 0) or None,
-            calibration_health_status=str(effective_pricing_context.get("calibration_health_status") or "lookup_missing"),
+            calibration_health_status=(
+                str(effective_pricing_context.get("calibration_health_status"))
+                if effective_pricing_context.get("calibration_health_status") is not None
+                else None
+            ),
             calibration_bias_quality=effective_pricing_context.get("calibration_bias_quality")
             or effective_pricing_context.get("bias_quality_status"),
             threshold_probability_quality=effective_pricing_context.get("threshold_probability_quality")
             or effective_pricing_context.get("threshold_probability_quality_status"),
-            sample_count=int(effective_pricing_context.get("sample_count") or 0),
+            sample_count=(
+                int(effective_pricing_context.get("sample_count"))
+                if effective_pricing_context.get("sample_count") is not None
+                else None
+            ),
             calibration_multiplier=effective_pricing_context.get("calibration_multiplier"),
             calibration_reason_codes=effective_pricing_context.get("calibration_reason_codes")
             if isinstance(effective_pricing_context.get("calibration_reason_codes"), list)

@@ -1,7 +1,7 @@
 # Checklist Index
 
 **版本**: v1.0
-**更新日期**: 2026-03-18
+**更新日期**: 2026-03-21
 **目标**: 作为 `docs/10-implementation/checklists/` 的统一入口，区分当前 `v2.0` closeout placeholder、historical accepted closeout checklists 和历史归档清单，并明确 canonical files 现在位于 versioned tree。
 
 ---
@@ -10,8 +10,14 @@
 
 - [V2_Closeout_Checklist.md](../versions/v2.0/checklists/V2_Closeout_Checklist.md)
 
+当前还没有新的 tranche-specific closeout checklist 被打开；最近 accepted closeout checklist 已转入下方 historical accepted 区。
+
 ## 2. Historical accepted closeout checklists
 
+- [P8_Closeout_Checklist.md](../versions/v2.0/checklists/P8_Closeout_Checklist.md)
+  - 最近 accepted tranche 的 closeout checklist；固定收口 calibration hard gate / scaling-aware capital discipline / fallback truth-source hardening
+- [P7_Closeout_Checklist.md](../versions/v2.0/checklists/P7_Closeout_Checklist.md)
+  - accepted closeout checklist；固定收口 rerank acceptance、allocator / paper / UI consistency、retrospective uplift integration 与 `P7` / `V2` wording refresh
 - [P0_Closeout_Checklist.md](../versions/v1.0/checklists/P0_Closeout_Checklist.md)
 - [P1_Closeout_Checklist.md](../versions/v1.0/checklists/P1_Closeout_Checklist.md)
 - [P2_Closeout_Checklist.md](../versions/v1.0/checklists/P2_Closeout_Checklist.md)

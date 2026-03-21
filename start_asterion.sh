@@ -23,7 +23,8 @@ print_boundary_summary() {
     echo "  - manual-only"
     echo "  - default-off"
     echo "  - approve_usdc only"
-    echo "  - remediation in progress"
+    echo "  - latest accepted tranche: Phase 8"
+    echo "  - no current tranche-specific plan open"
 }
 
 require_path() {

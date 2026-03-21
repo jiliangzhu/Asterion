@@ -19,7 +19,9 @@ class UiLiteBuilderRegistryTest(unittest.TestCase):
         )
         registry = builder_registry()
         self.assertIn("ui.market_opportunity_summary", registry["opportunity_builder"])
+        self.assertIn("ui.action_queue_summary", registry["opportunity_builder"])
         self.assertIn("ui.execution_science_summary", registry["execution_builder"])
+        self.assertIn("ui.cohort_history_summary", registry["execution_builder"])
         self.assertEqual(registry["catalog_builder"], ("ui.read_model_catalog", "ui.truth_source_checks"))
 
 

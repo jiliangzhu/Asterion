@@ -205,7 +205,7 @@ class ForecastDistributionSummaryV2:
 weather.forecast_calibration_samples
 + weather.weather_forecast_runs
 + weather.weather_market_specs
--> manual profile materialization
+-> scheduled profile materialization
 -> weather.forecast_calibration_profiles_v2
 -> forecast adapter correction layer
 -> ForecastDistributionSummaryV2

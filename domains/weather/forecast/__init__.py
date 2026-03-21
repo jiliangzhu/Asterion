@@ -3,10 +3,13 @@
 from .adapters import NWSAdapter, OpenMeteoAdapter, StdDevResolutionSummary, resolve_std_dev_summary
 from .calibration import (
     CalibrationConfidenceSummary,
+    CalibrationProfileMaterializationStatus,
     CalibrationProfileV2,
     DuckDBForecastStdDevProvider,
     ForecastCalibrationV2Summary,
     build_calibration_lookup_key,
+    calibration_profile_age_hours,
+    calibration_profile_freshness_status,
     calibration_confidence_from_metrics,
     calibration_regime_bucket,
     calibration_v2_context_for_probability,
@@ -21,6 +24,7 @@ from .calibration import (
 )
 from .cache import InMemoryForecastCache
 from .persistence import (
+    RUNTIME_CALIBRATION_PROFILE_MATERIALIZATION_COLUMNS,
     WEATHER_FORECAST_CALIBRATION_SAMPLE_COLUMNS,
     WEATHER_FORECAST_CALIBRATION_PROFILE_V2_COLUMNS,
     WEATHER_FORECAST_RUN_COLUMNS,
@@ -33,6 +37,8 @@ from .persistence import (
     enqueue_forecast_replay_upserts,
     enqueue_source_health_snapshot_upserts,
     build_forecast_run_record,
+    calibration_profile_materialization_to_row,
+    enqueue_calibration_profile_materialization_upserts,
     forecast_calibration_profile_v2_to_row,
     forecast_calibration_sample_to_row,
     enqueue_forecast_run_upserts,
@@ -50,10 +56,12 @@ from .replay import (
     recompute_pricing_outputs,
     run_forecast_replay,
 )
+from .replay_validation import validate_replay_quality
 
 __all__ = [
     "AdapterRouter",
     "CalibrationConfidenceSummary",
+    "CalibrationProfileMaterializationStatus",
     "CalibrationProfileV2",
     "DuckDBForecastStdDevProvider",
     "ForecastCalibrationV2Summary",
@@ -70,6 +78,8 @@ __all__ = [
     "WEATHER_FORECAST_RUN_COLUMNS",
     "WEATHER_SOURCE_HEALTH_SNAPSHOT_COLUMNS",
     "build_calibration_lookup_key",
+    "calibration_profile_age_hours",
+    "calibration_profile_freshness_status",
     "calibration_confidence_from_metrics",
     "calibration_regime_bucket",
     "calibration_v2_context_for_probability",
@@ -78,6 +88,7 @@ __all__ = [
     "build_forecast_replay_record",
     "build_forecast_replay_request",
     "build_forecast_run_record",
+    "calibration_profile_materialization_to_row",
     "build_forecast_request",
     "enqueue_forecast_calibration_sample_upserts",
     "enqueue_forecast_calibration_profile_v2_upserts",
@@ -97,7 +108,10 @@ __all__ = [
     "recompute_forecast_run",
     "recompute_pricing_outputs",
     "run_forecast_replay",
+    "validate_replay_quality",
     "resolve_std_dev_summary",
+    "RUNTIME_CALIBRATION_PROFILE_MATERIALIZATION_COLUMNS",
+    "enqueue_calibration_profile_materialization_upserts",
     "season_bucket",
     "materialize_forecast_calibration_profiles_v2",
     "threshold_probability_bucket",

@@ -20,8 +20,26 @@ class UiGoldenSurfacesTest(unittest.TestCase):
         self.assertIsNotNone(record)
         assert record is not None
         self.assertEqual(record.primary_score_column, "ranking_score")
+        self.assertIn("base_ranking_score", record.required_columns)
+        self.assertIn("deployable_expected_pnl", record.required_columns)
+        self.assertIn("calibration_gate_status", record.required_columns)
         self.assertIn("source_badge", record.required_columns)
         self.assertIn("primary_score_label", record.required_columns)
+
+        action_queue_record = get_read_model_catalog_record("ui.action_queue_summary")
+        self.assertIsNotNone(action_queue_record)
+        assert action_queue_record is not None
+        self.assertEqual(action_queue_record.primary_score_column, "ranking_score")
+        self.assertIn("operator_bucket", action_queue_record.required_columns)
+        self.assertIn("deployable_expected_pnl", action_queue_record.required_columns)
+        self.assertIn("calibration_gate_status", action_queue_record.required_columns)
+        self.assertIn("binding_limit_scope", action_queue_record.required_columns)
+
+        cohort_history_record = get_read_model_catalog_record("ui.cohort_history_summary")
+        self.assertIsNotNone(cohort_history_record)
+        assert cohort_history_record is not None
+        self.assertIsNone(cohort_history_record.primary_score_column)
+        self.assertIn("submitted_capture_ratio", cohort_history_record.required_columns)
 
     def test_boundary_copy_baseline_remains_pinned(self) -> None:
         summary = load_boundary_sidebar_summary()

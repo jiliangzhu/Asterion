@@ -1,7 +1,7 @@
 # Asterion Implementation Index
 
-**版本**: v1.5
-**更新日期**: 2026-03-18
+**版本**: v1.6
+**更新日期**: 2026-03-21
 **目标**: 作为 `docs/10-implementation/` 的统一入口，按“版本桶 -> 阶段计划 / 检查清单 / runbook / 迁移台账 / module notes”分类组织实施文档，便于快速定位 active version 与 historical versions 的 canonical materials。
 
 > 当前仓库阶段状态：`P4 accepted; post-P4 remediation accepted; v2.0 implementation active`
@@ -52,7 +52,13 @@ docs/10-implementation/
 ### 3.1 当前阶段计划
 
 - [V2_Implementation_Plan.md](./versions/v2.0/phase-plans/V2_Implementation_Plan.md)
-  - 当前唯一 active implementation entry；已锁定 `Weather-first` v2.0 的 workstreams、phases、planned interfaces 与 acceptance 结构
+  - 当前唯一 active implementation entry；作为 umbrella contract，已锁定 `Weather-first` v2.0 的 workstreams、phases、planned interfaces 与 acceptance 结构
+- [P8_Implementation_Plan.md](./versions/v2.0/phase-plans/P8_Implementation_Plan.md)
+  - 最近 accepted tranche record；保留 `Phase 8 — Calibration Hard Gates and Scaling-Aware Capital Discipline` 的 accepted closeout 基线
+- [P7_Implementation_Plan.md](./versions/v2.0/phase-plans/P7_Implementation_Plan.md)
+  - accepted closeout record；保留 `Phase 7 — Deployable Rerank, Allocator v2, and Execution Economics Closure` 的已交付 closeout 基线
+- [P6_Implementation_Plan.md](./versions/v2.0/phase-plans/P6_Implementation_Plan.md)
+  - accepted tranche baseline record；保留 `Phase 6 — Capital-Aware Ranking and Deployable Action Queue` 的已交付基线
 - [Post_P4_Remediation_Implementation_Plan.md](./versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
   - historical accepted remediation record；已包含 accepted `Phase 0` 到 `Phase 9`、accepted `Post-P4 Phase 10` 到 `Post-P4 Phase 15`
 - [P4_Implementation_Plan.md](./versions/v1.0/phase-plans/P4_Implementation_Plan.md)
@@ -66,6 +72,10 @@ docs/10-implementation/
 
 - [Checklist_Index.md](./checklists/Checklist_Index.md)
 - [V2_Closeout_Checklist.md](./versions/v2.0/checklists/V2_Closeout_Checklist.md)
+- [P8_Closeout_Checklist.md](./versions/v2.0/checklists/P8_Closeout_Checklist.md)
+  - 最近 accepted tranche 的 closeout checklist；固定收口 calibration hard gate、scaling-aware capital discipline 与 fallback truth-source hardening
+- [P7_Closeout_Checklist.md](./versions/v2.0/checklists/P7_Closeout_Checklist.md)
+  - historical accepted closeout checklist；固定收口 rerank / paper / UI consistency、retrospective uplift integration 与 `P7` / `V2` wording drift
 - [P0_Closeout_Checklist.md](./versions/v1.0/checklists/P0_Closeout_Checklist.md)
 - [P1_Closeout_Checklist.md](./versions/v1.0/checklists/P1_Closeout_Checklist.md)
 - [P2_Closeout_Checklist.md](./versions/v1.0/checklists/P2_Closeout_Checklist.md)
@@ -201,29 +211,37 @@ docs/10-implementation/
 
 1. [Implementation_Index.md](./Implementation_Index.md)
 2. [V2_Implementation_Plan.md](./versions/v2.0/phase-plans/V2_Implementation_Plan.md)
-   - 当前唯一 active implementation entry
-3. [Post_P4_Remediation_Implementation_Plan.md](./versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
+   - 当前唯一 active implementation entry；作为 umbrella contract
+3. [P8_Implementation_Plan.md](./versions/v2.0/phase-plans/P8_Implementation_Plan.md)
+   - 最近 accepted tranche record；如需回看 calibration hard gate / scaling-aware capital discipline closeout，从这里进入
+4. [P7_Implementation_Plan.md](./versions/v2.0/phase-plans/P7_Implementation_Plan.md)
+   - accepted closeout record；如需回看 deployable rerank / allocator v2 / economics closeout，从这里进入
+5. [P8_Closeout_Checklist.md](./versions/v2.0/checklists/P8_Closeout_Checklist.md)
+   - 最近 accepted tranche 的 closeout checklist；用于锁住 hard gate / scaling-aware policy / fallback truth-source acceptance
+6. [P6_Implementation_Plan.md](./versions/v2.0/phase-plans/P6_Implementation_Plan.md)
+   - accepted tranche baseline record；如需回看 deployable baseline 的首轮收口，从这里进入
+7. [Post_P4_Remediation_Implementation_Plan.md](./versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
    - historical accepted remediation record，同时保留 `Post-P4 Phase 10` 到 `Post-P4 Phase 15`
-4. [Controlled_Live_Boundary_Design.md](../30-trading/Controlled_Live_Boundary_Design.md)
-5. [Operator_Console_Truth_Source_Design.md](../50-operations/Operator_Console_Truth_Source_Design.md)
-6. [Execution_Economics_Design.md](../30-trading/Execution_Economics_Design.md)
-7. [Forecast_Calibration_v2_Design.md](../40-weather/Forecast_Calibration_v2_Design.md)
-8. [UI_Read_Model_Design.md](../20-architecture/UI_Read_Model_Design.md)
-9. [V2_Closeout_Checklist.md](./versions/v2.0/checklists/V2_Closeout_Checklist.md)
-10. [Post_P4_P10_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P10_Closeout_Checklist.md)
-11. [Post_P4_P11_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P11_Closeout_Checklist.md)
-12. [Post_P4_P12_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P12_Closeout_Checklist.md)
-13. [Post_P4_P13_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P13_Closeout_Checklist.md)
-14. [Post_P4_P14_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P14_Closeout_Checklist.md)
-15. [Post_P4_P15_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P15_Closeout_Checklist.md)
-16. [P4_Implementation_Plan.md](./versions/v1.0/phase-plans/P4_Implementation_Plan.md)
-17. [P4_Closeout_Checklist.md](./versions/v1.0/checklists/P4_Closeout_Checklist.md)
-18. [P4_Controlled_Rollout_Decision_Runbook.md](./versions/v1.0/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
-19. [P4_Real_Weather_Chain_Smoke_Runbook.md](./versions/v1.0/runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md)
-20. [P4_Controlled_Live_Smoke_Runbook.md](./versions/v1.0/runbooks/P4_Controlled_Live_Smoke_Runbook.md)
-21. [P3_Closeout_Checklist.md](./versions/v1.0/checklists/P3_Closeout_Checklist.md)
-22. [P3_Paper_Execution_Runbook.md](./versions/v1.0/runbooks/P3_Paper_Execution_Runbook.md)
-23. [P3_Implementation_Plan.md](./versions/v1.0/phase-plans/P3_Implementation_Plan.md)
+8. [Controlled_Live_Boundary_Design.md](../30-trading/Controlled_Live_Boundary_Design.md)
+9. [Operator_Console_Truth_Source_Design.md](../50-operations/Operator_Console_Truth_Source_Design.md)
+10. [Execution_Economics_Design.md](../30-trading/Execution_Economics_Design.md)
+11. [Forecast_Calibration_v2_Design.md](../40-weather/Forecast_Calibration_v2_Design.md)
+12. [UI_Read_Model_Design.md](../20-architecture/UI_Read_Model_Design.md)
+12. [V2_Closeout_Checklist.md](./versions/v2.0/checklists/V2_Closeout_Checklist.md)
+12. [Post_P4_P10_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P10_Closeout_Checklist.md)
+13. [Post_P4_P11_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P11_Closeout_Checklist.md)
+14. [Post_P4_P12_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P12_Closeout_Checklist.md)
+15. [Post_P4_P13_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P13_Closeout_Checklist.md)
+16. [Post_P4_P14_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P14_Closeout_Checklist.md)
+17. [Post_P4_P15_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P15_Closeout_Checklist.md)
+18. [P4_Implementation_Plan.md](./versions/v1.0/phase-plans/P4_Implementation_Plan.md)
+19. [P4_Closeout_Checklist.md](./versions/v1.0/checklists/P4_Closeout_Checklist.md)
+20. [P4_Controlled_Rollout_Decision_Runbook.md](./versions/v1.0/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
+21. [P4_Real_Weather_Chain_Smoke_Runbook.md](./versions/v1.0/runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md)
+22. [P4_Controlled_Live_Smoke_Runbook.md](./versions/v1.0/runbooks/P4_Controlled_Live_Smoke_Runbook.md)
+23. [P3_Closeout_Checklist.md](./versions/v1.0/checklists/P3_Closeout_Checklist.md)
+24. [P3_Paper_Execution_Runbook.md](./versions/v1.0/runbooks/P3_Paper_Execution_Runbook.md)
+25. [P3_Implementation_Plan.md](./versions/v1.0/phase-plans/P3_Implementation_Plan.md)
 24. [P2_Closeout_Checklist.md](./versions/v1.0/checklists/P2_Closeout_Checklist.md)
 25. [P2_Implementation_Plan.md](./versions/v1.0/phase-plans/P2_Implementation_Plan.md)
 26. [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./versions/v1.0/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)

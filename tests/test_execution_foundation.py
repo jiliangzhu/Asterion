@@ -948,6 +948,14 @@ class ExecutionGateAndPortfolioTest(unittest.TestCase):
                 "budget_impact": {"remaining_run_budget": 0.0},
                 "policy_id": "policy_exact",
                 "policy_version": "alloc_v1",
+                "base_ranking_score": 0.9,
+                "deployable_expected_pnl": 1.2,
+                "deployable_notional": 1.6,
+                "max_deployable_size": 6.0,
+                "capital_scarcity_penalty": 0.3,
+                "concentration_penalty": 0.0,
+                "binding_limit_scope": "per_ticket",
+                "binding_limit_key": "policy_exact",
             },
         )
         self.assertEqual(ticket.size, Decimal("4"))
@@ -955,6 +963,9 @@ class ExecutionGateAndPortfolioTest(unittest.TestCase):
         self.assertEqual(ticket.provenance_json["recommended_size"], "4.0")
         self.assertEqual(ticket.provenance_json["policy_id"], "policy_exact")
         self.assertEqual(ticket.provenance_json["budget_impact"]["remaining_run_budget"], 0.0)
+        self.assertEqual(ticket.provenance_json["base_ranking_score"], 0.9)
+        self.assertEqual(ticket.provenance_json["deployable_expected_pnl"], 1.2)
+        self.assertEqual(ticket.provenance_json["binding_limit_scope"], "per_ticket")
 
     def test_portfolio_buy_and_sell_reservations_follow_inventory_semantics(self) -> None:
         buy_intent = build_signal_order_intent(

@@ -12,9 +12,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
-from agents.common import enqueue_agent_artifact_upserts
-from agents.common.client import build_agent_client_from_env
-from agents.weather.rule2spec_agent import Rule2SpecAgentRequest, run_rule2spec_agent_review
 from asterion_core.clients.http_retry import RetryHttpClient
 from asterion_core.contracts import StationMetadata
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
@@ -53,6 +50,7 @@ from domains.weather.spec import (
     load_weather_markets_for_rule2spec,
     normalize_location_key,
     parse_rule2spec_draft,
+    validate_rule2spec_draft,
 )
 
 
@@ -403,66 +401,66 @@ def main() -> int:
                     "SELECT created_at FROM weather.weather_forecast_runs WHERE run_id = ?",
                     [forecast_run_id],
                 ).fetchone()
-            source_health_snapshot = build_source_health_snapshot(
-                market_id=target_market.market_id,
-                station_id=spec.station_id,
-                source=forecast_run.source,
-                market_updated_at=market_updated_at_row[0] if market_updated_at_row else None,
-                forecast_created_at=forecast_created_at_row[0] if forecast_created_at_row else forecast_target_time,
-                snapshot_created_at=datetime.now(UTC).replace(tzinfo=None),
-            )
-            calibration_summary = DuckDBForecastStdDevProvider(db_path).resolve_confidence_summary(
-                station_id=forecast_run.station_id,
-                source=forecast_run.source,
-                observation_date=forecast_run.observation_date,
-                forecast_target_time=forecast_run.forecast_target_time,
-                metric=forecast_run.metric,
-            )
-            current_fair_values = build_binary_fair_values(market=market, spec=spec, forecast_run=forecast_run)
-            market_prices = extract_market_prices(market.raw_market)
-            current_snapshots = [
-                build_watch_only_snapshot(
-                    fair_value=item,
-                    reference_price=market_prices[item.outcome],
-                    threshold_bps=TARGET_THRESHOLD_BPS,
-                    accepting_orders=bool(market.accepting_orders),
-                    enable_order_book=market.enable_order_book,
-                    execution_prior_summary=load_execution_prior_summary(
-                        con,
-                        market_id=item.market_id,
-                        station_id=spec.station_id,
-                        metric=forecast_run.metric,
-                        side="BUY" if item.fair_value >= market_prices[item.outcome] else "SELL",
-                        forecast_target_time=forecast_run.forecast_target_time,
-                        observation_date=forecast_run.observation_date,
-                        depth_proxy=0.85 if market.enable_order_book and 0.10 <= market_prices[item.outcome] <= 0.90 else 0.55,
-                        spread_bps=None,
-                        calibration_quality_bucket=None if calibration_summary is None else calibration_summary.calibration_health_status,
-                        source_freshness_bucket=source_health_snapshot.source_freshness_status,
-                    ),
-                    pricing_context={
-                        "calibration_health_status": None if calibration_summary is None else calibration_summary.calibration_health_status,
-                        "sample_count": 0 if calibration_summary is None else calibration_summary.sample_count,
-                        "calibration_multiplier": None if calibration_summary is None else calibration_summary.calibration_confidence_multiplier,
-                        "calibration_reason_codes": [] if calibration_summary is None else list(calibration_summary.reason_codes),
-                        "forecast_run_id": forecast_run.run_id,
-                        "mapping_confidence": station_mapping.mapping_confidence,
-                        "mapping_method": station_mapping.mapping_method,
-                        "market_quality_reason_codes": list(source_health_snapshot.degraded_reason_codes),
-                        "price_staleness_ms": source_health_snapshot.price_staleness_ms,
-                        "source_requested": TARGET_SOURCE_REQUESTED,
-                        "source_freshness_status": source_health_snapshot.source_freshness_status,
-                        "source_used": forecast_run.source,
-                        "source_trace": forecast_run.source_trace,
-                        **build_forecast_calibration_pricing_context(
-                            forecast_run=forecast_run,
-                            outcome=item.outcome,
-                            fair_value=item.fair_value,
-                        ),
-                    },
+                source_health_snapshot = build_source_health_snapshot(
+                    market_id=target_market.market_id,
+                    station_id=spec.station_id,
+                    source=forecast_run.source,
+                    market_updated_at=market_updated_at_row[0] if market_updated_at_row else None,
+                    forecast_created_at=forecast_created_at_row[0] if forecast_created_at_row else forecast_target_time,
+                    snapshot_created_at=datetime.now(UTC).replace(tzinfo=None),
                 )
-                for item in current_fair_values
-            ]
+                calibration_summary = DuckDBForecastStdDevProvider(db_path).resolve_confidence_summary(
+                    station_id=forecast_run.station_id,
+                    source=forecast_run.source,
+                    observation_date=forecast_run.observation_date,
+                    forecast_target_time=forecast_run.forecast_target_time,
+                    metric=forecast_run.metric,
+                )
+                current_fair_values = build_binary_fair_values(market=market, spec=spec, forecast_run=forecast_run)
+                market_prices = extract_market_prices(market.raw_market)
+                current_snapshots = [
+                    build_watch_only_snapshot(
+                        fair_value=item,
+                        reference_price=market_prices[item.outcome],
+                        threshold_bps=TARGET_THRESHOLD_BPS,
+                        accepting_orders=bool(market.accepting_orders),
+                        enable_order_book=market.enable_order_book,
+                        execution_prior_summary=load_execution_prior_summary(
+                            con,
+                            market_id=item.market_id,
+                            station_id=spec.station_id,
+                            metric=forecast_run.metric,
+                            side="BUY" if item.fair_value >= market_prices[item.outcome] else "SELL",
+                            forecast_target_time=forecast_run.forecast_target_time,
+                            observation_date=forecast_run.observation_date,
+                            depth_proxy=0.85 if market.enable_order_book and 0.10 <= market_prices[item.outcome] <= 0.90 else 0.55,
+                            spread_bps=None,
+                            calibration_quality_bucket=None if calibration_summary is None else calibration_summary.calibration_health_status,
+                            source_freshness_bucket=source_health_snapshot.source_freshness_status,
+                        ),
+                        pricing_context={
+                            "calibration_health_status": None if calibration_summary is None else calibration_summary.calibration_health_status,
+                            "sample_count": 0 if calibration_summary is None else calibration_summary.sample_count,
+                            "calibration_multiplier": None if calibration_summary is None else calibration_summary.calibration_confidence_multiplier,
+                            "calibration_reason_codes": [] if calibration_summary is None else list(calibration_summary.reason_codes),
+                            "forecast_run_id": forecast_run.run_id,
+                            "mapping_confidence": station_mapping.mapping_confidence,
+                            "mapping_method": station_mapping.mapping_method,
+                            "market_quality_reason_codes": list(source_health_snapshot.degraded_reason_codes),
+                            "price_staleness_ms": source_health_snapshot.price_staleness_ms,
+                            "source_requested": TARGET_SOURCE_REQUESTED,
+                            "source_freshness_status": source_health_snapshot.source_freshness_status,
+                            "source_used": forecast_run.source,
+                            "source_trace": forecast_run.source_trace,
+                            **build_forecast_calibration_pricing_context(
+                                forecast_run=forecast_run,
+                                outcome=item.outcome,
+                                fair_value=item.fair_value,
+                            ),
+                        },
+                    )
+                    for item in current_fair_values
+                ]
             forecast_success_market_ids.append(target_market.market_id)
             fair_values.extend(current_fair_values)
             snapshots.extend(current_snapshots)
@@ -744,7 +742,6 @@ def run_agent_validations(
             },
         }
     try:
-        client = build_agent_client_from_env()
         with reader_connection(db_path) as con:
             markets = [
                 item
@@ -752,10 +749,15 @@ def run_agent_validations(
                 if item.market_id in set(market_ids)
             ]
             markets.sort(key=lambda item: market_ids.index(item.market_id))
-            requests: list[tuple[str, Rule2SpecAgentRequest]] = []
-            for market in markets:
-                draft = parse_rule2spec_draft(market)
-                spec = load_weather_market_spec(con, market_id=market.market_id)
+        success_count = 0
+        failure_count = 0
+        validation_count = 0
+        for market in markets:
+            market_id = market.market_id
+            try:
+                with reader_connection(db_path) as con:
+                    draft = parse_rule2spec_draft(market)
+                    spec = load_weather_market_spec(con, market_id=market_id)
                 override = build_station_mapping_for_market(market)
                 station = StationMetadata(
                     station_id=override["station_id"],
@@ -765,44 +767,14 @@ def run_agent_validations(
                     timezone=override["timezone"],
                     source="operator_override",
                 )
-                requests.append(
-                    (
-                        market.market_id,
-                        Rule2SpecAgentRequest(
-                            market=market,
-                            draft=draft,
-                            current_spec=spec,
-                            station_metadata=station,
-                            station_override_summary={
-                                "has_override": True,
-                                "mapping_count": 1,
-                                "station_ids": [override["station_id"]],
-                                "sources": ["operator_override"],
-                                "metadata_samples": [{"reason": "real_weather_chain_smoke"}],
-                            },
-                        ),
-                    )
-                )
-        artifacts = []
-        success_count = 0
-        failure_count = 0
-        for market_id, request in requests:
-            try:
-                artifact = run_rule2spec_agent_review(client, request, force_rerun=True)
-                enqueue_agent_artifact_upserts(queue_cfg, artifacts=[artifact], run_id="run_weather_smoke_agents")
-                drain_queue(queue_path=queue_cfg.path, db_path=db_path, allow_tables=allow_tables)
-                artifacts.append(artifact)
+                validation = validate_rule2spec_draft(draft, current_spec=spec, station_metadata=station)
                 result = market_results.setdefault(market_id, dict(default_market_state))
-                result["rule2spec_status"] = artifact.invocation.status.value
-                if artifact.output is None:
-                    result["rule2spec_summary"] = artifact.invocation.error_message
-                    failure_count += 1
-                    continue
-                payload = artifact.output.structured_output_json
-                result["rule2spec_verdict"] = payload.get("verdict")
-                result["rule2spec_confidence"] = payload.get("confidence")
-                result["rule2spec_summary"] = payload.get("summary")
-                if artifact.invocation.status.value == "success":
+                result["rule2spec_status"] = "success"
+                result["rule2spec_verdict"] = validation.verdict
+                result["rule2spec_confidence"] = draft.parse_confidence
+                result["rule2spec_summary"] = validation.summary
+                validation_count += 1
+                if validation.verdict == "pass":
                     success_count += 1
                 else:
                     failure_count += 1
@@ -843,7 +815,7 @@ def run_agent_validations(
         "primary_rule2spec_verdict": primary.get("rule2spec_verdict"),
         "primary_rule2spec_confidence": primary.get("rule2spec_confidence"),
         "primary_rule2spec_summary": primary.get("rule2spec_summary"),
-        "rule2spec_run_count": len(artifacts),
+        "rule2spec_run_count": validation_count,
         "data_qa_run_count": 0,
         "resolution_run_count": 0,
         "success_count": success_count,

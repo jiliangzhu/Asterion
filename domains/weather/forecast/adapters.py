@@ -11,6 +11,8 @@ from .calibration import (
     CalibrationConfidenceSummary,
     ForecastCalibrationV2Summary,
     ForecastStdDevProvider,
+    calibration_profile_age_hours,
+    calibration_profile_freshness_status,
     calibration_regime_bucket,
     forecast_distribution_mean,
     forecast_distribution_std_dev,
@@ -78,6 +80,10 @@ class ForecastDistributionSummaryV2:
     quantiles_json: dict[str, float]
     empirical_coverage_json: dict[str, float | None]
     threshold_probability_summary_json: dict[str, dict[str, float | int | str]] | None
+    profile_materialized_at: str | None
+    profile_window_end: str | None
+    calibration_freshness_status: str
+    profile_age_hours: float | None
     lookup_hit: bool
     sample_count: int
     regime_bucket: str
@@ -103,6 +109,10 @@ class ForecastDistributionSummaryV2:
             quantiles_json=self.quantiles_json,
             empirical_coverage_json=self.empirical_coverage_json,
             threshold_probability_summary_json=self.threshold_probability_summary_json,
+            profile_materialized_at=self.profile_materialized_at,
+            profile_window_end=self.profile_window_end,
+            calibration_freshness_status=self.calibration_freshness_status,
+            profile_age_hours=self.profile_age_hours,
             reason_codes=self.reason_codes,
         ).to_json()
 
@@ -184,6 +194,10 @@ def resolve_distribution_summary_v2(
             quantiles_json=_normal_quantiles(raw_mean, max(summary.resolved_std_dev, raw_std_dev)),
             empirical_coverage_json={"coverage_50": None, "coverage_80": None, "coverage_95": None},
             threshold_probability_summary_json=None,
+            profile_materialized_at=None,
+            profile_window_end=None,
+            calibration_freshness_status="degraded_or_missing",
+            profile_age_hours=None,
             lookup_hit=False,
             sample_count=summary.sample_count,
             regime_bucket=regime_bucket,
@@ -193,12 +207,18 @@ def resolve_distribution_summary_v2(
             regime_stability_score=0.5,
             reason_codes=reason_codes,
         )
+    calibration_freshness_status = calibration_profile_freshness_status(profile.materialized_at)
+    profile_age_hours = calibration_profile_age_hours(profile.materialized_at)
     corrected_std_dev = max(raw_std_dev, profile.p90_abs_residual / 1.645 if profile.p90_abs_residual > 0 else raw_std_dev, profile.mean_abs_residual)
     if profile.regime_stability_score < 0.60:
         corrected_std_dev *= 1.15
         reason_codes.append("regime_unstable")
     if profile.sample_count < 10:
         reason_codes.append("calibration_v2_sparse")
+    if calibration_freshness_status == "stale":
+        reason_codes.append("calibration_profile_stale")
+    elif calibration_freshness_status == "degraded_or_missing":
+        reason_codes.append("calibration_profile_missing_or_degraded")
     threshold_quality = _threshold_quality_status_from_profile(profile.threshold_probability_profile_json)
     if profile.threshold_probability_profile_json is None:
         reason_codes.append("threshold_profile_missing")
@@ -214,6 +234,10 @@ def resolve_distribution_summary_v2(
             "coverage_95": profile.empirical_coverage_95,
         },
         threshold_probability_summary_json=profile.threshold_probability_profile_json,
+        profile_materialized_at=profile.materialized_at.isoformat(),
+        profile_window_end=profile.window_end.isoformat(),
+        calibration_freshness_status=calibration_freshness_status,
+        profile_age_hours=profile_age_hours,
         lookup_hit=True,
         sample_count=profile.sample_count,
         regime_bucket=profile.regime_bucket,

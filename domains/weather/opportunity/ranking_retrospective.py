@@ -53,6 +53,61 @@ RANKING_RETROSPECTIVE_ROW_COLUMNS = [
 ]
 
 
+def compare_retrospective_uplift(
+    *,
+    baseline_summary: RankingRetrospectiveSummary,
+    candidate_summary: RankingRetrospectiveSummary,
+    baseline_rows: list[RankingRetrospectiveRow],
+    candidate_rows: list[RankingRetrospectiveRow],
+) -> dict[str, Any]:
+    baseline_top_rows = [row for row in baseline_rows if int(row.ranking_decile) == 1]
+    candidate_top_rows = [row for row in candidate_rows if int(row.ranking_decile) == 1]
+    return {
+        "baseline_version": baseline_summary.baseline_version,
+        "candidate_version": candidate_summary.baseline_version,
+        "baseline_snapshot_count": int(baseline_summary.snapshot_count),
+        "candidate_snapshot_count": int(candidate_summary.snapshot_count),
+        "top_decile_fill_capture_uplift": round(
+            float(candidate_summary.top_decile_fill_capture_ratio) - float(baseline_summary.top_decile_fill_capture_ratio),
+            6,
+        ),
+        "top_decile_resolution_capture_uplift": round(
+            float(candidate_summary.top_decile_resolution_capture_ratio)
+            - float(baseline_summary.top_decile_resolution_capture_ratio),
+            6,
+        ),
+        "top_decile_realized_pnl_uplift": _optional_delta(
+            candidate_summary.top_decile_realized_pnl,
+            baseline_summary.top_decile_realized_pnl,
+        ),
+        "top_decile_realized_share_uplift": round(
+            float(candidate_summary.top_decile_realized_pnl_share) - float(baseline_summary.top_decile_realized_pnl_share),
+            6,
+        ),
+        "top_row_fill_capture_uplift": _optional_delta(
+            _mean_rows(candidate_top_rows, "fill_capture_ratio"),
+            _mean_rows(baseline_top_rows, "fill_capture_ratio"),
+        ),
+        "top_row_resolution_capture_uplift": _optional_delta(
+            _mean_rows(candidate_top_rows, "resolution_capture_ratio"),
+            _mean_rows(baseline_top_rows, "resolution_capture_ratio"),
+        ),
+        "top_row_realized_pnl_uplift": _optional_delta(
+            _mean_rows(candidate_top_rows, "avg_realized_pnl"),
+            _mean_rows(baseline_top_rows, "avg_realized_pnl"),
+        ),
+        "candidate_outperformed": any(
+            value > 0.0
+            for value in [
+                float(candidate_summary.top_decile_fill_capture_ratio) - float(baseline_summary.top_decile_fill_capture_ratio),
+                float(candidate_summary.top_decile_resolution_capture_ratio)
+                - float(baseline_summary.top_decile_resolution_capture_ratio),
+                float(candidate_summary.top_decile_realized_pnl_share) - float(baseline_summary.top_decile_realized_pnl_share),
+            ]
+        ),
+    }
+
+
 def materialize_ranking_retrospective(
     con,
     *,
@@ -533,6 +588,19 @@ def _mean_optional(series) -> float | None:
     return round(float(cleaned.mean()), 6)
 
 
+def _mean_rows(rows: list[RankingRetrospectiveRow], field_name: str) -> float | None:
+    values = [float(getattr(row, field_name)) for row in rows if getattr(row, field_name) is not None]
+    if not values:
+        return None
+    return round(sum(values) / len(values), 6)
+
+
+def _optional_delta(candidate: float | None, baseline: float | None) -> float | None:
+    if candidate is None or baseline is None:
+        return None
+    return round(float(candidate) - float(baseline), 6)
+
+
 def _normalize_datetime(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(microsecond=0)
@@ -548,6 +616,7 @@ def _sql_timestamp(value: datetime | None) -> str | None:
 __all__ = [
     "RANKING_RETROSPECTIVE_ROW_COLUMNS",
     "RANKING_RETROSPECTIVE_RUN_COLUMNS",
+    "compare_retrospective_uplift",
     "enqueue_ranking_retrospective_row_upserts",
     "enqueue_ranking_retrospective_run_upserts",
     "materialize_ranking_retrospective",

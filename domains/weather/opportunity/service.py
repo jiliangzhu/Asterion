@@ -60,6 +60,21 @@ def build_weather_opportunity_assessment(
     allocation_decision_id: str | None = None,
     policy_id: str | None = None,
     policy_version: str | None = None,
+    base_ranking_score: float | None = None,
+    deployable_expected_pnl: float | None = None,
+    deployable_notional: float | None = None,
+    max_deployable_size: float | None = None,
+    capital_scarcity_penalty: float | None = None,
+    concentration_penalty: float | None = None,
+    deployable_ranking_score: float | None = None,
+    pre_budget_deployable_size: float | None = None,
+    pre_budget_deployable_notional: float | None = None,
+    pre_budget_deployable_expected_pnl: float | None = None,
+    rerank_position: int | None = None,
+    rerank_reason_codes: list[str] | None = None,
+    capital_policy_id: str | None = None,
+    capital_policy_version: str | None = None,
+    capital_scaling_reason_codes: list[str] | None = None,
 ) -> OpportunityAssessment:
     normalized_fees_bps = max(0, int(fees_bps or 0))
     normalized_reference_price = float(reference_price)
@@ -110,26 +125,50 @@ def build_weather_opportunity_assessment(
     )
     opportunity_side = derive_opportunity_side(edge_bps_executable)
     effective_edge_bps = abs(edge_bps_executable)
-    normalized_calibration_health_status = _normalize_calibration_health_status(
-        calibration_health_status or source_context_value(source_context, "calibration_health_status")
-    )
-    normalized_bias_quality = _normalize_quality_status(
+    calibration_health_value = calibration_health_status or source_context_value(source_context, "calibration_health_status")
+    bias_quality_value = (
         calibration_bias_quality
         or source_context_value(source_context, "calibration_bias_quality")
         or source_context_value(source_context, "bias_quality_status")
     )
-    normalized_threshold_probability_quality = _normalize_quality_status(
+    threshold_probability_quality_value = (
         threshold_probability_quality
         or source_context_value(source_context, "threshold_probability_quality")
         or source_context_value(source_context, "threshold_probability_quality_status")
     )
+    calibration_freshness_value = source_context_value(source_context, "calibration_freshness_status")
+    sample_count_value = sample_count if sample_count is not None else source_context_value(source_context, "sample_count")
+    calibration_gate_has_inputs = any(
+        value is not None
+        for value in (
+            calibration_health_value,
+            threshold_probability_quality_value,
+            calibration_freshness_value,
+            sample_count_value,
+        )
+    )
+    normalized_calibration_health_status = _normalize_calibration_health_status(calibration_health_value)
+    normalized_bias_quality = _normalize_quality_status(bias_quality_value)
+    normalized_threshold_probability_quality = _normalize_quality_status(threshold_probability_quality_value)
+    normalized_calibration_freshness_status = _normalize_calibration_freshness_status(calibration_freshness_value)
     normalized_sample_count = max(
         0,
-        int(sample_count if sample_count is not None else source_context_value(source_context, "sample_count") or 0),
+        int(sample_count_value or 0),
     )
+    if calibration_gate_has_inputs:
+        calibration_gate_status, calibration_gate_reason_codes = _calibration_gate_status(
+            calibration_freshness_status=normalized_calibration_freshness_status,
+            calibration_health_status=normalized_calibration_health_status,
+            threshold_probability_quality_status=normalized_threshold_probability_quality,
+            sample_count=normalized_sample_count,
+        )
+    else:
+        calibration_gate_status, calibration_gate_reason_codes = "clear", []
+    calibration_impacted_market = calibration_gate_status != "clear"
     calibration_multiplier_value = _calibration_multiplier(
         calibration_health_status=normalized_calibration_health_status,
         explicit_multiplier=calibration_multiplier if calibration_multiplier is not None else source_context_value(source_context, "calibration_multiplier"),
+        calibration_freshness_status=normalized_calibration_freshness_status,
     )
     freshness_multiplier = _freshness_multiplier(source_freshness_status)
     mapping_multiplier = _mapping_multiplier(float(mapping_confidence))
@@ -211,10 +250,24 @@ def build_weather_opportunity_assessment(
         else None
     )
     final_ranking_score = round(pre_feedback_ranking_score * max(0.0, 1.0 - feedback_penalty), 6)
+    output_base_ranking_score = round(float(base_ranking_score), 6) if base_ranking_score is not None else final_ranking_score
+    output_ranking_score = round(float(deployable_ranking_score), 6) if deployable_ranking_score is not None else final_ranking_score
+    preview_budget = (budget_impact or {}).get("preview") if isinstance(budget_impact, dict) else {}
+    if not isinstance(preview_budget, dict):
+        preview_budget = {}
+    preview_binding_limit_scope = source_context_value(source_context, "preview_binding_limit_scope") or preview_budget.get("preview_binding_limit_scope")
+    preview_binding_limit_key = source_context_value(source_context, "preview_binding_limit_key") or preview_budget.get("preview_binding_limit_key")
+    preview_requested_size = source_context_value(source_context, "requested_size")
+    if preview_requested_size is None:
+        preview_requested_size = preview_budget.get("requested_size")
+    preview_requested_notional = source_context_value(source_context, "requested_notional")
+    if preview_requested_notional is None:
+        preview_requested_notional = preview_budget.get("requested_notional")
     why_ranked_json = dict(ranking_v2.why_ranked_json)
     why_ranked_json.update(
         {
-            "base_ranking_score": ranking_v2.ranking_score,
+            "base_ranking_score": output_base_ranking_score,
+            "ranking_v2_base_score": ranking_v2.ranking_score,
             "pre_feedback_ranking_score": pre_feedback_ranking_score,
             "calibration_v2_mode": "profile_v2"
             if bool(source_context_value(source_context, "distribution_summary_v2") or forecast_distribution_summary_v2)
@@ -223,9 +276,16 @@ def build_weather_opportunity_assessment(
             "corrected_std_dev": source_context_value(source_context, "corrected_std_dev"),
             "bias_quality_status": normalized_bias_quality,
             "threshold_probability_quality_status": normalized_threshold_probability_quality,
+            "calibration_freshness_status": normalized_calibration_freshness_status,
             "threshold_probability_summary_json": source_context_value(source_context, "threshold_probability_summary_json"),
             "regime_bucket": source_context_value(source_context, "regime_bucket"),
             "regime_stability_score": regime_stability_score,
+            "calibration_profile_materialized_at": source_context_value(source_context, "profile_materialized_at"),
+            "calibration_profile_window_end": source_context_value(source_context, "profile_window_end"),
+            "profile_age_hours": source_context_value(source_context, "profile_age_hours"),
+            "calibration_gate_status": calibration_gate_status,
+            "calibration_gate_reason_codes": list(calibration_gate_reason_codes),
+            "calibration_impacted_market": calibration_impacted_market,
             "uncertainty_multiplier": uncertainty_multiplier,
             "feedback_penalty": feedback_penalty,
             "feedback_status": feedback_status,
@@ -237,7 +297,28 @@ def build_weather_opportunity_assessment(
             "allocation_decision_id": allocation_decision_id,
             "policy_id": policy_id,
             "policy_version": policy_version,
-            "ranking_score": final_ranking_score,
+            "deployable_expected_pnl": deployable_expected_pnl,
+            "deployable_notional": deployable_notional,
+            "max_deployable_size": max_deployable_size,
+            "capital_scarcity_penalty": capital_scarcity_penalty,
+            "concentration_penalty": concentration_penalty,
+            "pre_budget_deployable_size": pre_budget_deployable_size,
+            "pre_budget_deployable_notional": pre_budget_deployable_notional,
+            "pre_budget_deployable_expected_pnl": pre_budget_deployable_expected_pnl,
+            "preview_binding_limit_scope": preview_binding_limit_scope,
+            "preview_binding_limit_key": preview_binding_limit_key,
+            "requested_size": preview_requested_size,
+            "requested_notional": preview_requested_notional,
+            "rerank_position": rerank_position,
+            "rerank_reason_codes": list(rerank_reason_codes or []),
+            "capital_policy_id": capital_policy_id,
+            "capital_policy_version": capital_policy_version,
+            "capital_scaling_reason_codes": list(capital_scaling_reason_codes or []),
+            "binding_limit_scope": source_context_value(source_context, "binding_limit_scope")
+            or (budget_impact or {}).get("binding_limit_scope"),
+            "binding_limit_key": source_context_value(source_context, "binding_limit_key")
+            or (budget_impact or {}).get("binding_limit_key"),
+            "ranking_score": output_ranking_score,
         }
     )
     actionability_status = _actionability_status(
@@ -248,6 +329,7 @@ def build_weather_opportunity_assessment(
         live_prereq_status=live_prereq_status,
         agent_review_status=agent_review_status,
         market_quality_status=market_quality.market_quality_status,
+        calibration_gate_status=calibration_gate_status,
     )
     rationale = (
         f"model_edge_bps={edge_bps_model}, executable_edge_bps={edge_bps_executable}, "
@@ -270,6 +352,10 @@ def build_weather_opportunity_assessment(
         "calibration_health_status": normalized_calibration_health_status,
         "calibration_bias_quality": normalized_bias_quality,
         "threshold_probability_quality": normalized_threshold_probability_quality,
+        "calibration_freshness_status": normalized_calibration_freshness_status,
+        "calibration_gate_status": calibration_gate_status,
+        "calibration_gate_reason_codes": list(calibration_gate_reason_codes),
+        "calibration_impacted_market": calibration_impacted_market,
         "sample_count": normalized_sample_count,
         "calibration_multiplier": calibration_multiplier_value,
         "bias_quality_multiplier": bias_quality_multiplier,
@@ -307,7 +393,26 @@ def build_weather_opportunity_assessment(
         "allocation_decision_id": allocation_decision_id,
         "policy_id": policy_id,
         "policy_version": policy_version,
-        "ranking_score": final_ranking_score,
+        "base_ranking_score": output_base_ranking_score,
+        "ranking_v2_base_score": ranking_v2.ranking_score,
+        "deployable_expected_pnl": deployable_expected_pnl,
+        "deployable_notional": deployable_notional,
+        "max_deployable_size": max_deployable_size,
+        "capital_scarcity_penalty": capital_scarcity_penalty,
+        "concentration_penalty": concentration_penalty,
+        "pre_budget_deployable_size": pre_budget_deployable_size,
+        "pre_budget_deployable_notional": pre_budget_deployable_notional,
+        "pre_budget_deployable_expected_pnl": pre_budget_deployable_expected_pnl,
+        "preview_binding_limit_scope": preview_binding_limit_scope,
+        "preview_binding_limit_key": preview_binding_limit_key,
+        "requested_size": preview_requested_size,
+        "requested_notional": preview_requested_notional,
+        "rerank_position": rerank_position,
+        "rerank_reason_codes": list(rerank_reason_codes or []),
+        "capital_policy_id": capital_policy_id,
+        "capital_policy_version": capital_policy_version,
+        "capital_scaling_reason_codes": list(capital_scaling_reason_codes or []),
+        "ranking_score": output_ranking_score,
         "expected_dollar_pnl": ranking_v2.expected_dollar_pnl,
         "capture_probability": ranking_v2.capture_probability,
         "risk_penalty": ranking_v2.risk_penalty,
@@ -331,6 +436,10 @@ def build_weather_opportunity_assessment(
             "calibration_health_status": normalized_calibration_health_status,
             "calibration_bias_quality": normalized_bias_quality,
             "threshold_probability_quality": normalized_threshold_probability_quality,
+            "calibration_freshness_status": normalized_calibration_freshness_status,
+            "calibration_gate_status": calibration_gate_status,
+            "calibration_gate_reason_codes": list(calibration_gate_reason_codes),
+            "calibration_impacted_market": calibration_impacted_market,
             "sample_count": normalized_sample_count,
             "calibration_multiplier": calibration_multiplier_value,
             "bias_quality_multiplier": bias_quality_multiplier,
@@ -354,7 +463,26 @@ def build_weather_opportunity_assessment(
             "allocation_decision_id": allocation_decision_id,
             "policy_id": policy_id,
             "policy_version": policy_version,
-            "ranking_score": final_ranking_score,
+            "base_ranking_score": output_base_ranking_score,
+            "ranking_v2_base_score": ranking_v2.ranking_score,
+            "deployable_expected_pnl": deployable_expected_pnl,
+            "deployable_notional": deployable_notional,
+            "max_deployable_size": max_deployable_size,
+            "capital_scarcity_penalty": capital_scarcity_penalty,
+            "concentration_penalty": concentration_penalty,
+            "pre_budget_deployable_size": pre_budget_deployable_size,
+            "pre_budget_deployable_notional": pre_budget_deployable_notional,
+            "pre_budget_deployable_expected_pnl": pre_budget_deployable_expected_pnl,
+            "preview_binding_limit_scope": preview_binding_limit_scope,
+            "preview_binding_limit_key": preview_binding_limit_key,
+            "requested_size": preview_requested_size,
+            "requested_notional": preview_requested_notional,
+            "rerank_position": rerank_position,
+            "rerank_reason_codes": list(rerank_reason_codes or []),
+            "capital_policy_id": capital_policy_id,
+            "capital_policy_version": capital_policy_version,
+            "capital_scaling_reason_codes": list(capital_scaling_reason_codes or []),
+            "ranking_score": output_ranking_score,
             "expected_dollar_pnl": ranking_v2.expected_dollar_pnl,
             "capture_probability": ranking_v2.capture_probability,
             "risk_penalty": ranking_v2.risk_penalty,
@@ -417,6 +545,17 @@ def build_weather_opportunity_assessment(
         capture_probability=ranking_v2.capture_probability,
         risk_penalty=ranking_v2.risk_penalty,
         capital_efficiency=ranking_v2.capital_efficiency,
+        base_ranking_score=output_base_ranking_score,
+        deployable_expected_pnl=deployable_expected_pnl,
+        deployable_notional=deployable_notional,
+        max_deployable_size=max_deployable_size,
+        capital_scarcity_penalty=capital_scarcity_penalty,
+        concentration_penalty=concentration_penalty,
+        pre_budget_deployable_size=pre_budget_deployable_size,
+        pre_budget_deployable_notional=pre_budget_deployable_notional,
+        pre_budget_deployable_expected_pnl=pre_budget_deployable_expected_pnl,
+        rerank_position=rerank_position,
+        rerank_reason_codes=list(rerank_reason_codes or []),
         execution_prior_key=context.get("execution_prior_key"),
         why_ranked_json=why_ranked_json,
         feedback_penalty=feedback_penalty,
@@ -425,8 +564,15 @@ def build_weather_opportunity_assessment(
         recommended_size=recommended_size,
         allocation_status=allocation_status,
         budget_impact=dict(budget_impact or {}) if budget_impact is not None else None,
-        ranking_score=final_ranking_score,
+        ranking_score=output_ranking_score,
         actionability_status=actionability_status,
+        calibration_gate_status=calibration_gate_status,
+        calibration_gate_reason_codes=list(calibration_gate_reason_codes),
+        calibration_impacted_market=calibration_impacted_market,
+        capital_policy_id=capital_policy_id,
+        capital_policy_version=capital_policy_version,
+        capital_scaling_reason_codes=list(capital_scaling_reason_codes or []),
+        regime_bucket=source_context_value(source_context, "regime_bucket"),
         rationale=rationale,
         assessment_context_json=context,
     )
@@ -664,17 +810,33 @@ def _ranking_score_v2_decomposition(
         if execution_prior_summary is not None
         else {}
     )
-
-    capture_probability = max(
+    sample_count = int(execution_prior_summary.sample_count) if execution_prior_summary is not None else 0
+    heuristic_capture_probability = max(0.0, min(1.0, float(fill_probability)))
+    empirical_capture_probability = max(
         0.0,
         min(
             1.0,
-            float(fill_probability)
-            * float(submit_ack_rate)
-            * float(fill_rate)
-            * float(resolution_rate),
+            float(submit_ack_rate) * float(fill_rate) * float(resolution_rate),
         ),
     )
+    if execution_prior_summary is None:
+        economics_path = "heuristic_fallback"
+        capture_probability = heuristic_capture_probability
+    elif str(prior_quality_status) == "ready" and sample_count >= 10:
+        economics_path = "empirical_primary"
+        capture_probability = empirical_capture_probability
+    elif sample_count >= 5 or str(prior_quality_status) in {"watch", "sparse"}:
+        economics_path = "blended_empirical"
+        capture_probability = max(
+            0.0,
+            min(
+                1.0,
+                (0.65 * empirical_capture_probability) + (0.35 * heuristic_capture_probability),
+            ),
+        )
+    else:
+        economics_path = "heuristic_fallback"
+        capture_probability = heuristic_capture_probability
     expected_dollar_pnl = gross_unit_edge * capture_probability
     prior_p50_slippage = execution_prior_summary.adverse_fill_slippage_bps_p50 if execution_prior_summary is not None else None
     prior_p90_slippage = execution_prior_summary.adverse_fill_slippage_bps_p90 if execution_prior_summary is not None else None
@@ -754,8 +916,12 @@ def _ranking_score_v2_decomposition(
         "prior_quality_status": prior_quality_status,
         "prior_lookup_mode": prior_lookup_mode,
         "prior_feature_scope": prior_feature_scope,
+        "economics_path": economics_path,
         "edge_bps_executable": int(edge_bps_executable),
         "fill_probability_heuristic": round(float(fill_probability), 6),
+        "heuristic_capture_probability": round(heuristic_capture_probability, 6),
+        "empirical_capture_probability": round(empirical_capture_probability, 6),
+        "empirical_sample_count": sample_count,
         "submit_ack_rate": round(float(submit_ack_rate), 6),
         "fill_rate": round(float(fill_rate), 6),
         "resolution_rate": round(float(resolution_rate), 6),
@@ -809,14 +975,70 @@ def _actionability_status(
     live_prereq_status: str,
     agent_review_status: str,
     market_quality_status: str,
+    calibration_gate_status: str,
 ) -> str:
     if not accepting_orders or live_prereq_status == "attention_required" or market_quality_status == "blocked":
         return "blocked"
     if opportunity_side is None or abs(int(edge_bps_executable)) <= max(0, int(threshold_bps)):
         return "no_trade"
+    if calibration_gate_status == "research_only":
+        return "no_trade"
+    if calibration_gate_status == "blocked":
+        return "blocked"
+    if calibration_gate_status == "review_required":
+        return "review_required"
     if agent_review_status != "passed" or market_quality_status == "review_required":
         return "review_required"
     return "actionable"
+
+
+def _calibration_gate_status(
+    *,
+    calibration_freshness_status: str,
+    calibration_health_status: str,
+    threshold_probability_quality_status: str,
+    sample_count: int,
+) -> tuple[str, list[str]]:
+    freshness = _normalize_calibration_freshness_status(calibration_freshness_status)
+    health = _normalize_calibration_health_status(calibration_health_status)
+    threshold_quality = _normalize_quality_status(threshold_probability_quality_status)
+    reasons: list[str] = []
+
+    if freshness == "stale":
+        reasons.append("calibration_freshness_stale")
+    elif freshness == "degraded_or_missing":
+        reasons.append("calibration_freshness_degraded_or_missing")
+
+    if health == "degraded":
+        reasons.append("calibration_health_degraded")
+    elif health in {"insufficient_samples", "limited_samples", "sparse"}:
+        reasons.append("calibration_health_sparse")
+    elif health == "lookup_missing":
+        reasons.append("calibration_health_lookup_missing")
+
+    if threshold_quality == "degraded":
+        reasons.append("threshold_probability_quality_degraded")
+    elif threshold_quality == "sparse":
+        reasons.append("threshold_probability_quality_sparse")
+    elif threshold_quality == "lookup_missing":
+        reasons.append("threshold_probability_quality_lookup_missing")
+
+    if sample_count < 5:
+        reasons.append("calibration_sample_count_low")
+
+    if freshness == "degraded_or_missing" and (
+        health in {"degraded", "insufficient_samples", "limited_samples", "sparse", "lookup_missing"}
+        or threshold_quality in {"sparse", "lookup_missing"}
+        or sample_count < 5
+    ):
+        return "research_only", _stable_unique(reasons)
+    if freshness in {"stale", "degraded_or_missing"}:
+        return "review_required", _stable_unique(reasons)
+    if health in {"degraded", "insufficient_samples", "limited_samples", "sparse", "lookup_missing"}:
+        return "review_required", _stable_unique(reasons)
+    if threshold_quality in {"degraded", "sparse", "lookup_missing"}:
+        return "review_required", _stable_unique(reasons)
+    return "clear", []
 
 
 def _spread_bps(*, enable_order_book: bool | None, reference_price: float) -> int:
@@ -839,6 +1061,18 @@ def source_context_value(source_context: dict[str, Any] | None, key: str) -> Any
     return source_context.get(key)
 
 
+def _stable_unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
 def _source_context_reason_codes(source_context: dict[str, Any] | None, key: str) -> list[str] | None:
     value = source_context_value(source_context, key)
     if isinstance(value, list):
@@ -853,10 +1087,12 @@ def _normalize_calibration_health_status(value: Any) -> str:
     return "lookup_missing"
 
 
-def _calibration_multiplier(*, calibration_health_status: str, explicit_multiplier: Any) -> float:
+def _calibration_multiplier(*, calibration_health_status: str, explicit_multiplier: Any, calibration_freshness_status: str) -> float:
     if explicit_multiplier is not None:
         try:
-            return _clamp_multiplier(float(explicit_multiplier))
+            return _clamp_multiplier(
+                float(explicit_multiplier) * _calibration_freshness_multiplier(calibration_freshness_status)
+            )
         except (TypeError, ValueError):
             pass
     mapping = {
@@ -868,7 +1104,23 @@ def _calibration_multiplier(*, calibration_health_status: str, explicit_multipli
         "lookup_missing": 0.50,
         "sparse": 0.55,
     }
-    return mapping.get(calibration_health_status, 0.50)
+    base = mapping.get(calibration_health_status, 0.50)
+    return _clamp_multiplier(base * _calibration_freshness_multiplier(calibration_freshness_status))
+
+
+def _normalize_calibration_freshness_status(value: Any) -> str:
+    normalized = str(value or "fresh").strip().lower()
+    if normalized in {"fresh", "stale", "degraded_or_missing"}:
+        return normalized
+    return "fresh"
+
+
+def _calibration_freshness_multiplier(value: str) -> float:
+    return {
+        "fresh": 1.0,
+        "stale": 0.92,
+        "degraded_or_missing": 0.78,
+    }.get(_normalize_calibration_freshness_status(value), 1.0)
 
 
 def _normalize_quality_status(value: Any) -> str:

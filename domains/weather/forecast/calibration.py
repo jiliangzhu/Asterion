@@ -196,6 +196,24 @@ class CalibrationProfileV2:
 
 
 @dataclass(frozen=True)
+class CalibrationProfileMaterializationStatus:
+    materialization_id: str
+    run_id: str
+    job_name: str
+    status: str
+    lookback_days: int
+    source_window_start: datetime
+    source_window_end: datetime
+    input_sample_count: int
+    output_profile_count: int
+    fresh_profile_count: int
+    stale_profile_count: int
+    degraded_profile_count: int
+    materialized_at: datetime
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class ForecastCalibrationV2Summary:
     lookup_hit: bool
     sample_count: int
@@ -211,6 +229,10 @@ class ForecastCalibrationV2Summary:
     quantiles_json: dict[str, float]
     empirical_coverage_json: dict[str, float | None]
     threshold_probability_summary_json: dict[str, dict[str, float | int | str]] | None
+    profile_materialized_at: str | None
+    profile_window_end: str | None
+    calibration_freshness_status: str
+    profile_age_hours: float | None
     reason_codes: list[str]
 
     def to_json(self) -> dict[str, Any]:
@@ -229,8 +251,40 @@ class ForecastCalibrationV2Summary:
             "quantiles_json": dict(self.quantiles_json),
             "empirical_coverage_json": dict(self.empirical_coverage_json),
             "threshold_probability_summary_json": None if self.threshold_probability_summary_json is None else dict(self.threshold_probability_summary_json),
+            "profile_materialized_at": self.profile_materialized_at,
+            "profile_window_end": self.profile_window_end,
+            "calibration_freshness_status": self.calibration_freshness_status,
+            "profile_age_hours": None if self.profile_age_hours is None else round(self.profile_age_hours, 4),
             "reason_codes": list(self.reason_codes),
         }
+
+
+def calibration_profile_age_hours(
+    materialized_at: datetime | None,
+    *,
+    as_of: datetime | None = None,
+) -> float | None:
+    if materialized_at is None:
+        return None
+    reference = _normalize_timestamp(as_of or datetime.now(UTC))
+    normalized_materialized_at = _normalize_timestamp(materialized_at)
+    age_seconds = (reference - normalized_materialized_at).total_seconds()
+    return max(0.0, age_seconds / 3600.0)
+
+
+def calibration_profile_freshness_status(
+    materialized_at: datetime | None,
+    *,
+    as_of: datetime | None = None,
+) -> str:
+    age_hours = calibration_profile_age_hours(materialized_at, as_of=as_of)
+    if age_hours is None:
+        return "degraded_or_missing"
+    if age_hours <= 36.0:
+        return "fresh"
+    if age_hours <= 96.0:
+        return "stale"
+    return "degraded_or_missing"
 
 
 def calibration_confidence_from_metrics(
@@ -341,10 +395,17 @@ def calibration_v2_context_for_probability(
         "calibration_v2_mode": "profile_v2" if bool(summary_json.get("lookup_hit")) else "sigma_fallback",
         "corrected_mean": summary_json.get("corrected_mean"),
         "corrected_std_dev": summary_json.get("corrected_std_dev"),
+        "calibration_health_status": summary_json.get("calibration_health_status"),
+        "sample_count": summary_json.get("sample_count"),
         "bias_quality_status": summary_json.get("bias_quality_status"),
         "regime_bucket": summary_json.get("regime_bucket"),
         "regime_stability_score": summary_json.get("regime_stability_score"),
+        "profile_materialized_at": summary_json.get("profile_materialized_at"),
+        "profile_window_end": summary_json.get("profile_window_end"),
+        "calibration_freshness_status": summary_json.get("calibration_freshness_status"),
+        "profile_age_hours": summary_json.get("profile_age_hours"),
         "threshold_probability_summary_json": summary_json.get("threshold_probability_summary_json"),
+        "calibration_reason_codes": list(summary_json.get("reason_codes") or []),
     }
     if profile is not None:
         out.update(
@@ -1000,11 +1061,14 @@ def _table_exists(con, table_name: str) -> bool:
 __all__ = [
     "CalibrationConfidenceSummary",
     "CalibrationProfileV2",
+    "CalibrationProfileMaterializationStatus",
     "DuckDBForecastStdDevProvider",
     "ForecastCalibrationV2Summary",
     "ForecastStdDevProvider",
     "ThresholdProbabilityProfile",
     "build_calibration_lookup_key",
+    "calibration_profile_age_hours",
+    "calibration_profile_freshness_status",
     "build_forecast_calibration_sample",
     "calibration_confidence_from_metrics",
     "calibration_regime_bucket",

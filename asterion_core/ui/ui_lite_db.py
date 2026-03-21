@@ -12,15 +12,28 @@ from typing import Any
 
 import pandas as pd
 
+from asterion_core.contracts import (
+    ForecastReplayDiffRecord,
+    ForecastReplayRecord,
+    ForecastRunRecord,
+    StationMetadata,
+    WeatherFairValueRecord,
+    WeatherMarket,
+    WeatherMarketSpecRecord,
+    WatchOnlySnapshotRecord,
+)
+from asterion_core.ui.builders import build_execution_tables, build_opportunity_tables
 from asterion_core.ui.builders.catalog_builder import build_catalog_tables
 from asterion_core.ui.read_model_registry import get_read_model_catalog_record, required_ui_tables
 from asterion_core.ui.surface_truth_shared import annotate_frame_with_source_truth, ensure_primary_score_fields
 from asterion_core.storage.logger import get_logger
+from domains.weather.forecast import validate_replay_quality
 from domains.weather.opportunity import (
     build_execution_science_cohort_summaries,
     build_weather_opportunity_assessment,
     derive_opportunity_side,
 )
+from domains.weather.spec import parse_rule2spec_draft, validate_rule2spec_draft
 
 
 log = get_logger(__name__)
@@ -394,6 +407,106 @@ def _build_ui_lite_contract(
                     FROM src.resolution.watcher_continuity_checks
                 )
                 WHERE rn = 1
+            ),
+            latest_invocation AS (
+                SELECT
+                    invocation_id,
+                    subject_id,
+                    status,
+                    ended_at,
+                    started_at
+                FROM (
+                    SELECT
+                        invocation_id,
+                        subject_id,
+                        status,
+                        ended_at,
+                        started_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY subject_id
+                            ORDER BY COALESCE(ended_at, started_at) DESC, invocation_id DESC
+                        ) AS rn
+                    FROM src.agent.invocations
+                    WHERE agent_type = 'resolution'
+                      AND subject_type = 'uma_proposal'
+                )
+                WHERE rn = 1
+            ),
+            latest_output AS (
+                SELECT
+                    invocation_id,
+                    verdict,
+                    confidence,
+                    summary,
+                    human_review_required,
+                    structured_output_json,
+                    created_at
+                FROM (
+                    SELECT
+                        invocation_id,
+                        verdict,
+                        confidence,
+                        summary,
+                        human_review_required,
+                        structured_output_json,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY invocation_id
+                            ORDER BY created_at DESC, output_id DESC
+                        ) AS rn
+                    FROM src.agent.outputs
+                )
+                WHERE rn = 1
+            ),
+            latest_agent_review AS (
+                SELECT
+                    invocation_id,
+                    review_payload_json,
+                    reviewed_at
+                FROM (
+                    SELECT
+                        invocation_id,
+                        review_payload_json,
+                        reviewed_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY invocation_id
+                            ORDER BY reviewed_at DESC, review_id DESC
+                        ) AS rn
+                    FROM src.agent.reviews
+                )
+                WHERE rn = 1
+            ),
+            latest_operator_review AS (
+                SELECT
+                    proposal_id,
+                    review_decision_id,
+                    invocation_id,
+                    suggestion_id,
+                    decision_status,
+                    operator_action,
+                    reason,
+                    actor,
+                    created_at,
+                    updated_at
+                FROM (
+                    SELECT
+                        proposal_id,
+                        review_decision_id,
+                        invocation_id,
+                        suggestion_id,
+                        decision_status,
+                        operator_action,
+                        reason,
+                        actor,
+                        created_at,
+                        updated_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY proposal_id
+                            ORDER BY updated_at DESC, review_decision_id DESC
+                        ) AS rn
+                    FROM src.resolution.operator_review_decisions
+                )
+                WHERE rn = 1
             )
             SELECT
                 p.proposal_id,
@@ -413,12 +526,36 @@ def _build_ui_lite_contract(
                 continuity.check_id AS latest_continuity_check_id,
                 continuity.status AS latest_continuity_status,
                 continuity.from_block AS latest_continuity_from_block,
-                continuity.to_block AS latest_continuity_to_block
+                continuity.to_block AS latest_continuity_to_block,
+                inv.invocation_id AS latest_agent_invocation_id,
+                inv.status AS latest_agent_invocation_status,
+                output.verdict AS latest_agent_verdict,
+                output.confidence AS latest_agent_confidence,
+                output.summary AS latest_agent_summary,
+                json_extract_string(try_cast(review.review_payload_json AS JSON), '$.recommended_operator_action') AS latest_recommended_operator_action,
+                TRY_CAST(json_extract_string(try_cast(review.review_payload_json AS JSON), '$.settlement_risk_score') AS DOUBLE) AS latest_settlement_risk_score,
+                operator_review.decision_status AS latest_operator_review_status,
+                operator_review.operator_action AS latest_operator_action,
+                operator_review.reason AS latest_operator_review_reason,
+                operator_review.actor AS latest_operator_review_actor,
+                operator_review.updated_at AS latest_operator_review_updated_at,
+                CASE
+                    WHEN operator_review.decision_status = 'accepted' AND operator_review.operator_action = 'ready_for_redeem_review' THEN 'ready_for_redeem_review'
+                    WHEN operator_review.decision_status = 'accepted' AND operator_review.operator_action IN ('hold_redeem', 'manual_review', 'consider_dispute') THEN 'blocked_by_operator_review'
+                    WHEN operator_review.decision_status = 'deferred' THEN 'pending_operator_review'
+                    WHEN operator_review.decision_status = 'rejected' THEN redeem.decision
+                    WHEN json_extract_string(try_cast(review.review_payload_json AS JSON), '$.recommended_operator_action') IN ('hold_redeem', 'manual_review', 'consider_dispute') THEN 'pending_operator_review'
+                    ELSE redeem.decision
+                END AS effective_redeem_status
             FROM src.resolution.uma_proposals p
             LEFT JOIN latest_verification v ON v.proposal_id = p.proposal_id
             LEFT JOIN src.resolution.proposal_evidence_links link ON link.proposal_id = p.proposal_id
             LEFT JOIN latest_redeem redeem ON redeem.proposal_id = p.proposal_id
             LEFT JOIN latest_continuity continuity ON TRUE
+            LEFT JOIN latest_invocation inv ON inv.subject_id = p.proposal_id
+            LEFT JOIN latest_output output ON output.invocation_id = inv.invocation_id
+            LEFT JOIN latest_agent_review review ON review.invocation_id = inv.invocation_id
+            LEFT JOIN latest_operator_review operator_review ON operator_review.proposal_id = p.proposal_id
             """,
             table_row_counts=table_row_counts,
         )
@@ -1339,7 +1476,19 @@ def _build_ui_lite_contract(
             """,
             table_row_counts=table_row_counts,
         )
-        _create_market_opportunity_summary(con, table_row_counts=table_row_counts)
+        build_opportunity_tables(
+            con,
+            table_row_counts=table_row_counts,
+            create_market_watch_summary=lambda: None,
+            create_market_opportunity_summary=lambda: _create_market_opportunity_summary(
+                con,
+                table_row_counts=table_row_counts,
+            ),
+            create_calibration_health_summary=lambda: _create_calibration_health_summary(
+                con,
+                table_row_counts=table_row_counts,
+            ),
+        )
         _create_phase_readiness_summary(
             con,
             report_path=readiness_report_json_path,
@@ -1350,25 +1499,28 @@ def _build_ui_lite_contract(
             evidence_path=readiness_evidence_json_path,
             table_row_counts=table_row_counts,
         )
-        _create_predicted_vs_realized_summary(
+        build_execution_tables(
             con,
             table_row_counts=table_row_counts,
-        )
-        _create_watch_only_vs_executed_summary(
-            con,
-            table_row_counts=table_row_counts,
-        )
-        _create_execution_science_summary(
-            con,
-            table_row_counts=table_row_counts,
-        )
-        _create_market_research_summary(
-            con,
-            table_row_counts=table_row_counts,
-        )
-        _create_calibration_health_summary(
-            con,
-            table_row_counts=table_row_counts,
+            create_execution_ticket_summary=lambda: None,
+            create_execution_run_summary=lambda: None,
+            create_execution_exception_summary=lambda: None,
+            create_predicted_vs_realized_summary=lambda: _create_predicted_vs_realized_summary(
+                con,
+                table_row_counts=table_row_counts,
+            ),
+            create_watch_only_vs_executed_summary=lambda: _create_watch_only_vs_executed_summary(
+                con,
+                table_row_counts=table_row_counts,
+            ),
+            create_execution_science_summary=lambda: _create_execution_science_summary(
+                con,
+                table_row_counts=table_row_counts,
+            ),
+            create_market_research_summary=lambda: _create_market_research_summary(
+                con,
+                table_row_counts=table_row_counts,
+            ),
         )
         _create_table_from_src(
             con,
@@ -2409,7 +2561,7 @@ def _create_market_research_summary(con, *, table_row_counts: dict[str, int]) ->
 
 
 def _create_calibration_health_summary(con, *, table_row_counts: dict[str, int]) -> None:
-    if not _table_exists(con, "src.weather.forecast_calibration_samples"):
+    if not _table_exists(con, "src.weather.forecast_calibration_profiles_v2"):
         con.execute(
             """
             CREATE OR REPLACE TABLE ui.calibration_health_summary (
@@ -2418,10 +2570,20 @@ def _create_calibration_health_summary(con, *, table_row_counts: dict[str, int])
                 metric TEXT,
                 forecast_horizon_bucket TEXT,
                 season_bucket TEXT,
+                regime_bucket TEXT,
                 sample_count BIGINT,
                 mean_abs_residual DOUBLE,
                 p90_abs_residual DOUBLE,
-                calibration_health_status TEXT
+                calibration_health_status TEXT,
+                threshold_profile_present BOOLEAN,
+                window_end TIMESTAMP,
+                materialized_at TIMESTAMP,
+                calibration_freshness_status TEXT,
+                profile_age_hours DOUBLE,
+                impacted_market_count BIGINT,
+                hard_gate_market_count BIGINT,
+                review_required_market_count BIGINT,
+                research_only_market_count BIGINT
             )
             """
         )
@@ -2435,8 +2597,15 @@ def _create_calibration_health_summary(con, *, table_row_counts: dict[str, int])
             metric,
             forecast_horizon_bucket,
             season_bucket,
-            ABS(residual) AS abs_residual
-        FROM src.weather.forecast_calibration_samples
+            regime_bucket,
+            sample_count,
+            mean_abs_residual,
+            p90_abs_residual,
+            calibration_health_status,
+            threshold_probability_profile_json,
+            window_end,
+            materialized_at
+        FROM src.weather.forecast_calibration_profiles_v2
         """
     ).df()
     if base.empty:
@@ -2448,41 +2617,83 @@ def _create_calibration_health_summary(con, *, table_row_counts: dict[str, int])
                 metric TEXT,
                 forecast_horizon_bucket TEXT,
                 season_bucket TEXT,
+                regime_bucket TEXT,
                 sample_count BIGINT,
                 mean_abs_residual DOUBLE,
                 p90_abs_residual DOUBLE,
-                calibration_health_status TEXT
+                calibration_health_status TEXT,
+                threshold_profile_present BOOLEAN,
+                window_end TIMESTAMP,
+                materialized_at TIMESTAMP,
+                calibration_freshness_status TEXT,
+                profile_age_hours DOUBLE,
+                impacted_market_count BIGINT,
+                hard_gate_market_count BIGINT,
+                review_required_market_count BIGINT,
+                research_only_market_count BIGINT
             )
             """
         )
         table_row_counts["ui.calibration_health_summary"] = 0
         return
+    gate_counts_by_station: dict[str, dict[str, int]] = {}
+    if _table_exists(con, "ui.market_opportunity_summary"):
+        counts_frame = con.execute(
+            """
+            SELECT
+                station_id,
+                SUM(CASE WHEN COALESCE(calibration_impacted_market, FALSE) THEN 1 ELSE 0 END) AS impacted_market_count,
+                SUM(CASE WHEN calibration_gate_status IN ('review_required', 'research_only', 'blocked') THEN 1 ELSE 0 END) AS hard_gate_market_count,
+                SUM(CASE WHEN calibration_gate_status = 'review_required' THEN 1 ELSE 0 END) AS review_required_market_count,
+                SUM(CASE WHEN calibration_gate_status = 'research_only' THEN 1 ELSE 0 END) AS research_only_market_count
+            FROM ui.market_opportunity_summary
+            GROUP BY station_id
+            """
+        ).df()
+        gate_counts_by_station = {
+            str(item["station_id"]): {
+                "impacted_market_count": int(_coerce_float(item.get("impacted_market_count")) or 0),
+                "hard_gate_market_count": int(_coerce_float(item.get("hard_gate_market_count")) or 0),
+                "review_required_market_count": int(_coerce_float(item.get("review_required_market_count")) or 0),
+                "research_only_market_count": int(_coerce_float(item.get("research_only_market_count")) or 0),
+            }
+            for item in counts_frame.to_dict(orient="records")
+            if item.get("station_id") not in {None, ""}
+        }
     rows: list[dict[str, Any]] = []
-    grouped = base.groupby(["station_id", "source", "metric", "forecast_horizon_bucket", "season_bucket"], dropna=False)
-    for (station_id, source, metric, horizon, season), frame in grouped:
-        series = pd.to_numeric(frame["abs_residual"], errors="coerce").dropna()
-        sample_count = int(len(series.index))
-        mean_abs_residual = float(series.mean()) if sample_count else None
-        p90_abs_residual = float(series.quantile(0.9)) if sample_count else None
-        if sample_count < 5:
-            status = "insufficient_samples"
-        elif (mean_abs_residual or 0.0) <= 1.5:
-            status = "healthy"
-        elif (mean_abs_residual or 0.0) <= 3.0:
-            status = "watch"
-        else:
-            status = "degraded"
+    now = pd.Timestamp.utcnow().tz_localize(None)
+    for item in base.to_dict(orient="records"):
+        materialized_at = pd.to_datetime(item.get("materialized_at"), errors="coerce")
+        profile_age_hours = None
+        freshness_status = "degraded_or_missing"
+        if pd.notna(materialized_at):
+            profile_age_hours = max(0.0, float((now - materialized_at.to_pydatetime()).total_seconds()) / 3600.0)
+            if profile_age_hours <= 36.0:
+                freshness_status = "fresh"
+            elif profile_age_hours <= 96.0:
+                freshness_status = "stale"
+        gate_counts = gate_counts_by_station.get(str(item.get("station_id") or ""), {})
         rows.append(
             {
-                "station_id": station_id,
-                "source": source,
-                "metric": metric,
-                "forecast_horizon_bucket": horizon,
-                "season_bucket": season,
-                "sample_count": sample_count,
-                "mean_abs_residual": mean_abs_residual,
-                "p90_abs_residual": p90_abs_residual,
-                "calibration_health_status": status,
+                "station_id": item.get("station_id"),
+                "source": item.get("source"),
+                "metric": item.get("metric"),
+                "forecast_horizon_bucket": item.get("forecast_horizon_bucket"),
+                "season_bucket": item.get("season_bucket"),
+                "regime_bucket": item.get("regime_bucket"),
+                "sample_count": int(_coerce_float(item.get("sample_count")) or 0),
+                "mean_abs_residual": _coerce_float(item.get("mean_abs_residual")),
+                "p90_abs_residual": _coerce_float(item.get("p90_abs_residual")),
+                "calibration_health_status": item.get("calibration_health_status"),
+                "threshold_profile_present": bool(item.get("threshold_probability_profile_json")),
+                "window_end": item.get("window_end"),
+                "materialized_at": item.get("materialized_at"),
+                "calibration_freshness_status": freshness_status,
+                "profile_age_hours": profile_age_hours,
+                "impacted_market_count": int(gate_counts.get("impacted_market_count", 0)),
+                "hard_gate_market_count": int(gate_counts.get("hard_gate_market_count", 0)),
+                "review_required_market_count": int(gate_counts.get("review_required_market_count", 0)),
+                "research_only_market_count": int(gate_counts.get("research_only_market_count", 0)),
             }
         )
     frame = pd.DataFrame(rows)
@@ -2614,29 +2825,9 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
     if _table_exists(con, "src.runtime.allocation_decisions"):
         allocation_frame = con.execute(
             """
-            SELECT
-                market_id,
-                allocation_decision_id,
-                recommended_size,
-                allocation_status,
-                budget_impact_json,
-                policy_id,
-                policy_version,
-                binding_limit_scope,
-                binding_limit_key,
-                created_at
-            FROM (
+            SELECT * FROM (
                 SELECT
-                    market_id,
-                    allocation_decision_id,
-                    recommended_size,
-                    allocation_status,
-                    budget_impact_json,
-                    policy_id,
-                    policy_version,
-                    binding_limit_scope,
-                    binding_limit_key,
-                    created_at,
+                    *,
                     ROW_NUMBER() OVER (
                         PARTITION BY market_id
                         ORDER BY created_at DESC, allocation_decision_id DESC
@@ -2655,6 +2846,7 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
     for _, row in frame.iterrows():
         allocation_payload = allocation_by_market.get(str(row.get("market_id")))
         budget_impact = _json_object(allocation_payload.get("budget_impact_json")) if allocation_payload else {}
+        preview_budget = _json_object(budget_impact.get("preview"))
         pricing_context = _json_object(row.get("pricing_context_json"))
         model_fair_value = _coerce_float(pricing_context.get("model_fair_value")) or _coerce_float(row.get("fair_value")) or 0.0
         market_price = _coerce_float(row.get("reference_price")) or 0.0
@@ -2686,14 +2878,30 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
         calibration_reason_codes = pricing_context.get("calibration_reason_codes")
         if not isinstance(calibration_reason_codes, list):
             calibration_reason_codes = None
+        calibration_freshness_status = str(pricing_context.get("calibration_freshness_status") or "fresh")
+        calibration_profile_materialized_at = pricing_context.get("profile_materialized_at")
+        calibration_profile_window_end = pricing_context.get("profile_window_end")
+        calibration_profile_age_hours = _coerce_float(pricing_context.get("profile_age_hours"))
+        calibration_gate_status, calibration_gate_reason_codes = _derive_calibration_gate(
+            calibration_freshness_status=calibration_freshness_status,
+            calibration_health_status=calibration_health_status,
+            threshold_probability_quality=threshold_probability_quality,
+            sample_count=sample_count,
+        )
+        calibration_impacted_market = calibration_gate_status != "clear"
         if not token_id or not outcome or market_price <= 0.0:
             actionability_status = (
                 "blocked"
                 if (not bool(row.get("accepting_orders")) or str(row.get("live_prereq_status") or "") == "attention_required")
                 else "review_required"
-                if str(row.get("agent_review_status") or "") != "passed"
+                if (
+                    calibration_gate_status == "review_required"
+                    or str(row.get("agent_review_status") or "") != "passed"
+                )
                 else "no_trade"
             )
+            if calibration_gate_status == "research_only":
+                actionability_status = "no_trade"
             rows.append(
                 {
                     "market_id": row.get("market_id"),
@@ -2726,6 +2934,13 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                     "mapping_confidence": mapping_confidence,
                     "source_freshness_status": source_freshness_status,
                     "price_staleness_ms": price_staleness_ms,
+                    "calibration_freshness_status": calibration_freshness_status,
+                    "calibration_profile_materialized_at": calibration_profile_materialized_at,
+                    "calibration_profile_window_end": calibration_profile_window_end,
+                    "calibration_profile_age_hours": calibration_profile_age_hours,
+                    "calibration_gate_status": calibration_gate_status,
+                    "calibration_gate_reason_codes": calibration_gate_reason_codes,
+                    "calibration_impacted_market": calibration_impacted_market,
                     "market_quality_status": market_quality_status,
                     "liquidity_proxy": 25.0 if not bool(row.get("accepting_orders")) else 55.0,
                     "liquidity_penalty_bps": None,
@@ -2741,11 +2956,32 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                     "feedback_penalty": 0.0,
                     "feedback_status": "heuristic_only",
                     "cohort_prior_version": None,
+                    "base_ranking_score": _coerce_float(allocation_payload.get("base_ranking_score")) if allocation_payload else None,
+                    "deployable_expected_pnl": _coerce_float(allocation_payload.get("deployable_expected_pnl")) if allocation_payload else None,
+                    "deployable_notional": _coerce_float(allocation_payload.get("deployable_notional")) if allocation_payload else None,
+                    "max_deployable_size": _coerce_float(allocation_payload.get("max_deployable_size")) if allocation_payload else None,
+                    "capital_scarcity_penalty": _coerce_float(allocation_payload.get("capital_scarcity_penalty")) if allocation_payload else None,
+                    "concentration_penalty": _coerce_float(allocation_payload.get("concentration_penalty")) if allocation_payload else None,
+                    "pre_budget_deployable_size": _coerce_float(allocation_payload.get("pre_budget_deployable_size")) if allocation_payload and allocation_payload.get("pre_budget_deployable_size") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_size")),
+                    "pre_budget_deployable_notional": _coerce_float(allocation_payload.get("pre_budget_deployable_notional")) if allocation_payload and allocation_payload.get("pre_budget_deployable_notional") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_notional")),
+                    "pre_budget_deployable_expected_pnl": _coerce_float(allocation_payload.get("pre_budget_deployable_expected_pnl")) if allocation_payload and allocation_payload.get("pre_budget_deployable_expected_pnl") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_expected_pnl")),
+                    "preview_binding_limit_scope": preview_budget.get("preview_binding_limit_scope"),
+                    "preview_binding_limit_key": preview_budget.get("preview_binding_limit_key"),
+                    "rerank_position": int(_coerce_float(allocation_payload.get("rerank_position")) or _coerce_float(budget_impact.get("rerank_position")) or 0) or None,
+                    "rerank_reason_codes": _json_array_of_text(allocation_payload.get("rerank_reason_codes_json")) if allocation_payload and allocation_payload.get("rerank_reason_codes_json") is not None else _json_array_of_text(budget_impact.get("rerank_reason_codes")),
+                    "requested_size": _coerce_float(allocation_payload.get("requested_size")) if allocation_payload else _coerce_float(preview_budget.get("requested_size")),
+                    "requested_notional": _coerce_float(allocation_payload.get("requested_notional")) if allocation_payload else _coerce_float(preview_budget.get("requested_notional")),
                     "recommended_size": _coerce_float(allocation_payload.get("recommended_size")) if allocation_payload else None,
                     "allocation_status": allocation_payload.get("allocation_status") if allocation_payload else None,
                     "budget_impact": budget_impact,
+                    "binding_limit_scope": allocation_payload.get("binding_limit_scope") if allocation_payload else None,
+                    "binding_limit_key": allocation_payload.get("binding_limit_key") if allocation_payload else None,
+                    "capital_policy_id": allocation_payload.get("capital_policy_id") if allocation_payload else None,
+                    "capital_policy_version": allocation_payload.get("capital_policy_version") if allocation_payload else None,
+                    "capital_scaling_reason_codes": _json_array_of_text(allocation_payload.get("capital_scaling_reason_codes_json")) if allocation_payload and allocation_payload.get("capital_scaling_reason_codes_json") is not None else [],
+                    "regime_bucket": pricing_context.get("regime_bucket"),
                     "allocation_decision_id": allocation_payload.get("allocation_decision_id") if allocation_payload else None,
-                    "ranking_score": 0.0,
+                    "ranking_score": _coerce_float(allocation_payload.get("ranking_score")) if allocation_payload else 0.0,
                     "execution_prior_key": None,
                     "why_ranked_json": json.dumps({}, ensure_ascii=True, sort_keys=True),
                     "agent_review_status": row.get("agent_review_status"),
@@ -2794,6 +3030,21 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
             allocation_decision_id=str(allocation_payload.get("allocation_decision_id")) if allocation_payload else None,
             policy_id=str(allocation_payload.get("policy_id")) if allocation_payload and allocation_payload.get("policy_id") is not None else None,
             policy_version=str(allocation_payload.get("policy_version")) if allocation_payload and allocation_payload.get("policy_version") is not None else None,
+            base_ranking_score=_coerce_float(allocation_payload.get("base_ranking_score")) if allocation_payload else None,
+            deployable_expected_pnl=_coerce_float(allocation_payload.get("deployable_expected_pnl")) if allocation_payload else None,
+            deployable_notional=_coerce_float(allocation_payload.get("deployable_notional")) if allocation_payload else None,
+            max_deployable_size=_coerce_float(allocation_payload.get("max_deployable_size")) if allocation_payload else None,
+            capital_scarcity_penalty=_coerce_float(allocation_payload.get("capital_scarcity_penalty")) if allocation_payload else None,
+            concentration_penalty=_coerce_float(allocation_payload.get("concentration_penalty")) if allocation_payload else None,
+            pre_budget_deployable_size=_coerce_float(allocation_payload.get("pre_budget_deployable_size")) if allocation_payload and allocation_payload.get("pre_budget_deployable_size") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_size")),
+            pre_budget_deployable_notional=_coerce_float(allocation_payload.get("pre_budget_deployable_notional")) if allocation_payload and allocation_payload.get("pre_budget_deployable_notional") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_notional")),
+            pre_budget_deployable_expected_pnl=_coerce_float(allocation_payload.get("pre_budget_deployable_expected_pnl")) if allocation_payload and allocation_payload.get("pre_budget_deployable_expected_pnl") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_expected_pnl")),
+            rerank_position=int(_coerce_float(allocation_payload.get("rerank_position")) or _coerce_float(budget_impact.get("rerank_position")) or 0) or None,
+            rerank_reason_codes=_json_array_of_text(allocation_payload.get("rerank_reason_codes_json")) if allocation_payload and allocation_payload.get("rerank_reason_codes_json") is not None else _json_array_of_text(budget_impact.get("rerank_reason_codes")),
+            deployable_ranking_score=_coerce_float(allocation_payload.get("ranking_score")) if allocation_payload else None,
+            capital_policy_id=str(allocation_payload.get("capital_policy_id")) if allocation_payload and allocation_payload.get("capital_policy_id") is not None else None,
+            capital_policy_version=str(allocation_payload.get("capital_policy_version")) if allocation_payload and allocation_payload.get("capital_policy_version") is not None else None,
+            capital_scaling_reason_codes=_json_array_of_text(allocation_payload.get("capital_scaling_reason_codes_json")) if allocation_payload and allocation_payload.get("capital_scaling_reason_codes_json") is not None else [],
             source_context={
                 **pricing_context,
                 "calibration_health_status": calibration_health_status,
@@ -2810,6 +3061,20 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                 "signal_created_at": str(row.get("signal_created_at") or ""),
                 "snapshot_id": row.get("snapshot_id"),
                 "source_freshness_status": source_freshness_status,
+                "binding_limit_scope": allocation_payload.get("binding_limit_scope") if allocation_payload else None,
+                "binding_limit_key": allocation_payload.get("binding_limit_key") if allocation_payload else None,
+                "pre_budget_deployable_size": _coerce_float(allocation_payload.get("pre_budget_deployable_size")) if allocation_payload and allocation_payload.get("pre_budget_deployable_size") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_size")),
+                "pre_budget_deployable_notional": _coerce_float(allocation_payload.get("pre_budget_deployable_notional")) if allocation_payload and allocation_payload.get("pre_budget_deployable_notional") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_notional")),
+                "pre_budget_deployable_expected_pnl": _coerce_float(allocation_payload.get("pre_budget_deployable_expected_pnl")) if allocation_payload and allocation_payload.get("pre_budget_deployable_expected_pnl") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_expected_pnl")),
+                "preview_binding_limit_scope": preview_budget.get("preview_binding_limit_scope"),
+                "preview_binding_limit_key": preview_budget.get("preview_binding_limit_key"),
+                "requested_size": _coerce_float(allocation_payload.get("requested_size")) if allocation_payload else _coerce_float(preview_budget.get("requested_size")),
+                "requested_notional": _coerce_float(allocation_payload.get("requested_notional")) if allocation_payload else _coerce_float(preview_budget.get("requested_notional")),
+                "rerank_position": int(_coerce_float(allocation_payload.get("rerank_position")) or _coerce_float(budget_impact.get("rerank_position")) or 0) or None,
+                "rerank_reason_codes": _json_array_of_text(allocation_payload.get("rerank_reason_codes_json")) if allocation_payload and allocation_payload.get("rerank_reason_codes_json") is not None else _json_array_of_text(budget_impact.get("rerank_reason_codes")),
+                "capital_policy_id": allocation_payload.get("capital_policy_id") if allocation_payload else None,
+                "capital_policy_version": allocation_payload.get("capital_policy_version") if allocation_payload else None,
+                "capital_scaling_reason_codes": _json_array_of_text(allocation_payload.get("capital_scaling_reason_codes_json")) if allocation_payload and allocation_payload.get("capital_scaling_reason_codes_json") is not None else [],
             },
         )
         best_side = derive_opportunity_side(assessment.edge_bps_executable)
@@ -2845,6 +3110,13 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                 "mapping_confidence": assessment.assessment_context_json.get("mapping_confidence"),
                 "source_freshness_status": assessment.assessment_context_json.get("source_freshness_status"),
                 "price_staleness_ms": assessment.assessment_context_json.get("price_staleness_ms"),
+                "calibration_freshness_status": assessment.assessment_context_json.get("calibration_freshness_status"),
+                "calibration_profile_materialized_at": assessment.assessment_context_json.get("profile_materialized_at"),
+                "calibration_profile_window_end": assessment.assessment_context_json.get("profile_window_end"),
+                "calibration_profile_age_hours": assessment.assessment_context_json.get("profile_age_hours"),
+                "calibration_gate_status": assessment.calibration_gate_status,
+                "calibration_gate_reason_codes": assessment.calibration_gate_reason_codes,
+                "calibration_impacted_market": assessment.calibration_impacted_market,
                 "market_quality_status": assessment.assessment_context_json.get("market_quality_status"),
                 "liquidity_proxy": assessment.depth_proxy * 100.0,
                 "liquidity_penalty_bps": assessment.liquidity_penalty_bps,
@@ -2860,9 +3132,30 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                 "feedback_penalty": assessment.feedback_penalty,
                 "feedback_status": assessment.feedback_status,
                 "cohort_prior_version": assessment.cohort_prior_version,
+                "base_ranking_score": assessment.base_ranking_score,
+                "deployable_expected_pnl": assessment.deployable_expected_pnl,
+                "deployable_notional": assessment.deployable_notional,
+                "max_deployable_size": assessment.max_deployable_size,
+                "capital_scarcity_penalty": assessment.capital_scarcity_penalty,
+                "concentration_penalty": assessment.concentration_penalty,
+                "pre_budget_deployable_size": assessment.pre_budget_deployable_size,
+                "pre_budget_deployable_notional": assessment.pre_budget_deployable_notional,
+                "pre_budget_deployable_expected_pnl": assessment.pre_budget_deployable_expected_pnl,
+                "preview_binding_limit_scope": assessment.assessment_context_json.get("preview_binding_limit_scope"),
+                "preview_binding_limit_key": assessment.assessment_context_json.get("preview_binding_limit_key"),
+                "rerank_position": assessment.rerank_position,
+                "rerank_reason_codes": assessment.rerank_reason_codes,
+                "requested_size": assessment.assessment_context_json.get("requested_size"),
+                "requested_notional": assessment.assessment_context_json.get("requested_notional"),
                 "recommended_size": assessment.recommended_size,
                 "allocation_status": assessment.allocation_status,
                 "budget_impact": assessment.budget_impact,
+                "binding_limit_scope": allocation_payload.get("binding_limit_scope") if allocation_payload else None,
+                "binding_limit_key": allocation_payload.get("binding_limit_key") if allocation_payload else None,
+                "capital_policy_id": assessment.capital_policy_id,
+                "capital_policy_version": assessment.capital_policy_version,
+                "capital_scaling_reason_codes": assessment.capital_scaling_reason_codes,
+                "regime_bucket": assessment.regime_bucket,
                 "allocation_decision_id": allocation_payload.get("allocation_decision_id") if allocation_payload else None,
                 "ranking_score": assessment.ranking_score,
                 "execution_prior_key": assessment.execution_prior_key,
@@ -2909,6 +3202,13 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
         "mapping_confidence",
         "source_freshness_status",
         "price_staleness_ms",
+        "calibration_freshness_status",
+        "calibration_profile_materialized_at",
+        "calibration_profile_window_end",
+        "calibration_profile_age_hours",
+        "calibration_gate_status",
+        "calibration_gate_reason_codes",
+        "calibration_impacted_market",
         "market_quality_status",
         "liquidity_proxy",
         "liquidity_penalty_bps",
@@ -2924,9 +3224,30 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
         "feedback_penalty",
         "feedback_status",
         "cohort_prior_version",
+        "base_ranking_score",
+        "deployable_expected_pnl",
+        "deployable_notional",
+        "max_deployable_size",
+        "capital_scarcity_penalty",
+        "concentration_penalty",
+        "pre_budget_deployable_size",
+        "pre_budget_deployable_notional",
+        "pre_budget_deployable_expected_pnl",
+        "preview_binding_limit_scope",
+        "preview_binding_limit_key",
+        "rerank_position",
+        "rerank_reason_codes",
+        "requested_size",
+        "requested_notional",
         "recommended_size",
         "allocation_status",
         "budget_impact",
+        "binding_limit_scope",
+        "binding_limit_key",
+        "capital_policy_id",
+        "capital_policy_version",
+        "capital_scaling_reason_codes",
+        "regime_bucket",
         "allocation_decision_id",
         "ranking_score",
         "execution_prior_key",
@@ -2961,6 +3282,50 @@ def _create_table_from_src(con, *, target: str, sql_body: str, table_row_counts:
     con.execute(f"CREATE OR REPLACE TABLE {target} AS {sql_body}")
     row = con.execute(f"SELECT COUNT(*) FROM {target}").fetchone()
     table_row_counts[target] = int(row[0]) if row is not None else 0
+
+
+def _derive_calibration_gate(
+    *,
+    calibration_freshness_status: str,
+    calibration_health_status: str,
+    threshold_probability_quality: str,
+    sample_count: int,
+) -> tuple[str, list[str]]:
+    freshness = str(calibration_freshness_status or "fresh")
+    health = str(calibration_health_status or "lookup_missing")
+    threshold = str(threshold_probability_quality or "lookup_missing")
+    reasons: list[str] = []
+    if freshness == "stale":
+        reasons.append("calibration_freshness_stale")
+    elif freshness == "degraded_or_missing":
+        reasons.append("calibration_freshness_degraded_or_missing")
+    if health == "degraded":
+        reasons.append("calibration_health_degraded")
+    elif health in {"insufficient_samples", "limited_samples", "sparse"}:
+        reasons.append("calibration_health_sparse")
+    elif health == "lookup_missing":
+        reasons.append("calibration_health_lookup_missing")
+    if threshold == "degraded":
+        reasons.append("threshold_probability_quality_degraded")
+    elif threshold == "sparse":
+        reasons.append("threshold_probability_quality_sparse")
+    elif threshold == "lookup_missing":
+        reasons.append("threshold_probability_quality_lookup_missing")
+    if int(sample_count) < 5:
+        reasons.append("calibration_sample_count_low")
+    if freshness == "degraded_or_missing" and (
+        health in {"degraded", "insufficient_samples", "limited_samples", "sparse", "lookup_missing"}
+        or threshold in {"sparse", "lookup_missing"}
+        or int(sample_count) < 5
+    ):
+        return "research_only", reasons
+    if freshness in {"stale", "degraded_or_missing"}:
+        return "review_required", reasons
+    if health in {"degraded", "insufficient_samples", "limited_samples", "sparse", "lookup_missing"}:
+        return "review_required", reasons
+    if threshold in {"degraded", "sparse", "lookup_missing"}:
+        return "review_required", reasons
+    return "clear", []
 
 
 def _connect_duckdb(db_path: str, *, read_only: bool):
@@ -3004,6 +3369,20 @@ def _json_object(value: Any) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _json_array_of_text(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if item not in {None, ""}]
+    if value in {None, ""}:
+        return []
+    try:
+        payload = json.loads(str(value))
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [str(item) for item in payload if item not in {None, ""}]
 
 
 def _source_disagreement(value: Any) -> str:

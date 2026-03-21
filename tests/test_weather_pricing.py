@@ -283,11 +283,17 @@ class WeatherPricingUnitTest(unittest.TestCase):
                 "distribution_summary_v2": {
                     "corrected_mean": 61.5,
                     "corrected_std_dev": 3.0,
+                    "calibration_health_status": "watch",
                     "bias_quality_status": "watch",
                     "threshold_probability_quality_status": "watch",
                     "regime_bucket": "warm",
                     "regime_stability_score": 0.72,
                     "lookup_hit": True,
+                    "profile_materialized_at": "2026-03-18T03:15:00+00:00",
+                    "profile_window_end": "2026-03-18T02:00:00+00:00",
+                    "calibration_freshness_status": "stale",
+                    "profile_age_hours": 48.0,
+                    "reason_codes": ["calibration_profile_stale"],
                     "threshold_probability_summary_json": {
                         "60-75": {
                             "sample_count": 14,
@@ -310,6 +316,9 @@ class WeatherPricingUnitTest(unittest.TestCase):
         self.assertEqual(context["threshold_probability_quality_status"], "watch")
         self.assertEqual(context["bias_quality_status"], "watch")
         self.assertEqual(context["regime_bucket"], "warm")
+        self.assertEqual(context["calibration_freshness_status"], "stale")
+        self.assertEqual(context["profile_materialized_at"], "2026-03-18T03:15:00+00:00")
+        self.assertIn("calibration_profile_stale", context["calibration_reason_codes"])
 
     def test_snapshot_uses_fair_value_edge(self) -> None:
         from asterion_core.contracts import WeatherFairValueRecord

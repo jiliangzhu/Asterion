@@ -25,6 +25,8 @@ class UiReadModelCatalogTest(unittest.TestCase):
                 con.close()
 
         self.assertEqual(len(rows), len(tuple(iter_read_model_catalog_records())))
+        self.assertIn(("ui.action_queue_summary", "v1", "opportunity_builder", "ranking_score"), rows)
+        self.assertIn(("ui.cohort_history_summary", "v1", "execution_builder", None), rows)
         self.assertIn(("ui.market_opportunity_summary", "v1", "opportunity_builder", "ranking_score"), rows)
         self.assertIn(("ui.truth_source_checks", "v1", "catalog_builder", None), rows)
 

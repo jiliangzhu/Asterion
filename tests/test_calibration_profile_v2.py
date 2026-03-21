@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from domains.weather.forecast.calibration import (
+    calibration_profile_age_hours,
+    calibration_profile_freshness_status,
     calibration_regime_bucket,
     materialize_forecast_calibration_profiles_v2,
 )
@@ -21,6 +23,25 @@ class CalibrationProfileV2Test(unittest.TestCase):
         self.assertEqual(calibration_regime_bucket(45.0), "mild")
         self.assertEqual(calibration_regime_bucket(72.0), "warm")
         self.assertEqual(calibration_regime_bucket(83.0), "hot")
+
+    def test_profile_freshness_classification(self) -> None:
+        materialized_at = datetime(2026, 3, 18, 3, 15, tzinfo=UTC)
+        self.assertEqual(
+            calibration_profile_freshness_status(materialized_at, as_of=datetime(2026, 3, 18, 12, 0, tzinfo=UTC)),
+            "fresh",
+        )
+        self.assertEqual(
+            calibration_profile_freshness_status(materialized_at, as_of=datetime(2026, 3, 20, 3, 15, tzinfo=UTC)),
+            "stale",
+        )
+        self.assertEqual(
+            calibration_profile_freshness_status(materialized_at, as_of=datetime(2026, 3, 23, 3, 15, tzinfo=UTC)),
+            "degraded_or_missing",
+        )
+        self.assertAlmostEqual(
+            calibration_profile_age_hours(materialized_at, as_of=datetime(2026, 3, 18, 15, 15, tzinfo=UTC)),
+            12.0,
+        )
 
     def test_materializes_profile_rows_from_samples(self) -> None:
         import duckdb

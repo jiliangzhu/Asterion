@@ -86,6 +86,29 @@ class DocsIndexHygieneTest(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertIn("archived accepted historical", text)
 
+    def test_current_tranche_plan_is_indexed(self) -> None:
+        tranche_plan = (
+            ROOT
+            / "docs"
+            / "10-implementation"
+            / "versions"
+            / "v2.0"
+            / "phase-plans"
+            / "P8_Implementation_Plan.md"
+        )
+        self.assertTrue(tranche_plan.exists())
+        docs = [
+            ROOT / "README.md",
+            ROOT / "docs" / "00-overview" / "Documentation_Index.md",
+            ROOT / "docs" / "10-implementation" / "Implementation_Index.md",
+            ROOT / "docs" / "00-overview" / "versions" / "v2.0" / "Asterion_Project_Plan.md",
+            ROOT / "docs" / "00-overview" / "versions" / "v2.0" / "DEVELOPMENT_ROADMAP.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v2.0" / "phase-plans" / "V2_Implementation_Plan.md",
+        ]
+        for path in docs:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("P8_Implementation_Plan.md", text)
+
 
 if __name__ == "__main__":
     unittest.main()

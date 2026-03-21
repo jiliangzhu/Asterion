@@ -1,5 +1,10 @@
 # Agent Monitor 详细设计
 
+> 状态说明：本设计文档保留了早期 three-agent 方案的历史上下文。
+> 当前仓库的 active reality 已调整为：
+> `deterministic rule/spec validation + deterministic replay/provenance validation + Resolution Agent-assisted operator review closure`。
+> 因此，Rule2Spec / Data QA 的 LLM agent 叙事应视为 historical design，而不是当前 active implementation contract。
+
 **模块**: `asterion_core/agents/monitor/`
 **版本**: v1.0
 **创建日期**: 2026-03-07
@@ -37,12 +42,12 @@ Agent Monitor 是 Asterion 的 AI Agent 监控和评估系统，负责：
 
 ### 1.3 监控的 Agent
 
-Weather MVP 阶段监控 4 个 Agent：
+当前 active runtime 重点监控 1 个 agent surface + 2 个 deterministic validation surface：
 
-1. **Rule2Spec Agent** - 市场规则解析
-2. **Data QA Agent** - 数据质量检查
-3. **Resolution Sentinel Agent** - 结算验证
-4. **Daily Review Agent** - 每日复盘
+1. **Rule/Spec Validation** - 市场规则解析校验（deterministic）
+2. **Replay/Provenance Validation** - 数据质量与回放一致性校验（deterministic）
+3. **Resolution Agent** - 结算建议与 operator review closure
+4. **Daily Review Agent** - 历史规划项，当前未作为 active runtime 前提
 
 ---
 
@@ -2322,4 +2327,3 @@ class AgentRunner:
 **创建日期**: 2026-03-07
 **最后更新**: 2026-03-08 (P2-11 增强)
 **作者**: Jay Zhu
-

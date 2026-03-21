@@ -70,6 +70,26 @@ class UiPhase4ConsoleSmokeTest(unittest.TestCase):
                     }
                 ]
             ),
+            "cohort_history": pd.DataFrame(
+                [
+                    {
+                        "run_id": "retro_1",
+                        "market_id": "mkt_1",
+                        "strategy_id": "weather_primary",
+                        "ranking_decile": 1,
+                        "top_k_bucket": "top_5",
+                        "evaluation_status": "resolved",
+                        "submitted_capture_ratio": 1.0,
+                        "fill_capture_ratio": 1.0,
+                        "resolution_capture_ratio": 1.0,
+                        "avg_ranking_score": 0.42,
+                        "avg_realized_pnl": 5.7,
+                        "feedback_status": "healthy",
+                        "calibration_freshness_status": "fresh",
+                        "source_badge": "derived",
+                    }
+                ]
+            ),
             "market_research": pd.DataFrame(),
             "calibration_health": pd.DataFrame(),
         }
@@ -146,22 +166,29 @@ class UiPhase4ConsoleSmokeTest(unittest.TestCase):
             system.show()
         self.assertTrue(dataframe_mock.called)
 
-    def test_agents_show_renders_exception_review_layout(self) -> None:
+    def test_agents_show_renders_resolution_review_layout(self) -> None:
         review = pd.DataFrame(
             [
                 {
-                    "agent_type": "rule2spec",
-                    "subject_id": "mkt_1",
-                    "invocation_status": "failure",
-                    "verdict": "review",
-                    "summary": "needs review",
-                    "human_review_required": True,
-                    "updated_at": "2026-03-15T10:00:00+00:00",
+                    "proposal_id": "prop_1",
+                    "market_id": "mkt_1",
+                    "proposal_status": "settled",
+                    "redeem_decision": "ready_for_redeem",
+                    "suggestion_id": "suggest_1",
+                    "latest_agent_invocation_id": "inv_1",
+                    "latest_agent_verdict": "review",
+                    "latest_agent_summary": "needs review",
+                    "latest_recommended_operator_action": "manual_review",
+                    "latest_settlement_risk_score": 0.8,
+                    "latest_operator_review_status": None,
+                    "latest_operator_action": None,
+                    "effective_redeem_status": "pending_operator_review",
                 }
             ]
         )
         with patch("ui.pages.agents.load_agent_runtime_status", return_value={"provider": "openai_compatible", "model": "glm-5", "configured": True, "key_source": "env", "agents": []}), \
-            patch("ui.pages.agents.load_agent_review_data", return_value={"source": "ui_lite", "frame": review}), \
+            patch("ui.pages.agents.load_resolution_review_data", return_value={"source": "ui_lite", "frame": review}), \
+            patch("ui.pages.agents.write_resolution_operator_review_decision"), \
             patch.object(agents.st, "markdown"), \
             patch.object(agents.st, "caption"), \
             patch.object(agents.st, "metric"), \
@@ -170,7 +197,9 @@ class UiPhase4ConsoleSmokeTest(unittest.TestCase):
             patch.object(agents.st, "error"), \
             patch.object(agents.st, "dataframe", new=MagicMock()) as dataframe_mock, \
             patch.object(agents.st, "columns", side_effect=lambda spec: [_DummyContext() for _ in range(spec if isinstance(spec, int) else len(spec))]), \
-            patch.object(agents.st, "expander", return_value=_DummyContext()):
+            patch.object(agents.st, "expander", return_value=_DummyContext()), \
+            patch.object(agents.st, "text_input", side_effect=["operator", ""]), \
+            patch.object(agents.st, "button", return_value=False):
             agents.show()
         self.assertTrue(dataframe_mock.called)
 
@@ -187,6 +216,7 @@ class UiPhase4ConsoleSmokeTest(unittest.TestCase):
                         "edge_bps": 850.0,
                         "edge_bps_model": 1000.0,
                         "ranking_score": 88.0,
+                        "operator_bucket": "ready_now",
                         "source_badge": "canonical",
                         "source_truth_status": "canonical",
                         "liquidity_proxy": 75.0,
@@ -213,6 +243,7 @@ class UiPhase4ConsoleSmokeTest(unittest.TestCase):
                     "ranking_score": 88.0,
                     "source_badge": "canonical",
                     "source_truth_status": "canonical",
+                    "operator_bucket": "ready_now",
                     "liquidity_proxy": 75.0,
                     "mapping_confidence": 0.91,
                     "source_freshness_status": "fresh",
@@ -228,12 +259,15 @@ class UiPhase4ConsoleSmokeTest(unittest.TestCase):
                     "executed_evidence": {"has_executed_evidence": False},
                     "watch_only_vs_executed": {"source_badge": "derived"},
                     "market_research": {},
+                    "queue_reason_codes": ["allocation:approved"],
+                    "cohort_history": [],
                 }
             ],
             "market_opportunity_source": "ui_lite",
             "predicted_vs_realized": pd.DataFrame(),
             "watch_only_vs_executed": pd.DataFrame(),
             "market_research": pd.DataFrame(),
+            "cohort_history": pd.DataFrame(),
         }
         surface = {
             "market_chain": {"status": "ok", "label": "ok", "detail": "", "source": "ui_lite", "updated_at": None},

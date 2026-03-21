@@ -197,6 +197,19 @@ class PaperExecutionAllocatorIntegrationTest(unittest.TestCase):
         self.assertEqual(float(recommended_size), 8.0)
         self.assertEqual(provenance["allocation_status"], "resized")
         self.assertEqual(provenance["recommended_size"], "8.0")
+        self.assertIn("base_ranking_score", provenance)
+        self.assertIn("deployable_expected_pnl", provenance)
+        self.assertIn("pre_budget_deployable_size", provenance)
+        self.assertIn("pre_budget_deployable_expected_pnl", provenance)
+        self.assertIn("preview_binding_limit_scope", provenance)
+        self.assertIn("preview_binding_limit_key", provenance)
+        self.assertIn("rerank_position", provenance)
+        self.assertIn("binding_limit_scope", provenance)
+        self.assertIn("capital_policy_id", provenance)
+        self.assertIn("capital_policy_version", provenance)
+        self.assertIn("capital_scaling_reason_codes", provenance)
+        self.assertIn("regime_bucket", provenance)
+        self.assertIn("calibration_gate_status", provenance)
 
     def test_policy_missing_blocks_order_creation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

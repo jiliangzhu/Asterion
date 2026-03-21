@@ -2,11 +2,27 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from asterion_core.contracts import (
+    ForecastReplayDiffRecord,
+    ForecastReplayRecord,
+    ForecastRunRecord,
+    ResolutionOperatorDecisionStatus,
+    ResolutionOperatorReviewDecisionRecord,
+    StationMetadata,
+    WeatherFairValueRecord,
+    WeatherMarket,
+    WeatherMarketSpecRecord,
+    WatchOnlySnapshotRecord,
+    stable_object_id,
+)
 from domains.weather.opportunity import build_weather_opportunity_assessment, derive_opportunity_side
+from domains.weather.forecast import validate_replay_quality
+from domains.weather.spec import parse_rule2spec_draft, validate_rule2spec_draft
 from ui.surface_truth import (
     annotate_frame_with_source_truth,
     build_opportunity_row_source_badge,
@@ -53,6 +69,9 @@ UI_TABLES = {
     "execution_science_summary": "ui.execution_science_summary",
     "market_research_summary": "ui.market_research_summary",
     "calibration_health_summary": "ui.calibration_health_summary",
+    "action_queue_summary": "ui.action_queue_summary",
+    "cohort_history_summary": "ui.cohort_history_summary",
+    "proposal_resolution_summary": "ui.proposal_resolution_summary",
     "read_model_catalog": "ui.read_model_catalog",
     "truth_source_checks": "ui.truth_source_checks",
 }
@@ -102,6 +121,266 @@ def _json_list(value: Any) -> list[Any]:
     except Exception:  # noqa: BLE001
         return []
     return payload if isinstance(payload, list) else []
+
+
+def _derive_calibration_gate_overlay(
+    *,
+    calibration_freshness_status: Any = None,
+    calibration_health_status: Any = None,
+    threshold_probability_quality: Any = None,
+    sample_count: Any = None,
+) -> dict[str, Any]:
+    freshness = _ensure_text(calibration_freshness_status)
+    health = _ensure_text(calibration_health_status)
+    threshold_quality = _ensure_text(threshold_probability_quality)
+    sample_count_value = int(_coerce_float(sample_count) or 0)
+    if not any([freshness, health, threshold_quality]) and sample_count in {None, ""}:
+        return {
+            "calibration_gate_status": "clear",
+            "calibration_gate_reason_codes": [],
+            "calibration_impacted_market": False,
+        }
+    assessment = build_weather_opportunity_assessment(
+        market_id="gate_overlay_probe",
+        token_id="gate_overlay_probe:YES",
+        outcome="YES",
+        reference_price=0.5,
+        model_fair_value=0.5,
+        accepting_orders=True,
+        enable_order_book=True,
+        threshold_bps=0,
+        agent_review_status="passed",
+        live_prereq_status="shadow_aligned",
+        source_context={
+            "calibration_freshness_status": freshness or None,
+            "calibration_health_status": health or None,
+            "threshold_probability_quality": threshold_quality or None,
+            "sample_count": sample_count_value,
+        },
+    )
+    return {
+        "calibration_gate_status": assessment.calibration_gate_status,
+        "calibration_gate_reason_codes": list(assessment.calibration_gate_reason_codes),
+        "calibration_impacted_market": bool(assessment.calibration_impacted_market),
+    }
+
+
+def _apply_p8_overlay_defaults(row: dict[str, Any]) -> dict[str, Any]:
+    if not row.get("calibration_gate_status"):
+        gate_payload = _derive_calibration_gate_overlay(
+            calibration_freshness_status=row.get("calibration_freshness_status"),
+            calibration_health_status=row.get("calibration_health_status"),
+            threshold_probability_quality=row.get("threshold_probability_quality"),
+            sample_count=row.get("sample_count"),
+        )
+        row["calibration_gate_status"] = gate_payload["calibration_gate_status"]
+        row["calibration_gate_reason_codes"] = gate_payload["calibration_gate_reason_codes"]
+        row["calibration_impacted_market"] = gate_payload["calibration_impacted_market"]
+    else:
+        row["calibration_gate_reason_codes"] = _json_list(row.get("calibration_gate_reason_codes"))
+        row["calibration_impacted_market"] = bool(row.get("calibration_impacted_market"))
+    row.setdefault("capital_policy_id", None)
+    row.setdefault("capital_policy_version", None)
+    row.setdefault("capital_scaling_reason_codes", [])
+    row.setdefault("preview_binding_limit_scope", None)
+    row.setdefault("preview_binding_limit_key", None)
+    return row
+
+
+def _iso_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _normalize_timestamp(value: Any) -> datetime | None:
+    if value in {None, ""}:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _sql_timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.astimezone(UTC).replace(tzinfo=None)
+    return normalized.isoformat(sep=" ", timespec="seconds")
+
+
+def _json_array_text(values: list[Any]) -> str:
+    return json.dumps(values, ensure_ascii=True, sort_keys=True)
+
+
+def _build_weather_market_from_row(row: dict[str, Any]) -> WeatherMarket:
+    return WeatherMarket(
+        market_id=str(row["market_id"]),
+        condition_id=str(row["condition_id"]),
+        event_id=str(row["event_id"]) if row.get("event_id") is not None else None,
+        slug=str(row["slug"]) if row.get("slug") is not None else None,
+        title=str(row["title"]),
+        description=str(row["description"]) if row.get("description") is not None else None,
+        rules=str(row["rules"]) if row.get("rules") is not None else None,
+        status=str(row["status"]),
+        active=_normalize_bool(row.get("active")),
+        closed=_normalize_bool(row.get("closed")),
+        archived=_normalize_bool(row.get("archived")),
+        accepting_orders=row.get("accepting_orders"),
+        enable_order_book=row.get("enable_order_book"),
+        tags=[str(item) for item in _json_list(row.get("tags_json"))],
+        outcomes=[str(item) for item in _json_list(row.get("outcomes_json"))],
+        token_ids=[str(item) for item in _json_list(row.get("token_ids_json"))],
+        close_time=_normalize_timestamp(row.get("close_time")),
+        end_date=_normalize_timestamp(row.get("end_date")),
+        raw_market=_json_dict(row.get("raw_market_json")),
+    )
+
+
+def _build_station_metadata_from_row(row: dict[str, Any] | None) -> StationMetadata | None:
+    if row is None or row.get("station_id") in {None, ""}:
+        return None
+    return StationMetadata(
+        station_id=str(row["station_id"]),
+        location_name=str(row.get("location_name") or ""),
+        latitude=float(row.get("latitude") or 0.0),
+        longitude=float(row.get("longitude") or 0.0),
+        timezone=str(row.get("timezone") or ""),
+        source=str(row.get("source") or "unknown"),
+    )
+
+
+def _build_weather_spec_from_row(row: dict[str, Any] | None) -> WeatherMarketSpecRecord | None:
+    if row is None or row.get("market_id") in {None, ""}:
+        return None
+    observation_date = row.get("observation_date")
+    if isinstance(observation_date, datetime):
+        observation_date = observation_date.date()
+    return WeatherMarketSpecRecord(
+        market_id=str(row["market_id"]),
+        condition_id=str(row["condition_id"]),
+        location_name=str(row["location_name"]),
+        station_id=str(row["station_id"]),
+        latitude=float(row["latitude"]),
+        longitude=float(row["longitude"]),
+        timezone=str(row["timezone"]),
+        observation_date=observation_date,
+        observation_window_local=str(row["observation_window_local"]),
+        metric=str(row["metric"]),
+        unit=str(row["unit"]),
+        bucket_min_value=_coerce_float(row.get("bucket_min_value")),
+        bucket_max_value=_coerce_float(row.get("bucket_max_value")),
+        authoritative_source=str(row["authoritative_source"]),
+        fallback_sources=[str(item) for item in _json_list(row.get("fallback_sources_json"))],
+        rounding_rule=str(row["rounding_rule"]),
+        inclusive_bounds=_normalize_bool(row.get("inclusive_bounds")),
+        spec_version=str(row["spec_version"]),
+        parse_confidence=float(row["parse_confidence"]),
+        risk_flags=[str(item) for item in _json_list(row.get("risk_flags_json"))],
+    )
+
+
+def _build_forecast_run_from_row(row: dict[str, Any] | None) -> ForecastRunRecord | None:
+    if row is None or row.get("run_id") in {None, ""}:
+        return None
+    observation_date = row.get("observation_date")
+    if isinstance(observation_date, datetime):
+        observation_date = observation_date.date()
+    return ForecastRunRecord(
+        run_id=str(row["run_id"]),
+        market_id=str(row["market_id"]),
+        condition_id=str(row["condition_id"]),
+        station_id=str(row["station_id"]),
+        source=str(row["source"]),
+        model_run=str(row["model_run"]),
+        forecast_target_time=_normalize_timestamp(row.get("forecast_target_time")) or _iso_now(),
+        observation_date=observation_date,
+        metric=str(row["metric"]),
+        latitude=float(row["latitude"]),
+        longitude=float(row["longitude"]),
+        timezone=str(row["timezone"]),
+        spec_version=str(row["spec_version"]),
+        cache_key=str(row["cache_key"]),
+        source_trace=[str(item) for item in _json_list(row.get("source_trace_json"))],
+        fallback_used=_normalize_bool(row.get("fallback_used")),
+        from_cache=_normalize_bool(row.get("from_cache")),
+        confidence=float(row["confidence"]),
+        forecast_payload=_json_dict(row.get("forecast_payload_json")),
+        raw_payload=_json_dict(row.get("raw_payload_json")),
+    )
+
+
+def _build_replay_from_row(row: dict[str, Any] | None) -> ForecastReplayRecord | None:
+    if row is None or row.get("replay_id") in {None, ""}:
+        return None
+    return ForecastReplayRecord(
+        replay_id=str(row["replay_id"]),
+        market_id=str(row["market_id"]),
+        condition_id=str(row["condition_id"]),
+        station_id=str(row["station_id"]),
+        source=str(row["source"]),
+        model_run=str(row["model_run"]),
+        forecast_target_time=_normalize_timestamp(row.get("forecast_target_time")) or _iso_now(),
+        spec_version=str(row["spec_version"]),
+        replay_key=str(row["replay_key"]),
+        replay_reason=str(row["replay_reason"]),
+        original_run_id=str(row["original_run_id"]),
+        replayed_run_id=str(row["replayed_run_id"]),
+        created_at=_normalize_timestamp(row.get("created_at")) or _iso_now(),
+    )
+
+
+def _build_replay_diff_from_row(row: dict[str, Any]) -> ForecastReplayDiffRecord:
+    return ForecastReplayDiffRecord(
+        diff_id=str(row["diff_id"]),
+        replay_id=str(row["replay_id"]),
+        entity_type=str(row["entity_type"]),
+        entity_key=str(row["entity_key"]),
+        original_entity_id=str(row["original_entity_id"]) if row.get("original_entity_id") is not None else None,
+        replayed_entity_id=str(row["replayed_entity_id"]) if row.get("replayed_entity_id") is not None else None,
+        status=str(row["status"]),
+        diff_summary_json=_json_dict(row.get("diff_summary_json")),
+        created_at=_normalize_timestamp(row.get("created_at")) or _iso_now(),
+    )
+
+
+def _build_fair_value_from_row(row: dict[str, Any]) -> WeatherFairValueRecord:
+    return WeatherFairValueRecord(
+        fair_value_id=str(row["fair_value_id"]),
+        run_id=str(row["run_id"]),
+        market_id=str(row["market_id"]),
+        condition_id=str(row["condition_id"]),
+        token_id=str(row["token_id"]),
+        outcome=str(row["outcome"]),
+        fair_value=float(row["fair_value"]),
+        confidence=float(row["confidence"]),
+    )
+
+
+def _build_snapshot_from_row(row: dict[str, Any]) -> WatchOnlySnapshotRecord:
+    return WatchOnlySnapshotRecord(
+        snapshot_id=str(row["snapshot_id"]),
+        fair_value_id=str(row["fair_value_id"]),
+        run_id=str(row["run_id"]),
+        market_id=str(row["market_id"]),
+        condition_id=str(row["condition_id"]),
+        token_id=str(row["token_id"]),
+        outcome=str(row["outcome"]),
+        reference_price=float(row["reference_price"]),
+        fair_value=float(row["fair_value"]),
+        edge_bps=int(row["edge_bps"]),
+        threshold_bps=int(row["threshold_bps"]),
+        decision=str(row["decision"]),
+        side=str(row["side"]),
+        rationale=str(row["rationale"]),
+        pricing_context=_json_dict(row.get("pricing_context_json")),
+    )
 
 
 def _resolve_real_weather_smoke_report_path() -> Path:
@@ -188,8 +467,7 @@ def _read_agent_review_from_runtime_result(db_path: Path) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"frame": _empty_df(), "error": str(exc)}
     try:
-        return {
-            "frame": con.execute(
+        frame = con.execute(
             """
             WITH latest_invocation AS (
                 SELECT
@@ -316,13 +594,284 @@ def _read_agent_review_from_runtime_result(db_path: Path) -> dict[str, Any]:
             LEFT JOIN latest_review review ON review.invocation_id = inv.invocation_id
             LEFT JOIN latest_evaluation evaluation ON evaluation.invocation_id = inv.invocation_id
             """
-        ).df(),
-            "error": None,
-        }
+        ).df()
+        return {"frame": frame, "error": None}
     except Exception as exc:  # noqa: BLE001
         return {"frame": _empty_df(), "error": str(exc)}
     finally:
         con.close()
+
+
+def _load_market_validation_overlays(db_path: Path) -> dict[str, dict[str, Any]]:
+    if duckdb is None or not db_path.exists():
+        return {}
+    try:
+        con = duckdb.connect(str(db_path), read_only=True)
+    except Exception:  # noqa: BLE001
+        return {}
+    try:
+        markets = con.execute(
+            """
+            SELECT
+                market_id,
+                condition_id,
+                event_id,
+                slug,
+                title,
+                description,
+                rules,
+                status,
+                active,
+                closed,
+                archived,
+                accepting_orders,
+                enable_order_book,
+                tags_json,
+                outcomes_json,
+                token_ids_json,
+                close_time,
+                end_date,
+                raw_market_json
+            FROM weather.weather_markets
+            """
+        ).df()
+        specs = con.execute(
+            """
+            SELECT *
+            FROM (
+                SELECT
+                    market_id,
+                    condition_id,
+                    location_name,
+                    station_id,
+                    latitude,
+                    longitude,
+                    timezone,
+                    observation_date,
+                    observation_window_local,
+                    metric,
+                    unit,
+                    bucket_min_value,
+                    bucket_max_value,
+                    authoritative_source,
+                    fallback_sources_json,
+                    rounding_rule,
+                    inclusive_bounds,
+                    spec_version,
+                    parse_confidence,
+                    risk_flags_json,
+                    updated_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY market_id
+                        ORDER BY updated_at DESC, spec_version DESC
+                    ) AS rn
+                FROM weather.weather_market_specs
+            )
+            WHERE rn = 1
+            """
+        ).df()
+        mappings = con.execute(
+            """
+            SELECT *
+            FROM (
+                SELECT
+                    market_id,
+                    location_name,
+                    station_id,
+                    latitude,
+                    longitude,
+                    timezone,
+                    source,
+                    mapping_confidence,
+                    updated_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY market_id
+                        ORDER BY updated_at DESC, map_id DESC
+                    ) AS rn
+                FROM weather.weather_station_map
+                WHERE market_id IS NOT NULL
+            )
+            WHERE rn = 1
+            """
+        ).df()
+        replays = con.execute(
+            """
+            SELECT *
+            FROM (
+                SELECT
+                    replay_id,
+                    market_id,
+                    condition_id,
+                    station_id,
+                    source,
+                    model_run,
+                    forecast_target_time,
+                    spec_version,
+                    replay_key,
+                    replay_reason,
+                    original_run_id,
+                    replayed_run_id,
+                    created_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY market_id
+                        ORDER BY created_at DESC, replay_id DESC
+                    ) AS rn
+                FROM weather.weather_forecast_replays
+            )
+            WHERE rn = 1
+            """
+        ).df()
+        replay_diffs = con.execute("SELECT * FROM weather.weather_forecast_replay_diffs").df()
+        forecast_runs = con.execute(
+            """
+            SELECT
+                run_id,
+                market_id,
+                condition_id,
+                station_id,
+                source,
+                model_run,
+                forecast_target_time,
+                observation_date,
+                metric,
+                latitude,
+                longitude,
+                timezone,
+                spec_version,
+                cache_key,
+                source_trace_json,
+                fallback_used,
+                from_cache,
+                confidence,
+                forecast_payload_json,
+                raw_payload_json
+            FROM weather.weather_forecast_runs
+            """
+        ).df()
+        fair_values = con.execute(
+            """
+            SELECT fair_value_id, run_id, market_id, condition_id, token_id, outcome, fair_value, confidence
+            FROM weather.weather_fair_values
+            """
+        ).df()
+        snapshots = con.execute(
+            """
+            SELECT
+                snapshot_id,
+                fair_value_id,
+                run_id,
+                market_id,
+                condition_id,
+                token_id,
+                outcome,
+                reference_price,
+                fair_value,
+                edge_bps,
+                threshold_bps,
+                decision,
+                side,
+                rationale,
+                pricing_context_json
+            FROM weather.weather_watch_only_snapshots
+            """
+        ).df()
+    except Exception:  # noqa: BLE001
+        con.close()
+        return {}
+    finally:
+        try:
+            con.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    spec_by_market = {str(row["market_id"]): row.to_dict() for _, row in specs.iterrows()}
+    mapping_by_market = {str(row["market_id"]): row.to_dict() for _, row in mappings.iterrows()}
+    replay_by_market = {str(row["market_id"]): row.to_dict() for _, row in replays.iterrows()}
+    run_by_id = {str(row["run_id"]): row.to_dict() for _, row in forecast_runs.iterrows()}
+    diffs_by_replay: dict[str, list[ForecastReplayDiffRecord]] = {}
+    for _, row in replay_diffs.iterrows():
+        record = _build_replay_diff_from_row(row.to_dict())
+        diffs_by_replay.setdefault(record.replay_id, []).append(record)
+    fair_values_by_run: dict[str, list[WeatherFairValueRecord]] = {}
+    for _, row in fair_values.iterrows():
+        record = _build_fair_value_from_row(row.to_dict())
+        fair_values_by_run.setdefault(record.run_id, []).append(record)
+    snapshots_by_run: dict[str, list[WatchOnlySnapshotRecord]] = {}
+    for _, row in snapshots.iterrows():
+        record = _build_snapshot_from_row(row.to_dict())
+        snapshots_by_run.setdefault(record.run_id, []).append(record)
+
+    overlays: dict[str, dict[str, Any]] = {}
+    for _, market_row in markets.iterrows():
+        market_payload = market_row.to_dict()
+        market_id = str(market_payload["market_id"])
+        spec_payload = spec_by_market.get(market_id)
+        mapping_payload = mapping_by_market.get(market_id)
+        try:
+            rule2spec_result = validate_rule2spec_draft(
+                parse_rule2spec_draft(_build_weather_market_from_row(market_payload)),
+                current_spec=_build_weather_spec_from_row(spec_payload),
+                station_metadata=_build_station_metadata_from_row(mapping_payload),
+            )
+        except Exception:  # noqa: BLE001
+            rule2spec_result = None
+        replay_payload = replay_by_market.get(market_id)
+        replay_result = None
+        if replay_payload is not None:
+            try:
+                replay_record = _build_replay_from_row(replay_payload)
+                replayed_run = _build_forecast_run_from_row(run_by_id.get(replay_record.replayed_run_id))
+                original_run = _build_forecast_run_from_row(run_by_id.get(replay_record.original_run_id))
+                replay_result = validate_replay_quality(
+                    replay_record,
+                    spec=_build_weather_spec_from_row(spec_payload),
+                    original_run=original_run,
+                    replayed_run=replayed_run,
+                    replay_diffs=diffs_by_replay.get(replay_record.replay_id, []),
+                    fair_values=fair_values_by_run.get(replay_record.replayed_run_id, []),
+                    watch_snapshots=snapshots_by_run.get(replay_record.replayed_run_id, []),
+                )
+            except Exception:  # noqa: BLE001
+                replay_result = None
+        overlays[market_id] = {
+            "rule2spec_status": (
+                "success"
+                if rule2spec_result is not None and rule2spec_result.verdict == "pass"
+                else "review_required"
+                if rule2spec_result is not None and rule2spec_result.verdict == "review"
+                else "blocked"
+                if rule2spec_result is None
+                else "blocked"
+            ),
+            "rule2spec_verdict": rule2spec_result.verdict if rule2spec_result is not None else "block",
+            "rule2spec_summary": rule2spec_result.summary if rule2spec_result is not None else "deterministic rule2spec validation failed to evaluate",
+            "data_qa_status": (
+                "not_run"
+                if replay_result is None
+                else "success" if replay_result.verdict == "pass" else "review_required" if replay_result.verdict == "review" else "blocked"
+            ),
+            "data_qa_verdict": replay_result.verdict if replay_result is not None else None,
+            "data_qa_summary": replay_result.summary if replay_result is not None else "no replay validation inputs available",
+        }
+    return overlays
+
+
+def _derive_market_review_status(rule2spec_verdict: Any, data_qa_verdict: Any) -> str:
+    verdicts = {str(item) for item in [rule2spec_verdict, data_qa_verdict] if item}
+    if "block" in verdicts:
+        return "review_required"
+    if "review" in verdicts:
+        return "review_required"
+    if "pass" in verdicts:
+        return "passed"
+    return "no_agent_signal"
+
+
+def load_market_validation_overlays() -> dict[str, dict[str, Any]]:
+    overlays = _load_market_validation_overlays(_resolve_canonical_db_path())
+    if overlays:
+        return overlays
+    return _load_market_validation_overlays(_resolve_real_weather_chain_db_path())
 
 
 def _read_weather_market_rows_from_runtime(db_path: Path) -> pd.DataFrame:
@@ -337,8 +886,7 @@ def _read_weather_market_rows_from_runtime_result(db_path: Path) -> dict[str, An
     except Exception as exc:  # noqa: BLE001
         return {"frame": _empty_df(), "error": str(exc)}
     try:
-        return {
-            "frame": con.execute(
+        frame = con.execute(
             """
             WITH latest_invocation AS (
                 SELECT
@@ -494,9 +1042,21 @@ def _read_weather_market_rows_from_runtime_result(db_path: Path) -> dict[str, An
               AND COALESCE(m.archived, FALSE) = FALSE
             ORDER BY COALESCE(m.close_time, m.end_date) ASC, m.market_id ASC
             """
-        ).df(),
-            "error": None,
-        }
+        ).df()
+        overlays = _load_market_validation_overlays(db_path)
+        if not frame.empty:
+            patched_rows: list[dict[str, Any]] = []
+            for _, row in frame.iterrows():
+                item = row.to_dict()
+                overlay = overlays.get(str(item.get("market_id"))) or {}
+                item.update(overlay)
+                item["agent_review_status"] = _derive_market_review_status(
+                    item.get("rule2spec_verdict"),
+                    item.get("data_qa_verdict"),
+                )
+                patched_rows.append(_apply_p8_overlay_defaults(item))
+            frame = pd.DataFrame(patched_rows)
+        return {"frame": frame, "error": None}
     except Exception as exc:  # noqa: BLE001
         return {"frame": _empty_df(), "error": str(exc)}
     finally:
@@ -579,10 +1139,12 @@ def _normalize_bool(value: Any) -> bool:
 
 def _derive_agent_review_status(item: dict[str, Any]) -> str:
     statuses = [item.get("rule2spec_status"), item.get("data_qa_status"), item.get("resolution_status")]
-    if any(status == "failure" for status in statuses):
+    if any(status in {"failure", "blocked"} for status in statuses):
         return "agent_failure"
+    if any(status == "review_required" for status in statuses):
+        return "review_required"
     verdicts = [item.get("rule2spec_verdict"), item.get("data_qa_verdict"), item.get("resolution_verdict")]
-    if any(verdict == "review" for verdict in verdicts):
+    if any(verdict in {"review", "block"} for verdict in verdicts):
         return "review_required"
     if any(status == "success" for status in statuses):
         return "passed"
@@ -656,6 +1218,9 @@ def _build_opportunity_row(
     allocation_decision_id: str | None = None,
     policy_id: str | None = None,
     policy_version: str | None = None,
+    capital_policy_id: str | None = None,
+    capital_policy_version: str | None = None,
+    capital_scaling_reason_codes: list[str] | None = None,
 ) -> dict[str, Any]:
     assessment = build_weather_opportunity_assessment(
         market_id=market_id,
@@ -685,6 +1250,9 @@ def _build_opportunity_row(
         allocation_decision_id=allocation_decision_id,
         policy_id=policy_id,
         policy_version=policy_version,
+        capital_policy_id=capital_policy_id,
+        capital_policy_version=capital_policy_version,
+        capital_scaling_reason_codes=capital_scaling_reason_codes,
         source_context={
             "calibration_health_status": calibration_health_status,
             "calibration_bias_quality": calibration_bias_quality,
@@ -735,6 +1303,9 @@ def _build_opportunity_row(
         "source_freshness_status": assessment.assessment_context_json.get("source_freshness_status"),
         "price_staleness_ms": assessment.assessment_context_json.get("price_staleness_ms"),
         "market_quality_status": assessment.assessment_context_json.get("market_quality_status"),
+        "calibration_gate_status": assessment.calibration_gate_status,
+        "calibration_gate_reason_codes": assessment.calibration_gate_reason_codes,
+        "calibration_impacted_market": assessment.calibration_impacted_market,
         "liquidity_proxy": assessment.depth_proxy * 100.0,
         "liquidity_penalty_bps": assessment.liquidity_penalty_bps,
         "confidence_score": assessment.confidence_score,
@@ -749,9 +1320,28 @@ def _build_opportunity_row(
         "feedback_penalty": assessment.feedback_penalty,
         "feedback_status": assessment.feedback_status,
         "cohort_prior_version": assessment.cohort_prior_version,
+        "base_ranking_score": assessment.base_ranking_score,
+        "deployable_expected_pnl": assessment.deployable_expected_pnl,
+        "deployable_notional": assessment.deployable_notional,
+        "max_deployable_size": assessment.max_deployable_size,
+        "capital_scarcity_penalty": assessment.capital_scarcity_penalty,
+        "concentration_penalty": assessment.concentration_penalty,
+        "pre_budget_deployable_size": assessment.pre_budget_deployable_size,
+        "pre_budget_deployable_notional": assessment.pre_budget_deployable_notional,
+        "pre_budget_deployable_expected_pnl": assessment.pre_budget_deployable_expected_pnl,
+        "preview_binding_limit_scope": assessment.assessment_context_json.get("preview_binding_limit_scope"),
+        "preview_binding_limit_key": assessment.assessment_context_json.get("preview_binding_limit_key"),
+        "requested_size": assessment.assessment_context_json.get("requested_size"),
+        "requested_notional": assessment.assessment_context_json.get("requested_notional"),
+        "rerank_position": assessment.rerank_position,
+        "rerank_reason_codes": assessment.rerank_reason_codes,
         "recommended_size": assessment.recommended_size,
         "allocation_status": assessment.allocation_status,
         "budget_impact": assessment.budget_impact,
+        "capital_policy_id": assessment.capital_policy_id,
+        "capital_policy_version": assessment.capital_policy_version,
+        "capital_scaling_reason_codes": assessment.capital_scaling_reason_codes,
+        "regime_bucket": assessment.regime_bucket,
         "allocation_decision_id": allocation_decision_id,
         "ranking_score": assessment.ranking_score,
         "execution_prior_key": assessment.execution_prior_key,
@@ -858,65 +1448,69 @@ def _derive_market_opportunities_from_report(report: dict[str, Any] | None) -> p
         accepting_orders = _normalize_bool(item.get("accepting_orders"))
         if market_price is None or fair_value is None or not token_id:
             rows.append(
-                {
-                    "market_id": market_id,
-                    "question": item.get("question"),
-                    "location_name": item.get("location_name"),
-                    "station_id": item.get("station_id"),
-                    "market_close_time": item.get("close_time"),
-                    "accepting_orders": accepting_orders,
-                    "best_side": None,
-                    "best_outcome": outcome,
-                    "best_decision": "NO_TRADE",
-                    "market_price": market_price,
-                    "fair_value": None,
-                    "edge_bps": None,
-                    "model_fair_value": None,
-                    "execution_adjusted_fair_value": None,
-                    "edge_bps_model": None,
-                    "edge_bps_executable": None,
-                    "fees_bps": None,
-                    "slippage_bps": None,
-                    "fill_probability": None,
-                    "depth_proxy": None,
-                    "calibration_health_status": _ensure_text((best_signal or {}).get("calibration_health_status")) or "lookup_missing",
-                    "sample_count": int(_coerce_float((best_signal or {}).get("sample_count")) or 0),
-                    "uncertainty_multiplier": 0.0,
-                    "uncertainty_penalty_bps": 0,
-                    "ranking_penalty_reasons": (best_signal or {}).get("calibration_reason_codes")
-                    if isinstance((best_signal or {}).get("calibration_reason_codes"), list)
-                    else [],
-                    "mapping_confidence": _coerce_float((best_signal or {}).get("mapping_confidence")) or 1.0,
-                    "source_freshness_status": _ensure_text((best_signal or {}).get("source_freshness_status")) or "missing",
-                    "price_staleness_ms": int(_coerce_float((best_signal or {}).get("price_staleness_ms")) or 0),
-                    "market_quality_status": _ensure_text((best_signal or {}).get("market_quality_status")) or "review_required",
-                    "liquidity_proxy": 25.0 if not accepting_orders else 55.0,
-                    "liquidity_penalty_bps": None,
-                    "confidence_score": 85.0 if agent_review_status == "passed" else 60.0 if agent_review_status == "review_required" else 35.0 if agent_review_status == "agent_failure" else 50.0,
-                    "confidence_proxy": 85.0 if agent_review_status == "passed" else 60.0 if agent_review_status == "review_required" else 35.0 if agent_review_status == "agent_failure" else 50.0,
-                    "ops_readiness_score": 0.0,
-                    "expected_value_score": 0.0,
-                    "expected_pnl_score": 0.0,
-                    "expected_dollar_pnl": 0.0,
-                    "capture_probability": 0.0,
-                    "risk_penalty": 0.0,
-                    "capital_efficiency": 0.0,
-                    "feedback_penalty": 0.0,
-                    "feedback_status": "heuristic_only",
-                    "cohort_prior_version": None,
-                    "ranking_score": 0.0,
-                    "execution_prior_key": None,
-                    "why_ranked_json": {},
-                    "agent_review_status": agent_review_status,
-                    "live_prereq_status": live_prereq_status,
-                    "opportunity_bucket": "negative_edge",
-                    "opportunity_score": 0.0,
-                    "actionability_status": "review_required" if agent_review_status != "passed" else "no_trade",
-                    "latest_run_source": (report.get("forecast_service") or {}).get("source_used"),
-                    "latest_forecast_target_time": None,
-                    "threshold_bps": int(_coerce_float((best_signal or {}).get("threshold_bps")) or 0),
-                    "signal_created_at": report.get("timestamp"),
-                }
+                _apply_p8_overlay_defaults(
+                    {
+                        "market_id": market_id,
+                        "question": item.get("question"),
+                        "location_name": item.get("location_name"),
+                        "station_id": item.get("station_id"),
+                        "market_close_time": item.get("close_time"),
+                        "accepting_orders": accepting_orders,
+                        "best_side": None,
+                        "best_outcome": outcome,
+                        "best_decision": "NO_TRADE",
+                        "market_price": market_price,
+                        "fair_value": None,
+                        "edge_bps": None,
+                        "model_fair_value": None,
+                        "execution_adjusted_fair_value": None,
+                        "edge_bps_model": None,
+                        "edge_bps_executable": None,
+                        "fees_bps": None,
+                        "slippage_bps": None,
+                        "fill_probability": None,
+                        "depth_proxy": None,
+                        "calibration_freshness_status": _ensure_text((best_signal or {}).get("calibration_freshness_status")) or None,
+                        "calibration_health_status": _ensure_text((best_signal or {}).get("calibration_health_status")) or None,
+                        "threshold_probability_quality": _ensure_text((best_signal or {}).get("threshold_probability_quality")) or None,
+                        "sample_count": int(_coerce_float((best_signal or {}).get("sample_count")) or 0) if (best_signal or {}).get("sample_count") is not None else None,
+                        "uncertainty_multiplier": 0.0,
+                        "uncertainty_penalty_bps": 0,
+                        "ranking_penalty_reasons": (best_signal or {}).get("calibration_reason_codes")
+                        if isinstance((best_signal or {}).get("calibration_reason_codes"), list)
+                        else [],
+                        "mapping_confidence": _coerce_float((best_signal or {}).get("mapping_confidence")) or 1.0,
+                        "source_freshness_status": _ensure_text((best_signal or {}).get("source_freshness_status")) or "missing",
+                        "price_staleness_ms": int(_coerce_float((best_signal or {}).get("price_staleness_ms")) or 0),
+                        "market_quality_status": _ensure_text((best_signal or {}).get("market_quality_status")) or "review_required",
+                        "liquidity_proxy": 25.0 if not accepting_orders else 55.0,
+                        "liquidity_penalty_bps": None,
+                        "confidence_score": 85.0 if agent_review_status == "passed" else 60.0 if agent_review_status == "review_required" else 35.0 if agent_review_status == "agent_failure" else 50.0,
+                        "confidence_proxy": 85.0 if agent_review_status == "passed" else 60.0 if agent_review_status == "review_required" else 35.0 if agent_review_status == "agent_failure" else 50.0,
+                        "ops_readiness_score": 0.0,
+                        "expected_value_score": 0.0,
+                        "expected_pnl_score": 0.0,
+                        "expected_dollar_pnl": 0.0,
+                        "capture_probability": 0.0,
+                        "risk_penalty": 0.0,
+                        "capital_efficiency": 0.0,
+                        "feedback_penalty": 0.0,
+                        "feedback_status": "heuristic_only",
+                        "cohort_prior_version": None,
+                        "ranking_score": 0.0,
+                        "execution_prior_key": None,
+                        "why_ranked_json": {},
+                        "agent_review_status": agent_review_status,
+                        "live_prereq_status": live_prereq_status,
+                        "opportunity_bucket": "negative_edge",
+                        "opportunity_score": 0.0,
+                        "actionability_status": "review_required" if agent_review_status != "passed" else "no_trade",
+                        "latest_run_source": (report.get("forecast_service") or {}).get("source_used"),
+                        "latest_forecast_target_time": None,
+                        "threshold_bps": int(_coerce_float((best_signal or {}).get("threshold_bps")) or 0),
+                        "signal_created_at": report.get("timestamp"),
+                    }
+                )
             )
             continue
         confidence_score = 85.0 if agent_review_status == "passed" else 60.0 if agent_review_status == "review_required" else 35.0 if agent_review_status == "agent_failure" else 50.0
@@ -1100,44 +1694,9 @@ def load_predicted_vs_realized_data() -> dict[str, Any]:
 
 
 def load_execution_console_data() -> dict[str, pd.DataFrame]:
-    snapshot = load_ui_lite_snapshot()
-    tickets = _sort_desc(snapshot["tables"]["execution_ticket_summary"], "latest_transition_at", "last_fill_at")
-    runs = _sort_desc(snapshot["tables"]["execution_run_summary"], "latest_event_at")
-    exceptions = _sort_desc(snapshot["tables"]["execution_exception_summary"], "latest_transition_at", "latest_event_at")
-    live_prereq = _sort_desc(snapshot["tables"]["live_prereq_execution_summary"], "latest_submit_created_at", "latest_sign_attempt_created_at")
-    journal = _sort_desc(snapshot["tables"]["paper_run_journal_summary"], "latest_event_at")
-    daily_ops = _sort_desc(snapshot["tables"]["daily_ops_summary"], "latest_event_at")
-    predicted_vs_realized = annotate_frame_with_source_truth(
-        _sort_desc(snapshot["tables"]["predicted_vs_realized_summary"], "latest_fill_at", "latest_resolution_at"),
-        source_origin="ui_lite",
-        derived=True,
-        freshness_column="forecast_freshness",
-    )
-    watch_only_vs_executed = annotate_frame_with_source_truth(
-        _sort_desc(snapshot["tables"]["watch_only_vs_executed_summary"], "fill_capture_ratio", "avg_executable_edge_bps"),
-        source_origin="ui_lite",
-        derived=True,
-    )
-    execution_science = annotate_frame_with_source_truth(
-        _sort_desc(snapshot["tables"]["execution_science_summary"], "resolution_capture_ratio", "fill_capture_ratio", "submission_capture_ratio"),
-        source_origin="ui_lite",
-        derived=True,
-    )
-    market_research = _sort_desc(snapshot["tables"]["market_research_summary"], "resolution_capture_ratio", "avg_post_trade_error")
-    calibration_health = _sort_desc(snapshot["tables"]["calibration_health_summary"], "sample_count", "mean_abs_residual")
-    return {
-        "tickets": tickets,
-        "runs": runs,
-        "exceptions": exceptions,
-        "live_prereq": live_prereq,
-        "journal": journal,
-        "daily_ops": daily_ops,
-        "predicted_vs_realized": predicted_vs_realized,
-        "watch_only_vs_executed": watch_only_vs_executed,
-        "execution_science": execution_science,
-        "market_research": market_research,
-        "calibration_health": calibration_health,
-    }
+    from ui.loaders.execution_loader import load_execution_console_data as load_execution_console_data_impl
+
+    return load_execution_console_data_impl()
 
 
 def load_wallet_readiness_data() -> pd.DataFrame:
@@ -1187,19 +1746,303 @@ def load_market_opportunity_data() -> dict[str, Any]:
     return {"source": "weather_smoke_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
 
 
+def _read_proposal_resolution_summary_result(db_path: Path) -> dict[str, Any]:
+    if duckdb is None or not db_path.exists():
+        return {"frame": _empty_df(), "error": None}
+    try:
+        con = duckdb.connect(str(db_path), read_only=True)
+    except Exception as exc:  # noqa: BLE001
+        return {"frame": _empty_df(), "error": str(exc)}
+    try:
+        frame = con.execute(
+            """
+            WITH latest_verification AS (
+                SELECT *
+                FROM (
+                    SELECT
+                        proposal_id,
+                        verification_id,
+                        expected_outcome,
+                        is_correct,
+                        confidence,
+                        evidence_package,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY proposal_id
+                            ORDER BY created_at DESC, verification_id DESC
+                        ) AS rn
+                    FROM resolution.settlement_verifications
+                )
+                WHERE rn = 1
+            ),
+            latest_redeem AS (
+                SELECT *
+                FROM (
+                    SELECT
+                        proposal_id,
+                        suggestion_id,
+                        decision,
+                        reason,
+                        human_review_required,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY proposal_id
+                            ORDER BY created_at DESC, suggestion_id DESC
+                        ) AS rn
+                    FROM resolution.redeem_readiness_suggestions
+                )
+                WHERE rn = 1
+            ),
+            latest_continuity AS (
+                SELECT *
+                FROM (
+                    SELECT
+                        check_id,
+                        status,
+                        from_block,
+                        to_block,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            ORDER BY created_at DESC, to_block DESC, check_id DESC
+                        ) AS rn
+                    FROM resolution.watcher_continuity_checks
+                )
+                WHERE rn = 1
+            ),
+            latest_invocation AS (
+                SELECT *
+                FROM (
+                    SELECT
+                        invocation_id,
+                        subject_id,
+                        status,
+                        ended_at,
+                        started_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY subject_id
+                            ORDER BY COALESCE(ended_at, started_at) DESC, invocation_id DESC
+                        ) AS rn
+                    FROM agent.invocations
+                    WHERE agent_type = 'resolution'
+                      AND subject_type = 'uma_proposal'
+                )
+                WHERE rn = 1
+            ),
+            latest_output AS (
+                SELECT *
+                FROM (
+                    SELECT
+                        invocation_id,
+                        verdict,
+                        confidence,
+                        summary,
+                        human_review_required,
+                        structured_output_json,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY invocation_id
+                            ORDER BY created_at DESC, output_id DESC
+                        ) AS rn
+                    FROM agent.outputs
+                )
+                WHERE rn = 1
+            ),
+            latest_agent_review AS (
+                SELECT *
+                FROM (
+                    SELECT
+                        invocation_id,
+                        review_payload_json,
+                        reviewed_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY invocation_id
+                            ORDER BY reviewed_at DESC, review_id DESC
+                        ) AS rn
+                    FROM agent.reviews
+                )
+                WHERE rn = 1
+            ),
+            latest_operator_review AS (
+                SELECT *
+                FROM (
+                    SELECT
+                        proposal_id,
+                        review_decision_id,
+                        invocation_id,
+                        suggestion_id,
+                        decision_status,
+                        operator_action,
+                        reason,
+                        actor,
+                        created_at,
+                        updated_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY proposal_id
+                            ORDER BY updated_at DESC, review_decision_id DESC
+                        ) AS rn
+                    FROM resolution.operator_review_decisions
+                )
+                WHERE rn = 1
+            )
+            SELECT
+                p.proposal_id,
+                p.market_id,
+                p.condition_id,
+                p.status AS proposal_status,
+                p.proposed_outcome,
+                v.verification_id,
+                v.expected_outcome,
+                v.is_correct,
+                v.confidence AS verification_confidence,
+                json_extract_string(try_cast(v.evidence_package AS JSON), '$.evidence_package_id') AS evidence_package_id,
+                redeem.suggestion_id,
+                redeem.decision AS redeem_decision,
+                redeem.reason AS redeem_reason,
+                redeem.human_review_required,
+                continuity.check_id AS latest_continuity_check_id,
+                continuity.status AS latest_continuity_status,
+                continuity.from_block AS latest_continuity_from_block,
+                continuity.to_block AS latest_continuity_to_block,
+                inv.invocation_id AS latest_agent_invocation_id,
+                inv.status AS latest_agent_invocation_status,
+                out.verdict AS latest_agent_verdict,
+                out.confidence AS latest_agent_confidence,
+                out.summary AS latest_agent_summary,
+                json_extract_string(try_cast(rev.review_payload_json AS JSON), '$.recommended_operator_action') AS latest_recommended_operator_action,
+                TRY_CAST(json_extract_string(try_cast(rev.review_payload_json AS JSON), '$.settlement_risk_score') AS DOUBLE) AS latest_settlement_risk_score,
+                operator_review.decision_status AS latest_operator_review_status,
+                operator_review.operator_action AS latest_operator_action,
+                operator_review.reason AS latest_operator_review_reason,
+                operator_review.actor AS latest_operator_review_actor,
+                operator_review.updated_at AS latest_operator_review_updated_at,
+                CASE
+                    WHEN operator_review.decision_status = 'accepted' AND operator_review.operator_action = 'ready_for_redeem_review' THEN 'ready_for_redeem_review'
+                    WHEN operator_review.decision_status = 'accepted' AND operator_review.operator_action IN ('hold_redeem', 'manual_review', 'consider_dispute') THEN 'blocked_by_operator_review'
+                    WHEN operator_review.decision_status = 'deferred' THEN 'pending_operator_review'
+                    WHEN operator_review.decision_status = 'rejected' THEN redeem.decision
+                    WHEN json_extract_string(try_cast(rev.review_payload_json AS JSON), '$.recommended_operator_action') IN ('hold_redeem', 'manual_review', 'consider_dispute') THEN 'pending_operator_review'
+                    ELSE redeem.decision
+                END AS effective_redeem_status
+            FROM resolution.uma_proposals p
+            LEFT JOIN latest_verification v ON v.proposal_id = p.proposal_id
+            LEFT JOIN latest_redeem redeem ON redeem.proposal_id = p.proposal_id
+            LEFT JOIN latest_continuity continuity ON TRUE
+            LEFT JOIN latest_invocation inv ON inv.subject_id = p.proposal_id
+            LEFT JOIN latest_output out ON out.invocation_id = inv.invocation_id
+            LEFT JOIN latest_agent_review rev ON rev.invocation_id = inv.invocation_id
+            LEFT JOIN latest_operator_review operator_review ON operator_review.proposal_id = p.proposal_id
+            ORDER BY p.proposal_block_number DESC, p.proposal_id DESC
+            """
+        ).df()
+        return {"frame": frame, "error": None}
+    except Exception as exc:  # noqa: BLE001
+        return {"frame": _empty_df(), "error": str(exc)}
+    finally:
+        con.close()
+
+
+def load_resolution_review_data() -> dict[str, Any]:
+    snapshot = load_ui_lite_snapshot()
+    frame = _sort_desc(snapshot["tables"]["proposal_resolution_summary"], "latest_operator_review_updated_at", "latest_agent_invocation_id")
+    if not frame.empty:
+        return {"source": "ui_lite", "frame": frame, "read_error": snapshot.get("read_error")}
+    runtime_result = _read_proposal_resolution_summary_result(_resolve_canonical_db_path())
+    runtime_frame = _sort_desc(runtime_result["frame"], "latest_operator_review_updated_at", "latest_agent_invocation_id")
+    return {"source": "runtime_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
+
+
+def write_resolution_operator_review_decision(
+    *,
+    proposal_id: str,
+    invocation_id: str,
+    suggestion_id: str,
+    decision_status: str,
+    operator_action: str,
+    actor: str,
+    reason: str | None = None,
+) -> ResolutionOperatorReviewDecisionRecord:
+    status = ResolutionOperatorDecisionStatus(decision_status)
+    timestamp = _iso_now()
+    record = ResolutionOperatorReviewDecisionRecord(
+        review_decision_id=stable_object_id(
+            "resolution_operator_review",
+            {
+                "proposal_id": proposal_id,
+                "invocation_id": invocation_id,
+                "suggestion_id": suggestion_id,
+                "decision_status": status.value,
+                "operator_action": operator_action,
+                "actor": actor,
+                "ts": timestamp.isoformat(),
+            },
+        ),
+        proposal_id=proposal_id,
+        invocation_id=invocation_id,
+        suggestion_id=suggestion_id,
+        decision_status=status,
+        operator_action=operator_action,
+        reason=reason,
+        actor=actor,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    if duckdb is None:
+        raise RuntimeError("duckdb is not installed")
+    db_path = _resolve_canonical_db_path()
+    con = duckdb.connect(str(db_path), read_only=False)
+    try:
+        con.execute(
+            """
+            INSERT INTO resolution.operator_review_decisions (
+                review_decision_id,
+                proposal_id,
+                invocation_id,
+                suggestion_id,
+                decision_status,
+                operator_action,
+                reason,
+                actor,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                record.review_decision_id,
+                record.proposal_id,
+                record.invocation_id,
+                record.suggestion_id,
+                record.decision_status.value,
+                record.operator_action,
+                record.reason,
+                record.actor,
+                _sql_timestamp(record.created_at),
+                _sql_timestamp(record.updated_at),
+            ],
+        )
+    finally:
+        con.close()
+    return record
+
+
 def load_agent_review_data() -> dict[str, Any]:
     snapshot = load_ui_lite_snapshot()
     frame = _sort_desc(snapshot["tables"]["agent_review_summary"], "updated_at")
+    if not frame.empty and "agent_type" in frame.columns:
+        frame = frame[frame["agent_type"] == "resolution"]
     if not frame.empty:
         return {"source": "ui_lite", "frame": frame, "read_error": snapshot.get("read_error")}
 
     runtime_result = _read_agent_review_from_runtime_result(_resolve_canonical_db_path())
     runtime_frame = _sort_desc(runtime_result["frame"], "updated_at")
+    if not runtime_frame.empty and "agent_type" in runtime_frame.columns:
+        runtime_frame = runtime_frame[runtime_frame["agent_type"] == "resolution"]
     if not runtime_frame.empty:
         return {"source": "runtime_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
 
     smoke_runtime_result = _read_agent_review_from_runtime_result(_resolve_real_weather_chain_db_path())
     smoke_runtime_frame = _sort_desc(smoke_runtime_result["frame"], "updated_at")
+    if not smoke_runtime_frame.empty and "agent_type" in smoke_runtime_frame.columns:
+        smoke_runtime_frame = smoke_runtime_frame[smoke_runtime_frame["agent_type"] == "resolution"]
     if not smoke_runtime_frame.empty:
         return {
             "source": "weather_smoke_db",
@@ -1216,162 +2059,9 @@ def load_agent_review_data() -> dict[str, Any]:
 
 
 def load_market_chain_analysis_data() -> dict[str, Any]:
-    market_payload = load_market_watch_data()
-    opportunity_payload = load_market_opportunity_data()
-    predicted_vs_realized_payload = load_predicted_vs_realized_data()
-    execution_payload = load_execution_console_data()
-    report = market_payload["weather_smoke_report"] or {}
-    discovery = report.get("market_discovery") or {}
-    selected_markets = discovery.get("selected_markets") or []
-    specs_by_market = {
-        item.get("market_id"): item for item in (report.get("rule_parse") or {}).get("selected_specs") or []
-    }
-    forecasts_by_market = {
-        item.get("market_id"): item for item in (report.get("forecast_service") or {}).get("markets") or []
-    }
-    pricing_by_market = {
-        item.get("market_id"): item for item in (report.get("pricing_engine") or {}).get("markets") or []
-    }
-    signals_by_market = {
-        item.get("market_id"): item for item in (report.get("opportunity_discovery") or {}).get("markets") or []
-    }
-    detail_rows: list[dict[str, Any]] = []
-    for market in selected_markets:
-        market_id = market.get("market_id")
-        detail_rows.append(
-            {
-                **market,
-                "spec": specs_by_market.get(market_id) or {},
-                "forecast": forecasts_by_market.get(market_id) or {},
-                "pricing": pricing_by_market.get(market_id) or {},
-                "signals": signals_by_market.get(market_id) or {},
-            }
-        )
-    if not detail_rows:
-        runtime_rows = _read_weather_market_rows_from_runtime(_resolve_real_weather_chain_db_path())
-        if not runtime_rows.empty:
-            detail_rows = [
-                {
-                    **row.to_dict(),
-                    "spec": {
-                        "location_name": row.get("location_name"),
-                        "station_id": row.get("station_id"),
-                        "authoritative_source": row.get("authoritative_source"),
-                        "metric": row.get("metric"),
-                        "bucket_min_value": row.get("bucket_min_value"),
-                        "bucket_max_value": row.get("bucket_max_value"),
-                        "observation_window_local": row.get("observation_window_local"),
-                    },
-                    "forecast": {},
-                    "pricing": {},
-                    "signals": {},
-                    "forecast_status": "not_started",
-                    "forecast_summary": "forecast stage has not completed yet",
-                }
-                for _, row in runtime_rows.iterrows()
-            ]
-    details_by_market = {str(item.get("market_id")): item for item in detail_rows if item.get("market_id") is not None}
-    opportunities = opportunity_payload["frame"]
-    predicted_vs_realized = predicted_vs_realized_payload["frame"]
-    watch_only_vs_executed = execution_payload["watch_only_vs_executed"]
-    market_research = execution_payload["market_research"]
-    execution_summary_by_market: dict[str, dict[str, Any]] = {}
-    if not predicted_vs_realized.empty and "market_id" in predicted_vs_realized.columns:
-        for market_id, frame in predicted_vs_realized.groupby("market_id", dropna=False):
-            sorted_frame = _sort_desc(frame, "latest_fill_at", "latest_resolution_at")
-            latest = sorted_frame.iloc[0].to_dict() if not sorted_frame.empty else {}
-            execution_summary_by_market[str(market_id)] = {
-                "has_executed_evidence": not sorted_frame.empty,
-                "latest_ticket_id": latest.get("ticket_id"),
-                "latest_order_id": latest.get("order_id"),
-                "predicted_edge_bps": latest.get("predicted_edge_bps"),
-                "expected_fill_price": latest.get("expected_fill_price"),
-                "realized_fill_price": latest.get("realized_fill_price"),
-                "realized_pnl": latest.get("realized_pnl"),
-                "resolution_value": latest.get("resolution_value"),
-                "post_trade_error": latest.get("post_trade_error"),
-                "source_disagreement": latest.get("source_disagreement"),
-                "evaluation_status": latest.get("evaluation_status"),
-                "execution_lifecycle_stage": latest.get("execution_lifecycle_stage"),
-                "fill_ratio": latest.get("fill_ratio"),
-                "adverse_fill_slippage_bps": latest.get("adverse_fill_slippage_bps"),
-                "resolution_lag_hours": latest.get("resolution_lag_hours"),
-                "miss_reason_bucket": latest.get("miss_reason_bucket"),
-                "distortion_reason_codes_json": latest.get("distortion_reason_codes_json"),
-                "source_badge": latest.get("source_badge"),
-                "source_truth_status": latest.get("source_truth_status"),
-                "is_degraded_source": latest.get("is_degraded_source"),
-                "latest_fill_at": latest.get("latest_fill_at"),
-                "latest_resolution_at": latest.get("latest_resolution_at"),
-            }
-    watch_only_vs_executed_by_market: dict[str, dict[str, Any]] = {}
-    if not watch_only_vs_executed.empty and "market_id" in watch_only_vs_executed.columns:
-        for _, row in watch_only_vs_executed.iterrows():
-            watch_only_vs_executed_by_market[str(row.get("market_id"))] = row.to_dict()
-    research_by_market: dict[str, dict[str, Any]] = {}
-    if not market_research.empty and "market_id" in market_research.columns:
-        for _, row in market_research.iterrows():
-            research_by_market[str(row.get("market_id"))] = row.to_dict()
-    rows: list[dict[str, Any]] = []
-    if not opportunities.empty:
-        for _, row in opportunities.iterrows():
-            market_id = str(row.get("market_id"))
-            details = details_by_market.get(market_id, {})
-            payload = row.to_dict()
-            payload.update(
-                {
-                    "spec": details.get("spec") or {},
-                    "forecast": details.get("forecast") or {},
-                    "pricing": details.get("pricing") or {},
-                    "signals": details.get("signals") or {},
-                    "forecast_status": details.get("forecast_status"),
-                    "forecast_summary": details.get("forecast_summary"),
-                    "rule2spec_status": details.get("rule2spec_status"),
-                    "rule2spec_verdict": details.get("rule2spec_verdict"),
-                    "rule2spec_summary": details.get("rule2spec_summary"),
-                    "data_qa_status": details.get("data_qa_status"),
-                    "data_qa_verdict": details.get("data_qa_verdict"),
-                    "data_qa_summary": details.get("data_qa_summary"),
-                    "resolution_status": details.get("resolution_status"),
-                    "resolution_verdict": details.get("resolution_verdict"),
-                    "resolution_summary": details.get("resolution_summary"),
-                    "executed_evidence": execution_summary_by_market.get(market_id) or {"has_executed_evidence": False},
-                    "watch_only_vs_executed": watch_only_vs_executed_by_market.get(market_id) or {},
-                    "market_research": research_by_market.get(market_id) or {},
-                }
-            )
-            rows.append(payload)
-    else:
-        fallback_badge = build_opportunity_row_source_badge(
-            source_origin=opportunity_payload["source"],
-            source_freshness_status="missing",
-            derived=False,
-        )
-        rows = [
-            {
-                **item,
-                "source_badge": item.get("source_badge") or fallback_badge.source_badge,
-                "source_truth_status": item.get("source_truth_status") or fallback_badge.source_truth_status,
-                "is_degraded_source": item.get("is_degraded_source")
-                if item.get("is_degraded_source") is not None
-                else fallback_badge.is_degraded_source,
-                "primary_score_label": item.get("primary_score_label") or "ranking_score",
-                "executed_evidence": execution_summary_by_market.get(str(item.get("market_id"))) or {"has_executed_evidence": False},
-                "watch_only_vs_executed": watch_only_vs_executed_by_market.get(str(item.get("market_id"))) or {},
-                "market_research": research_by_market.get(str(item.get("market_id"))) or {},
-            }
-            for item in detail_rows
-        ]
-    return {
-        "market_watch": market_payload["market_watch"],
-        "market_opportunities": opportunities,
-        "market_opportunity_source": opportunity_payload["source"],
-        "predicted_vs_realized": predicted_vs_realized,
-        "watch_only_vs_executed": watch_only_vs_executed,
-        "market_research": market_research,
-        "weather_smoke_report": report,
-        "market_rows": rows,
-    }
+    from ui.loaders.markets_loader import load_market_chain_analysis_data as load_market_chain_analysis_data_impl
+
+    return load_market_chain_analysis_data_impl()
 
 
 def load_agent_runtime_status() -> dict[str, Any]:
@@ -1388,14 +2078,14 @@ def load_agent_runtime_status() -> dict[str, Any]:
         "configured": model != "unconfigured",
         "agents": [
             {
-                "agent_name": "Rule2Spec Agent",
-                "file": str(ROOT / "agents" / "weather" / "rule2spec_agent.py"),
-                "role": "规则文本 -> WeatherMarketSpec",
+                "agent_name": "Rule2Spec Validation",
+                "file": str(ROOT / "domains" / "weather" / "spec" / "rule2spec_validation.py"),
+                "role": "deterministic spec/station validation",
             },
             {
-                "agent_name": "DataQA Agent",
-                "file": str(ROOT / "agents" / "weather" / "data_qa_agent.py"),
-                "role": "预测/定价/回放质量检查",
+                "agent_name": "Replay Validation",
+                "file": str(ROOT / "domains" / "weather" / "forecast" / "replay_validation.py"),
+                "role": "deterministic replay/provenance validation",
             },
             {
                 "agent_name": "Resolution Agent",
@@ -1416,6 +2106,23 @@ def load_system_runtime_status() -> dict[str, Any]:
     opportunities = opportunity_payload["frame"]
     agent_payload = load_agent_review_data()
     agent_data = agent_payload["frame"]
+    resolution_payload = load_resolution_review_data()
+    resolution_data = resolution_payload["frame"]
+    calibration_health = _sort_desc(snapshot["tables"]["calibration_health_summary"], "materialized_at", "sample_count")
+    latest_calibration = calibration_health.iloc[0].to_dict() if not calibration_health.empty else {}
+    calibration_station_rollup = (
+        calibration_health.groupby("station_id", dropna=False)[
+            [
+                "impacted_market_count",
+                "hard_gate_market_count",
+                "review_required_market_count",
+                "research_only_market_count",
+            ]
+        ].max()
+        if not calibration_health.empty
+        and {"station_id", "impacted_market_count", "hard_gate_market_count", "review_required_market_count", "research_only_market_count"}.issubset(calibration_health.columns)
+        else pd.DataFrame()
+    )
     return {
         "ui_lite_db_path": snapshot["db_path"],
         "ui_lite_exists": snapshot["exists"],
@@ -1446,7 +2153,19 @@ def load_system_runtime_status() -> dict[str, Any]:
         "actionable_market_count": int((opportunities["actionability_status"] == "actionable").sum()) if "actionability_status" in opportunities.columns else 0,
         "agent_row_count": int(len(agent_data.index)),
         "agent_read_error": agent_payload.get("read_error"),
+        "resolution_review_read_error": resolution_payload.get("read_error"),
         "opportunity_read_error": opportunity_payload.get("read_error"),
+        "pending_operator_review_count": int((resolution_data["effective_redeem_status"] == "pending_operator_review").sum()) if "effective_redeem_status" in resolution_data.columns else 0,
+        "blocked_by_operator_review_count": int((resolution_data["effective_redeem_status"] == "blocked_by_operator_review").sum()) if "effective_redeem_status" in resolution_data.columns else 0,
+        "ready_for_redeem_review_count": int((resolution_data["effective_redeem_status"] == "ready_for_redeem_review").sum()) if "effective_redeem_status" in resolution_data.columns else 0,
+        "latest_calibration_materialized_at": latest_calibration.get("materialized_at"),
+        "latest_calibration_window_end": latest_calibration.get("window_end"),
+        "latest_calibration_freshness_status": latest_calibration.get("calibration_freshness_status"),
+        "latest_calibration_profile_age_hours": latest_calibration.get("profile_age_hours"),
+        "calibration_impacted_market_count": int(calibration_station_rollup["impacted_market_count"].sum()) if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("impacted_market_count")) or 0),
+        "calibration_hard_gate_market_count": int(calibration_station_rollup["hard_gate_market_count"].sum()) if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("hard_gate_market_count")) or 0),
+        "calibration_review_required_market_count": int(calibration_station_rollup["review_required_market_count"].sum()) if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("review_required_market_count")) or 0),
+        "calibration_research_only_market_count": int(calibration_station_rollup["research_only_market_count"].sum()) if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("research_only_market_count")) or 0),
     }
 
 
@@ -1609,24 +2328,24 @@ def load_operator_surface_status() -> dict[str, dict[str, Any]]:
     elif agent_frame.empty:
         agent_surface = _surface_status(
             "no_data",
-            "Agent 工作暂无数据",
-            "当前没有可见的 agent work rows。",
+            "Resolution Review 暂无数据",
+            "当前没有可见的 resolution review rows。",
             agent_source,
             None,
         )
     elif agent_source in {"smoke_report", "weather_smoke_db"}:
         agent_surface = _surface_status(
             "degraded_source",
-            "Agent 工作来自降级数据源",
-            "当前 agent work 通过 smoke/runtime fallback 暴露，尚未进入 UI lite 主读面。",
+            "Resolution Review 来自降级数据源",
+            "当前 resolution review 通过 runtime fallback 暴露，尚未进入 UI lite 主读面。",
             agent_source,
             agent_frame.iloc[0].get("updated_at") if not agent_frame.empty else None,
         )
     else:
         agent_surface = _surface_status(
             "ok",
-            "Agent 工作正常",
-            "agent review rows 可正常读取。",
+            "Resolution Review 正常",
+            "resolution review rows 可正常读取。",
             agent_source,
             agent_frame.iloc[0].get("updated_at") if not agent_frame.empty else None,
         )
@@ -1675,148 +2394,12 @@ def load_operator_surface_status() -> dict[str, dict[str, Any]]:
 
 
 def build_ops_console_overview() -> dict[str, Any]:
-    readiness = load_readiness_summary()
-    evidence = load_readiness_evidence_bundle()
-    execution = load_execution_console_data()
-    wallets = load_wallet_readiness_data()
-    market_watch_data = load_market_watch_data()
-    market_analysis = load_market_chain_analysis_data()
-    agent_data = load_agent_review_data()
-    predicted_vs_realized = load_predicted_vs_realized_data()["frame"]
-    watch_only_vs_executed = execution["watch_only_vs_executed"]
-    execution_science = execution["execution_science"]
-    calibration_health = execution["calibration_health"]
+    from ui.loaders.home_loader import build_ops_console_overview as build_ops_console_overview_impl
 
-    live_execution = execution["live_prereq"]
-    exceptions = execution["exceptions"]
-    weather_report = market_watch_data["weather_smoke_report"] or {}
-    opportunities = market_analysis["market_opportunities"]
-    wallet_attention = (
-        wallets[wallets["attention_required"] == True]  # noqa: E712
-        if "attention_required" in wallets.columns
-        else wallets.iloc[0:0]
-    )
-    actionable = (
-        opportunities[opportunities["actionability_status"] == "actionable"]
-        if "actionability_status" in opportunities.columns
-        else opportunities.iloc[0:0]
-    )
-    top_opportunities = actionable.head(5) if not actionable.empty else opportunities.head(5)
-    action_queue = opportunities.iloc[0:0]
-    if not opportunities.empty and "allocation_status" in opportunities.columns:
-        action_queue = opportunities[
-            opportunities["allocation_status"].isin(["approved", "resized"])
-        ].head(5)
-    resolved_rows = (
-        predicted_vs_realized[predicted_vs_realized["evaluation_status"] == "resolved"]
-        if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty)
-        else predicted_vs_realized.iloc[0:0]
-    )
-    uncaptured_high_edge = watch_only_vs_executed.iloc[0:0]
-    if not watch_only_vs_executed.empty:
-        uncaptured_high_edge = watch_only_vs_executed[
-            (pd.to_numeric(watch_only_vs_executed["avg_executable_edge_bps"], errors="coerce").fillna(0) > 0)
-            & (pd.to_numeric(watch_only_vs_executed["submission_capture_ratio"], errors="coerce").fillna(0) <= 0)
-        ]
-    total_opportunities = float(pd.to_numeric(watch_only_vs_executed["opportunity_count"], errors="coerce").fillna(0).sum()) if ("opportunity_count" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
-    total_submitted = float(pd.to_numeric(watch_only_vs_executed["submitted_ticket_count"], errors="coerce").fillna(0).sum()) if ("submitted_ticket_count" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
-    total_filled = float(pd.to_numeric(watch_only_vs_executed["filled_ticket_count"], errors="coerce").fillna(0).sum()) if ("filled_ticket_count" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
-    total_resolved = float(pd.to_numeric(watch_only_vs_executed["resolved_ticket_count"], errors="coerce").fillna(0).sum()) if ("resolved_ticket_count" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
-    submission_capture_ratio = (total_submitted / total_opportunities) if total_opportunities > 0 else 0.0
-    fill_capture_ratio = (total_filled / total_opportunities) if total_opportunities > 0 else 0.0
-    resolution_capture_ratio = (total_resolved / total_opportunities) if total_opportunities > 0 else 0.0
-    degraded_inputs: list[str] = []
-    if evidence.get("stale_dependencies"):
-        degraded_inputs.extend([f"stale:{item}" for item in evidence.get("stale_dependencies") or []])
-    if market_analysis.get("market_opportunity_source") in {"smoke_report", "weather_smoke_db"}:
-        degraded_inputs.append(f"market_source:{market_analysis.get('market_opportunity_source')}")
-    if evidence.get("capability_manifest_status") not in {None, "valid"}:
-        degraded_inputs.append(f"manifest:{evidence.get('capability_manifest_status') or 'missing'}")
-    if readiness.get("failed_gate_names"):
-        largest_blocker = " / ".join(readiness.get("failed_gate_names") or [])
-        blocker_source = "readiness"
-    elif evidence.get("blockers"):
-        largest_blocker = " / ".join(str(item) for item in evidence.get("blockers") or [])
-        blocker_source = "evidence"
-    elif not wallet_attention.empty and "wallet_readiness_status" in wallet_attention.columns:
-        largest_blocker = _ensure_text(wallet_attention.iloc[0].get("wallet_readiness_status")) or "wallet blocker"
-        blocker_source = "wallet"
-    elif not exceptions.empty:
-        largest_blocker = (
-            _ensure_text(exceptions.iloc[0].get("live_prereq_execution_status"))
-            or _ensure_text(exceptions.iloc[0].get("execution_result"))
-            or "execution attention required"
-        )
-        blocker_source = "execution"
-    else:
-        largest_blocker = "No material blocker"
-        blocker_source = "clear"
-
-    return {
-        "readiness": readiness,
-        "execution": execution,
-        "wallets": wallets,
-        "market_data": market_analysis,
-        "market_watch_data": market_watch_data,
-        "agent_data": agent_data,
-        "readiness_evidence": evidence,
-        "predicted_vs_realized": predicted_vs_realized,
-        "watch_only_vs_executed_summary": watch_only_vs_executed,
-        "execution_science_summary": execution_science,
-        "calibration_health_summary": calibration_health,
-        "uncaptured_high_edge_markets": uncaptured_high_edge,
-        "surface_status": load_operator_surface_status(),
-        "boundary_sidebar_summary": load_boundary_sidebar_truth(),
-        "top_opportunities": top_opportunities,
-        "action_queue": action_queue,
-        "degraded_inputs": degraded_inputs,
-        "largest_blocker": {"summary": largest_blocker, "source": blocker_source},
-        "metrics": {
-            "go_decision": readiness.get("go_decision") or "UNKNOWN",
-            "failed_gate_count": len(readiness.get("failed_gate_names") or []),
-            "wallet_ready_count": int((wallets["wallet_readiness_status"] == "ready").sum()) if "wallet_readiness_status" in wallets.columns else 0,
-            "wallet_total_count": int(len(wallets.index)),
-            "live_prereq_attention_count": int((live_execution["live_prereq_attention_required"] == True).sum()) if "live_prereq_attention_required" in live_execution.columns else 0,  # noqa: E712
-            "exception_count": int(len(exceptions.index)),
-            "weather_chain_status": weather_report.get("chain_status") or "unknown",
-            "weather_market_question": ((weather_report.get("market_discovery") or {}).get("question") or "未发现实时市场"),
-            "weather_market_count": int(len(opportunities.index)),
-            "actionable_market_count": int(len(actionable.index)),
-            "action_queue_count": int(len(action_queue.index)),
-            "top_ranking_score": float(top_opportunities.iloc[0]["ranking_score"]) if (not top_opportunities.empty and "ranking_score" in top_opportunities.columns) else 0.0,
-            "top_opportunity_score": float(top_opportunities.iloc[0]["ranking_score"]) if (not top_opportunities.empty and "ranking_score" in top_opportunities.columns) else 0.0,
-            "highest_edge_bps": float(pd.to_numeric(opportunities["edge_bps"], errors="coerce").abs().max()) if ("edge_bps" in opportunities.columns and not opportunities.empty) else 0.0,
-            "liquidity_ready_count": int(((pd.to_numeric(opportunities["liquidity_proxy"], errors="coerce").fillna(0) >= 60.0) & (opportunities["accepting_orders"] == True)).sum()) if ({"liquidity_proxy", "accepting_orders"} <= set(opportunities.columns)) else 0,  # noqa: E712
-            "weather_locations": sorted({str(value) for value in opportunities["location_name"].dropna().tolist()}) if "location_name" in opportunities.columns else [],
-            "agent_activity_count": int(len(agent_data["frame"].index)),
-            "agent_review_required_count": int((agent_data["frame"]["human_review_required"] == True).sum()) if ("human_review_required" in agent_data["frame"].columns and not agent_data["frame"].empty) else 0,  # noqa: E712
-            "predicted_vs_realized_count": int(len(predicted_vs_realized.index)),
-            "resolved_trade_count": int(len(resolved_rows.index)),
-            "pending_resolution_count": int((predicted_vs_realized["evaluation_status"] == "pending_resolution").sum()) if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0,
-            "avg_predicted_edge_bps": float(pd.to_numeric(predicted_vs_realized["predicted_edge_bps"], errors="coerce").dropna().mean()) if ("predicted_edge_bps" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0.0,
-            "avg_realized_pnl": float(pd.to_numeric(resolved_rows["realized_pnl"], errors="coerce").dropna().mean()) if ("realized_pnl" in resolved_rows.columns and not resolved_rows.empty) else 0.0,
-            "submission_capture_ratio": submission_capture_ratio,
-            "fill_capture_ratio": fill_capture_ratio,
-            "resolution_capture_ratio": resolution_capture_ratio,
-            "execution_capture_ratio": fill_capture_ratio,
-            "uncaptured_high_edge_count": int(len(uncaptured_high_edge.index)),
-            "primary_score_label": load_primary_score_descriptor().primary_score_label,
-        },
-        "wallet_attention": wallet_attention,
-    }
+    return build_ops_console_overview_impl()
 
 
 def load_home_decision_snapshot() -> dict[str, Any]:
-    overview = build_ops_console_overview()
-    agent_frame = overview["agent_data"]["frame"]
-    top_agent_row = agent_frame.iloc[0].to_dict() if not agent_frame.empty else {}
-    return {
-        **overview,
-        "recent_agent_summary": {
-            "agent_type": top_agent_row.get("agent_type"),
-            "verdict": top_agent_row.get("verdict"),
-            "summary": top_agent_row.get("summary"),
-            "updated_at": top_agent_row.get("updated_at"),
-        },
-        "predicted_vs_realized_snapshot": overview["predicted_vs_realized"].head(5),
-    }
+    from ui.loaders.home_loader import load_home_decision_snapshot as load_home_decision_snapshot_impl
+
+    return load_home_decision_snapshot_impl()

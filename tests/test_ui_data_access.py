@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import duckdb
+import pandas as pd
 import ui.data_access as data_access_module
 
 from ui.data_access import (
@@ -243,6 +244,58 @@ class UiDataAccessTest(unittest.TestCase):
         self.assertEqual(row["feedback_status"], "watch")
         self.assertEqual(row["cohort_prior_version"], "feedback_v1")
         self.assertEqual(row["feedback_penalty"], 0.18)
+
+    def test_load_system_runtime_status_reads_latest_calibration_materialization_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ui_lite.duckdb"
+            report_path = Path(tmpdir) / "readiness.json"
+            manifest_path = Path(tmpdir) / "manifest.json"
+            report_path.write_text(
+                json.dumps({"target": "p4_live_prerequisites", "go_decision": "GO", "decision_reason": "ok"}),
+                encoding="utf-8",
+            )
+            manifest_path.write_text(json.dumps({"manifest_status": "valid"}), encoding="utf-8")
+            con = duckdb.connect(str(db_path))
+            try:
+                con.execute("CREATE SCHEMA ui")
+                con.execute(
+                    """
+                    CREATE TABLE ui.calibration_health_summary(
+                        station_id TEXT, source TEXT, metric TEXT, forecast_horizon_bucket TEXT, season_bucket TEXT,
+                        regime_bucket TEXT, sample_count BIGINT, mean_abs_residual DOUBLE, p90_abs_residual DOUBLE,
+                        calibration_health_status TEXT, threshold_profile_present BOOLEAN, window_end TIMESTAMP,
+                        materialized_at TIMESTAMP, calibration_freshness_status TEXT, profile_age_hours DOUBLE,
+                        impacted_market_count BIGINT, hard_gate_market_count BIGINT, review_required_market_count BIGINT, research_only_market_count BIGINT
+                    )
+                    """
+                )
+                con.execute(
+                    "INSERT INTO ui.calibration_health_summary VALUES ('KNYC','openmeteo','temperature_max','0-1','spring','warm',12,1.1,2.0,'healthy',TRUE,'2026-03-18 02:00:00','2026-03-18 03:15:00','fresh',1.0,3,2,1,1)"
+                )
+                con.execute(
+                    "CREATE TABLE ui.market_opportunity_summary(market_id TEXT, question TEXT, location_name TEXT, market_close_time TIMESTAMP, accepting_orders BOOLEAN, best_side TEXT, ranking_score DOUBLE, actionability_status TEXT)"
+                )
+                con.execute("INSERT INTO ui.market_opportunity_summary VALUES ('m1','q','NYC','2026-03-18 12:00:00',TRUE,'BUY',0.5,'actionable')")
+                con.execute(
+                    "CREATE TABLE ui.agent_review_summary(agent_type TEXT, subject_type TEXT, subject_id TEXT, invocation_status TEXT, verdict TEXT, confidence DOUBLE, summary TEXT, human_review_required BOOLEAN, updated_at TIMESTAMP)"
+                )
+            finally:
+                con.close()
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(db_path),
+                    "ASTERION_READINESS_REPORT_JSON_PATH": str(report_path),
+                    "ASTERION_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH": str(manifest_path),
+                },
+                clear=False,
+            ):
+                status = load_system_runtime_status()
+
+        self.assertEqual(status["latest_calibration_freshness_status"], "fresh")
+        self.assertEqual(str(status["latest_calibration_materialized_at"]), "2026-03-18 03:15:00")
+        self.assertEqual(status["calibration_hard_gate_market_count"], 2)
 
     def test_load_agent_review_data_falls_back_to_smoke_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -612,8 +665,11 @@ class UiDataAccessTest(unittest.TestCase):
 
             self.assertEqual(len(payload["market_rows"]), 1)
             self.assertEqual(payload["market_rows"][0]["forecast_status"], "failure")
+            self.assertEqual(payload["market_rows"][0]["calibration_gate_status"], "clear")
+            self.assertEqual(payload["market_rows"][0]["capital_scaling_reason_codes"], [])
             self.assertEqual(len(payload["market_opportunities"]), 1)
             self.assertEqual(payload["market_opportunities"].iloc[0]["market_id"], "mkt_nyc_1")
+            self.assertEqual(payload["market_opportunities"].iloc[0]["calibration_gate_status"], "clear")
 
     def test_load_market_chain_analysis_data_falls_back_to_runtime_smoke_db_when_report_is_initializing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -761,6 +817,8 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(payload["market_rows"][0]["location_name"], "Seattle")
             self.assertEqual(payload["market_rows"][0]["rule2spec_status"], "success")
             self.assertEqual(payload["market_rows"][0]["forecast_status"], "not_started")
+            self.assertEqual(payload["market_rows"][0]["calibration_gate_status"], "clear")
+            self.assertFalse(payload["market_rows"][0]["calibration_impacted_market"])
 
     def test_console_overview_and_system_rows_handle_partial_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -795,7 +853,8 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(overview["metrics"]["weather_chain_status"], "ok")
             self.assertEqual(overview["metrics"]["weather_market_question"], "Will the highest temperature in Seattle be between 36-37°F on March 13?")
             self.assertEqual(overview["metrics"]["weather_market_count"], 0)
-            self.assertEqual(len(system_rows), 7)
+            self.assertEqual(len(system_rows), 8)
+            self.assertTrue(any(row["组件"] == "Calibration Profiles v2" for row in system_rows))
 
     def test_load_home_decision_snapshot_surfaces_largest_blocker_and_recent_agent_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -843,9 +902,9 @@ class UiDataAccessTest(unittest.TestCase):
                 snapshot = load_home_decision_snapshot()
 
             self.assertEqual(snapshot["largest_blocker"]["source"], "readiness")
-            self.assertEqual(snapshot["recent_agent_summary"]["agent_type"], "rule2spec")
+            self.assertIsNone(snapshot["recent_agent_summary"]["agent_type"])
 
-    def test_console_overview_exposes_action_queue_from_persisted_allocation_fields(self) -> None:
+    def test_console_overview_prefers_persisted_action_queue_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             ui_path = Path(tmpdir) / "ui_lite.duckdb"
             con = duckdb.connect(str(ui_path))
@@ -863,6 +922,7 @@ class UiDataAccessTest(unittest.TestCase):
                         accepting_orders BOOLEAN,
                         best_side TEXT,
                         ranking_score DOUBLE,
+                        expected_dollar_pnl DOUBLE,
                         recommended_size DOUBLE,
                         allocation_status TEXT,
                         budget_impact JSON,
@@ -880,13 +940,64 @@ class UiDataAccessTest(unittest.TestCase):
                     INSERT INTO ui.market_opportunity_summary VALUES
                     (
                         'mkt_action', 'Seattle weather', 'Seattle', '2026-03-13 12:00:00', TRUE, 'BUY',
-                        0.42, 4.0, 'resized', '{"remaining_run_budget":0.0,"binding_limit_scope":"market"}',
+                        0.42, 1.5, 4.0, 'resized', '{"remaining_run_budget":0.0,"binding_limit_scope":"market"}',
                         'alloc_1', 'actionable', 'canonical', 'canonical', FALSE, 'ranking_score'
                     ),
                     (
                         'mkt_blocked', 'Miami weather', 'Miami', '2026-03-13 14:00:00', TRUE, 'BUY',
-                        0.35, 0.0, 'blocked', '{"remaining_run_budget":0.0,"binding_limit_scope":"station"}',
+                        0.35, 0.4, 0.0, 'blocked', '{"remaining_run_budget":0.0,"binding_limit_scope":"station"}',
                         'alloc_2', 'actionable', 'canonical', 'canonical', FALSE, 'ranking_score'
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE ui.action_queue_summary(
+                        queue_item_id TEXT,
+                        market_id TEXT,
+                        wallet_id TEXT,
+                        strategy_id TEXT,
+                        location_name TEXT,
+                        question TEXT,
+                        best_side TEXT,
+                        ranking_score DOUBLE,
+                        expected_dollar_pnl DOUBLE,
+                        recommended_size DOUBLE,
+                        allocation_status TEXT,
+                        actionability_status TEXT,
+                        agent_review_status TEXT,
+                        feedback_status TEXT,
+                        feedback_penalty DOUBLE,
+                        calibration_freshness_status TEXT,
+                        market_quality_status TEXT,
+                        source_freshness_status TEXT,
+                        source_badge TEXT,
+                        source_truth_status TEXT,
+                        operator_bucket TEXT,
+                        queue_priority BIGINT,
+                        queue_reason_codes_json TEXT,
+                        binding_limit_scope TEXT,
+                        remaining_run_budget DOUBLE,
+                        allocation_decision_id TEXT,
+                        updated_at TIMESTAMP,
+                        primary_score_label TEXT
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO ui.action_queue_summary VALUES
+                    (
+                        'queue_1','mkt_action','wallet_weather_1','weather_primary','Seattle','Seattle weather','BUY',
+                        0.42,1.5,4.0,'resized','actionable','passed','healthy',0.0,'fresh','pass','fresh',
+                        'canonical','canonical','ready_now',1,'["allocation:resized"]','market',0.0,'alloc_1',
+                        '2026-03-13 11:00:00','ranking_score'
+                    ),
+                    (
+                        'queue_2','mkt_risk','wallet_weather_1','weather_primary','Boston','Boston weather','BUY',
+                        0.39,1.0,3.0,'approved','actionable','passed','degraded',0.1,'stale','pass','fresh',
+                        'canonical','canonical','high_risk',2,'["feedback_status:degraded"]','station',5.0,'alloc_3',
+                        '2026-03-13 11:05:00','ranking_score'
                     )
                     """
                 )
@@ -899,9 +1010,82 @@ class UiDataAccessTest(unittest.TestCase):
             with patch.dict(os.environ, {"ASTERION_UI_LITE_DB_PATH": str(ui_path)}, clear=False):
                 overview = build_ops_console_overview()
 
-        self.assertEqual(overview["metrics"]["action_queue_count"], 1)
-        self.assertEqual(len(overview["action_queue"].index), 1)
-        self.assertEqual(overview["action_queue"].iloc[0]["allocation_status"], "resized")
+        self.assertEqual(overview["metrics"]["action_queue_count"], 2)
+        self.assertEqual(overview["metrics"]["ready_now_count"], 1)
+        self.assertEqual(overview["metrics"]["high_risk_count"], 1)
+        self.assertEqual(len(overview["action_queue"].index), 2)
+        self.assertEqual(overview["action_queue"].iloc[0]["operator_bucket"], "ready_now")
+        self.assertEqual(overview["action_queue"].iloc[1]["operator_bucket"], "high_risk")
+
+    def test_market_chain_analysis_surfaces_operator_bucket_and_cohort_history(self) -> None:
+        with patch(
+            "ui.data_access.load_market_watch_data",
+            return_value={"weather_smoke_report": {}, "market_watch": pd.DataFrame()},
+        ), patch(
+            "ui.data_access.load_market_opportunity_data",
+            return_value={
+                "source": "ui_lite",
+                "frame": pd.DataFrame(
+                    [
+                        {
+                            "market_id": "mkt_1",
+                            "location_name": "Seattle",
+                            "question": "Seattle weather",
+                            "best_side": "BUY",
+                            "ranking_score": 0.91,
+                            "source_badge": "canonical",
+                            "source_truth_status": "canonical",
+                        }
+                    ]
+                ),
+            },
+        ), patch(
+            "ui.data_access.load_predicted_vs_realized_data",
+            return_value={"frame": pd.DataFrame()},
+        ), patch(
+            "ui.loaders.markets_loader.load_execution_console_data",
+            return_value={
+                "watch_only_vs_executed": pd.DataFrame(),
+                "market_research": pd.DataFrame(),
+                "cohort_history": pd.DataFrame(
+                    [
+                        {
+                            "history_row_id": "hist_1",
+                            "market_id": "mkt_1",
+                            "strategy_id": "weather_primary",
+                            "updated_at": "2026-03-19T12:00:00+00:00",
+                            "ranking_decile": 1,
+                            "avg_ranking_score": 0.91,
+                        }
+                    ]
+                ),
+            },
+        ), patch(
+            "ui.data_access.load_ui_lite_snapshot",
+            return_value={
+                "exists": True,
+                "tables": {
+                    "action_queue_summary": pd.DataFrame(
+                        [
+                            {
+                                "market_id": "mkt_1",
+                                "operator_bucket": "ready_now",
+                                "queue_reason_codes_json": '["allocation:approved"]',
+                                "queue_priority": 1,
+                                "ranking_score": 0.91,
+                                "updated_at": "2026-03-19T12:00:00+00:00",
+                            }
+                        ]
+                    )
+                },
+                "table_row_counts": {"action_queue_summary": 1},
+            },
+        ):
+            payload = load_market_chain_analysis_data()
+
+        self.assertEqual(payload["market_rows"][0]["operator_bucket"], "ready_now")
+        self.assertEqual(payload["market_rows"][0]["queue_reason_codes"], ["allocation:approved"])
+        self.assertEqual(payload["market_rows"][0]["cohort_history"][0]["history_row_id"], "hist_1")
 
     def test_load_operator_surface_status_reports_no_data_when_everything_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1068,7 +1252,7 @@ class UiDataAccessTest(unittest.TestCase):
                 con.execute(
                     """
                     INSERT INTO agent.invocations VALUES
-                    ('inv_1','rule2spec','weather_market','mkt_1','success','stub','stub-model','2026-03-15 09:00:00','2026-03-15 09:01:00')
+                    ('inv_1','resolution','uma_proposal','prop_1','success','stub','stub-model','2026-03-15 09:00:00','2026-03-15 09:01:00')
                     """
                 )
                 con.execute(

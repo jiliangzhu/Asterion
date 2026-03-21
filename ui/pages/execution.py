@@ -28,6 +28,7 @@ def show() -> None:
     watch_only_vs_executed = payload.get("watch_only_vs_executed", pd.DataFrame())
     execution_science = payload.get("execution_science", pd.DataFrame())
     calibration_health = payload.get("calibration_health", pd.DataFrame())
+    cohort_history = payload.get("cohort_history", pd.DataFrame())
 
     st.markdown("### Execution Reality")
     st.caption("Execution 页面现在优先展示 execution science 与 execution-path evidence，再下沉 cohort capture、live-prereq exceptions 和 ticket attention。")
@@ -253,6 +254,38 @@ def show() -> None:
                 if column in strategy_science.columns
             ]
             st.dataframe(strategy_science[preferred_columns].head(10), width="stretch", hide_index=True)
+
+        st.markdown("#### Cohort History")
+        if cohort_history.empty:
+            st.info("当前没有 retrospective cohort history rows。")
+        else:
+            filtered_history = cohort_history.copy()
+            if selected_market != "全部" and "market_id" in filtered_history.columns:
+                filtered_history = filtered_history[filtered_history["market_id"] == selected_market]
+            if selected_strategy != "全部" and "strategy_id" in filtered_history.columns:
+                filtered_history = filtered_history[filtered_history["strategy_id"] == selected_strategy]
+            preferred_columns = [
+                column
+                for column in [
+                    "run_id",
+                    "market_id",
+                    "strategy_id",
+                    "ranking_decile",
+                    "top_k_bucket",
+                    "evaluation_status",
+                    "submitted_capture_ratio",
+                    "fill_capture_ratio",
+                    "resolution_capture_ratio",
+                    "avg_ranking_score",
+                    "avg_realized_pnl",
+                    "forecast_replay_change_rate",
+                    "feedback_status",
+                    "calibration_freshness_status",
+                    "source_badge",
+                ]
+                if column in filtered_history.columns
+            ]
+            st.dataframe(filtered_history[preferred_columns].head(20), width="stretch", hide_index=True)
 
         st.markdown("#### Run Summary")
         if runs.empty:

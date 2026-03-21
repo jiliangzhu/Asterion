@@ -286,47 +286,6 @@ _JOB_SPECS = [
         default_schedule_key="weather_resolution_reconciliation_bihourly",
     ),
     ColdPathJobSpec(
-        job_name="weather_rule2spec_review",
-        description="Run Rule2Spec Agent review over deterministic station-first spec parsing outputs.",
-        mode="manual",
-        upstream_jobs=["weather_spec_sync"],
-        input_tables=[
-            "weather.weather_markets",
-            "weather.weather_station_map",
-            "weather.weather_market_specs",
-        ],
-        output_tables=[
-            "agent.invocations",
-            "agent.outputs",
-            "agent.reviews",
-            "agent.evaluations",
-        ],
-        handler_name="run_weather_rule2spec_review_job",
-        default_schedule_key=None,
-    ),
-    ColdPathJobSpec(
-        job_name="weather_data_qa_review",
-        description="Run Data QA Agent review over forecast replay outputs and pricing provenance.",
-        mode="manual",
-        upstream_jobs=["weather_forecast_replay"],
-        input_tables=[
-            "weather.weather_market_specs",
-            "weather.weather_forecast_runs",
-            "weather.weather_forecast_replays",
-            "weather.weather_forecast_replay_diffs",
-            "weather.weather_fair_values",
-            "weather.weather_watch_only_snapshots",
-        ],
-        output_tables=[
-            "agent.invocations",
-            "agent.outputs",
-            "agent.reviews",
-            "agent.evaluations",
-        ],
-        handler_name="run_weather_data_qa_review_job",
-        default_schedule_key=None,
-    ),
-    ColdPathJobSpec(
         job_name="weather_resolution_review",
         description="Run Resolution Agent review over settlement verification, evidence linkage, and redeem readiness.",
         mode="manual",
@@ -405,7 +364,7 @@ _JOB_SPECS = [
     ColdPathJobSpec(
         job_name="weather_forecast_calibration_profiles_v2_refresh",
         description="Materialize calibration profile v2 rows from canonical forecast, calibration sample, and resolution facts.",
-        mode="manual",
+        mode="scheduled",
         upstream_jobs=["weather_forecast_refresh", "weather_resolution_reconciliation"],
         input_tables=[
             "weather.forecast_calibration_samples",
@@ -413,9 +372,12 @@ _JOB_SPECS = [
             "weather.weather_market_specs",
             "resolution.settlement_verifications",
         ],
-        output_tables=["weather.forecast_calibration_profiles_v2"],
+        output_tables=[
+            "weather.forecast_calibration_profiles_v2",
+            "runtime.calibration_profile_materializations",
+        ],
         handler_name="run_weather_forecast_calibration_profiles_v2_refresh_job",
-        default_schedule_key=None,
+        default_schedule_key="weather_forecast_calibration_profiles_v2_nightly",
     ),
 ]
 
@@ -494,6 +456,13 @@ _SCHEDULE_SPECS = [
         schedule_key="weather_execution_priors_nightly",
         job_name="weather_execution_priors_refresh",
         cron_schedule="5 3 * * *",
+        execution_timezone="UTC",
+        enabled_by_default=True,
+    ),
+    ColdPathScheduleSpec(
+        schedule_key="weather_forecast_calibration_profiles_v2_nightly",
+        job_name="weather_forecast_calibration_profiles_v2_refresh",
+        cron_schedule="15 3 * * *",
         execution_timezone="UTC",
         enabled_by_default=True,
     ),

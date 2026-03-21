@@ -1,7 +1,7 @@
 # Asterion Documentation Index
 
-**版本**: v1.5
-**更新日期**: 2026-03-18
+**版本**: v1.6
+**更新日期**: 2026-03-21
 **目标**: 统一 Asterion 文档的目录结构、分类规则和 source-of-truth，避免后续开发中出现重复文档、重复接口定义和失效导航。
 
 > 当前仓库阶段状态：`P4 accepted; post-P4 remediation accepted; v2.0 implementation active`
@@ -66,9 +66,11 @@ source-of-truth：
 
 - “这一版本具体先做什么、后做什么、交付什么”
 - “每个版本桶中的阶段计划、检查清单、迁移台账分别放在哪里”
-- `v2.0` 的 active implementation entry，以及 `v1.0` / `v1.0-remediation` 的历史 accepted 记录
+- `v2.0` 的 umbrella active implementation entry、当前 tranche-specific plan，以及 `v1.0` / `v1.0-remediation` 的历史 accepted 记录
+- 当前 `P8` closeout checklist 位于 `docs/10-implementation/versions/v2.0/checklists/P8_Closeout_Checklist.md`，作为最近 accepted tranche 的 closeout record 保留
+- `P7` closeout checklist 位于 `docs/10-implementation/versions/v2.0/checklists/P7_Closeout_Checklist.md`，作为更早 tranche 的 historical accepted closeout record 保留
 - historical remediation 路径已完成到 `Post-P4 Phase 15`
-- 当前状态与 operator 边界的 truth-source，以 `docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md` 和入口文档同步口径为准；`docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md` 保留为 historical accepted remediation record
+- 当前状态与 operator 边界的 truth-source，以 `docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md` 和最近 accepted tranche [P8_Implementation_Plan.md](../10-implementation/versions/v2.0/phase-plans/P8_Implementation_Plan.md) 的同步口径为准；当前尚未打开新的 tranche-specific implementation plan；[P7_Implementation_Plan.md](../10-implementation/versions/v2.0/phase-plans/P7_Implementation_Plan.md) 与 [P6_Implementation_Plan.md](../10-implementation/versions/v2.0/phase-plans/P6_Implementation_Plan.md) 保留为更早 accepted records；`docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md` 保留为 historical accepted remediation record
 - `versions/v1.0-remediation/checklists/Post_P4_P10_Closeout_Checklist.md` 到 `Post_P4_P15_Closeout_Checklist.md` 保留为 remediation historical accepted closeout set
 - `docs/analysis/*.md` 固定作为 analysis input，不升格为 implementation truth-source
 - `checklists/P1_P2_AlphaDesk_Remaining_Migration_Checklist.md` 当前只保留为 archive redirect note；不要把它当成 active closeout 入口

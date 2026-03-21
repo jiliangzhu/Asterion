@@ -7,7 +7,7 @@ def load_agents_surface_contract() -> SurfaceLoaderContract:
     from ui import data_access as compat
 
     payload = {
-        "agent_review": compat.load_agent_review_data(),
+        "agent_review": compat.load_resolution_review_data(),
         "agent_runtime": compat.load_agent_runtime_status(),
     }
     contract = SurfaceLoaderContract(
@@ -16,7 +16,7 @@ def load_agents_surface_contract() -> SurfaceLoaderContract:
         supporting_payload=payload,
         truth_source_summary=build_truth_source_summary(
             surface_id="agents",
-            primary_table="ui.agent_review_summary",
+            primary_table="ui.proposal_resolution_summary",
             source=payload["agent_review"].get("source") or "missing",
             supports_source_badges=False,
         ),

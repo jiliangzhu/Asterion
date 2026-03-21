@@ -240,8 +240,21 @@ class AllocatorV1Test(unittest.TestCase):
         by_id = {item.decision_id: item for item in decisions}
         self.assertEqual(by_id["dec_high"].allocation_status, "approved")
         self.assertEqual(by_id["dec_high"].recommended_size, 5.0)
+        self.assertEqual(by_id["dec_high"].base_ranking_score, 0.9)
+        self.assertEqual(by_id["dec_high"].max_deployable_size, 5.0)
+        self.assertEqual(by_id["dec_high"].pre_budget_deployable_size, 5.0)
+        self.assertEqual(by_id["dec_high"].pre_budget_deployable_expected_pnl, 4.5)
+        self.assertEqual(by_id["dec_high"].rerank_position, 1)
+        self.assertEqual(by_id["dec_high"].capital_scarcity_penalty, 0.0)
         self.assertEqual(by_id["dec_low"].allocation_status, "resized")
         self.assertEqual(by_id["dec_low"].recommended_size, 2.0)
+        self.assertEqual(by_id["dec_low"].pre_budget_deployable_size, 5.0)
+        self.assertEqual(by_id["dec_low"].pre_budget_deployable_expected_pnl, 2.0)
+        self.assertEqual(by_id["dec_low"].rerank_position, 2)
+        self.assertEqual(by_id["dec_low"].binding_limit_scope, "run_budget")
+        self.assertEqual(by_id["dec_low"].binding_limit_key, "policy_exact")
+        self.assertGreater(by_id["dec_low"].capital_scarcity_penalty, 0.0)
+        self.assertEqual(by_id["dec_low"].concentration_penalty, 0.0)
         self.assertIn("buy_budget_exhausted", by_id["dec_low"].reason_codes)
 
     def test_allocator_respects_station_limit_and_blocks_below_min_size(self) -> None:
@@ -304,6 +317,9 @@ class AllocatorV1Test(unittest.TestCase):
         self.assertIn("station_limit_exceeded", decision.reason_codes)
         self.assertIn("below_min_recommended_size", decision.reason_codes)
         self.assertEqual(decision.budget_impact["binding_limit_scope"], "station")
+        self.assertEqual(decision.binding_limit_scope, "station")
+        self.assertEqual(decision.binding_limit_key, "KSEA")
+        self.assertGreater(decision.concentration_penalty, 0.0)
         self.assertEqual(checks[0].check_status, "fail")
 
 

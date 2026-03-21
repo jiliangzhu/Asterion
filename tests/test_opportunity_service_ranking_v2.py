@@ -87,6 +87,36 @@ class OpportunityServiceRankingV2Test(unittest.TestCase):
         self.assertEqual(assessment.assessment_context_json["why_ranked_json"]["version"], "ranking_v2")
         self.assertEqual(assessment.assessment_context_json["ranking_score"], assessment.ranking_score)
 
+    def test_calibration_freshness_fields_flow_into_assessment_context_and_why_ranked(self) -> None:
+        assessment = build_weather_opportunity_assessment(
+            market_id="mkt_cal",
+            token_id="tok_yes",
+            outcome="YES",
+            reference_price=0.41,
+            model_fair_value=0.69,
+            accepting_orders=True,
+            enable_order_book=True,
+            threshold_bps=500,
+            fees_bps=30,
+            agent_review_status="passed",
+            live_prereq_status="not_started",
+            source_context={
+                "calibration_health_status": "healthy",
+                "calibration_reason_codes": ["calibration_profile_stale"],
+                "calibration_freshness_status": "stale",
+                "profile_materialized_at": "2026-03-18T03:15:00+00:00",
+                "profile_window_end": "2026-03-18T02:00:00+00:00",
+                "profile_age_hours": 48.0,
+            },
+        )
+        self.assertEqual(assessment.assessment_context_json["calibration_freshness_status"], "stale")
+        self.assertEqual(assessment.why_ranked_json["calibration_freshness_status"], "stale")
+        self.assertEqual(assessment.why_ranked_json["calibration_profile_materialized_at"], "2026-03-18T03:15:00+00:00")
+        self.assertIn("calibration_profile_stale", assessment.ranking_penalty_reasons)
+        self.assertEqual(assessment.calibration_gate_status, "review_required")
+        self.assertEqual(assessment.assessment_context_json["calibration_gate_status"], "review_required")
+        self.assertEqual(assessment.why_ranked_json["calibration_gate_status"], "review_required")
+
     def test_injected_allocation_fields_flow_into_assessment_and_why_ranked(self) -> None:
         assessment = build_weather_opportunity_assessment(
             market_id="mkt_alloc",
@@ -106,13 +136,43 @@ class OpportunityServiceRankingV2Test(unittest.TestCase):
             allocation_decision_id="alloc_1",
             policy_id="policy_exact",
             policy_version="alloc_v1",
+            base_ranking_score=0.42,
+            deployable_expected_pnl=1.68,
+            deployable_notional=1.68,
+            max_deployable_size=5.0,
+            capital_scarcity_penalty=0.2,
+            concentration_penalty=0.1,
+            deployable_ranking_score=1.68,
+            capital_policy_id="cap_review",
+            capital_policy_version="cap_v1",
+            capital_scaling_reason_codes=["capital_open_markets_cap"],
+            source_context={
+                "preview_binding_limit_scope": "per_ticket",
+                "preview_binding_limit_key": "policy_exact",
+                "requested_size": 6.0,
+                "requested_notional": 2.52,
+                "regime_bucket": "warm",
+            },
         )
         self.assertEqual(assessment.recommended_size, 4.0)
         self.assertEqual(assessment.allocation_status, "resized")
+        self.assertEqual(assessment.base_ranking_score, 0.42)
+        self.assertEqual(assessment.deployable_expected_pnl, 1.68)
         self.assertEqual(assessment.budget_impact["binding_limit_scope"], "market")
         self.assertEqual(assessment.why_ranked_json["allocation_decision_id"], "alloc_1")
         self.assertEqual(assessment.why_ranked_json["policy_id"], "policy_exact")
+        self.assertEqual(assessment.why_ranked_json["deployable_expected_pnl"], 1.68)
+        self.assertEqual(assessment.why_ranked_json["base_ranking_score"], 0.42)
+        self.assertEqual(assessment.why_ranked_json["preview_binding_limit_scope"], "per_ticket")
+        self.assertEqual(assessment.why_ranked_json["preview_binding_limit_key"], "policy_exact")
+        self.assertEqual(assessment.why_ranked_json["capital_policy_id"], "cap_review")
+        self.assertEqual(assessment.why_ranked_json["capital_policy_version"], "cap_v1")
+        self.assertEqual(assessment.why_ranked_json["capital_scaling_reason_codes"], ["capital_open_markets_cap"])
+        self.assertEqual(assessment.assessment_context_json["requested_size"], 6.0)
+        self.assertEqual(assessment.assessment_context_json["ranking_score"], 1.68)
         self.assertEqual(assessment.assessment_context_json["allocation_status"], "resized")
+        self.assertEqual(assessment.capital_policy_id, "cap_review")
+        self.assertEqual(assessment.regime_bucket, "warm")
 
 
 if __name__ == "__main__":

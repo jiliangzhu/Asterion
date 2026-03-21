@@ -99,14 +99,91 @@ class DeepAuditPlanDocsTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("active implementation contract", plan)
         self.assertIn("当前唯一 active implementation entry", plan)
+        self.assertIn("P8_Implementation_Plan.md", plan)
+        self.assertIn("P7_Implementation_Plan.md", plan)
+        self.assertIn("P6_Implementation_Plan.md", plan)
         self.assertIn("WS0. Truth-Source and Delivery Baseline", plan)
         self.assertIn("Phase 0. Stabilize Current HEAD", plan)
+        self.assertIn("Phase 6. Capital-Aware Ranking and Deployable Action Queue", plan)
+        self.assertIn("Phase 7. Deployable Rerank, Allocator v2, and Execution Economics Closure", plan)
+        self.assertIn("Phase 8. Calibration Hard Gates and Scaling-Aware Capital Discipline", plan)
         self.assertIn("ui.daily_review_input.item_id", plan)
         self.assertIn("recommended_size", plan)
         self.assertIn("runtime.capital_allocation_runs", plan)
         self.assertIn("runtime.calibration_profile_materializations", plan)
         self.assertIn("manual-only / default-off / constrained", plan)
         self.assertNotIn("planning placeholder", plan)
+
+    def test_p6_plan_is_accepted_baseline_record(self) -> None:
+        plan_path = (
+            ROOT
+            / "docs"
+            / "10-implementation"
+            / "versions"
+            / "v2.0"
+            / "phase-plans"
+            / "P6_Implementation_Plan.md"
+        )
+        self.assertTrue(plan_path.exists())
+        plan = plan_path.read_text(encoding="utf-8")
+        self.assertIn("accepted tranche baseline record", plan)
+        self.assertIn("Capital-Aware Ranking and Deployable Action Queue", plan)
+        self.assertIn("Phase 0` 到 `Phase 6` 已 accepted", plan)
+        self.assertIn("deployable_expected_pnl", plan)
+        self.assertIn("ui.action_queue_summary", plan)
+        self.assertIn("P7", plan)
+        self.assertIn("P8", plan)
+        self.assertIn("allocator self-sorting / invariant hardening", plan)
+
+    def test_p7_plan_is_accepted_closeout_record(self) -> None:
+        plan_path = (
+            ROOT
+            / "docs"
+            / "10-implementation"
+            / "versions"
+            / "v2.0"
+            / "phase-plans"
+            / "P7_Implementation_Plan.md"
+        )
+        self.assertTrue(plan_path.exists())
+        plan = plan_path.read_text(encoding="utf-8")
+        self.assertIn("accepted closeout record", plan)
+        self.assertIn("Deployable Rerank, Allocator v2, and Execution Economics Closure", plan)
+        self.assertIn("Phase 0` 到 `Phase 7` 已 accepted", plan)
+        self.assertIn("pre_budget_deployable_expected_pnl", plan)
+        self.assertIn("runtime.allocation_decisions", plan)
+        self.assertIn("weather.weather_execution_priors", plan)
+        self.assertIn("P8", plan)
+        self.assertIn("allocator pass-1 structural preview", plan)
+
+    def test_p8_plan_is_accepted_closeout_record(self) -> None:
+        plan_path = (
+            ROOT
+            / "docs"
+            / "10-implementation"
+            / "versions"
+            / "v2.0"
+            / "phase-plans"
+            / "P8_Implementation_Plan.md"
+        )
+        self.assertTrue(plan_path.exists())
+        plan = plan_path.read_text(encoding="utf-8")
+        self.assertIn("accepted closeout record", plan)
+        self.assertIn("Calibration Hard Gates and Scaling-Aware Capital Discipline", plan)
+        self.assertIn("Phase 0` 到 `Phase 8` 已 accepted", plan)
+        self.assertIn("trading.capital_budget_policies", plan)
+        self.assertIn("calibration_gate_status", plan)
+        self.assertIn("tests.test_allocator_scaling_discipline_acceptance", plan)
+        checklist = (
+            ROOT
+            / "docs"
+            / "10-implementation"
+            / "versions"
+            / "v2.0"
+            / "checklists"
+            / "P8_Closeout_Checklist.md"
+        )
+        self.assertTrue(checklist.exists())
 
 
 if __name__ == "__main__":

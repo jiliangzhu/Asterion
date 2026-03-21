@@ -37,6 +37,11 @@ class RealWeatherChainSmokeTest(unittest.TestCase):
         self.assertFalse(args.skip_agent)
         self.assertFalse(args.with_agent)
 
+    def test_script_uses_deterministic_rule2spec_validation_instead_of_llm_agent(self) -> None:
+        text = SCRIPT_PATH.read_text(encoding="utf-8")
+        self.assertIn("validate_rule2spec_draft(", text)
+        self.assertNotIn("run_rule2spec_agent_review(", text)
+
     def test_stage_status_supports_partial_and_empty_runs(self) -> None:
         self.assertEqual(self.smoke._stage_status(success_count=3, total_count=3), "ok")
         self.assertEqual(self.smoke._stage_status(success_count=1, total_count=3), "degraded")

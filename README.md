@@ -1,7 +1,7 @@
 # Asterion（星枢）项目
 
-**版本**: v1.5
-**更新日期**: 2026-03-18
+**版本**: v1.6
+**更新日期**: 2026-03-21
 **状态**: `P4 accepted; post-P4 remediation accepted; v2.0 implementation active`
 
 ---
@@ -12,7 +12,7 @@
 
 **核心定位**: 不是 AlphaDesk 的"天气分支"，也不再依赖 AlphaDesk runtime，而是一个 `operator console + constrained execution infra` 形态的独立事件交易平台。
 
-当前唯一 active implementation entry 已切换到 [V2_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md)；`P4` 与 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md) 当前都保留为 historical accepted records。当前系统状态固定表达为 `P4 accepted; post-P4 remediation accepted; v2.0 implementation active`，不表示 unattended live，也不表示 unrestricted live。
+当前唯一 active implementation entry 已切换到 [V2_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md)；它作为 umbrella contract，[P8_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P8_Implementation_Plan.md) 现保留为最近 accepted tranche record，[P8_Closeout_Checklist.md](./docs/10-implementation/versions/v2.0/checklists/P8_Closeout_Checklist.md) 是最近 accepted tranche 的 closeout checklist，而 [P7_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P7_Implementation_Plan.md) 与 [P6_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P6_Implementation_Plan.md) 分别保留为更早的 accepted closeout / baseline records。[P7_Closeout_Checklist.md](./docs/10-implementation/versions/v2.0/checklists/P7_Closeout_Checklist.md) 保留为历史 accepted closeout checklist。`P4` 与 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md) 当前都保留为 historical accepted records。当前系统状态固定表达为 `P4 accepted; post-P4 remediation accepted; v2.0 implementation active`，最近 accepted tranche: `Phase 8`；当前未打开新的 tranche-specific implementation plan，`P9` 继续只保留为 umbrella / roadmap reservation，不表示 unattended live，也不表示 unrestricted live。
 当前 execution economics 已进入 feedback-backed 排序阶段：`weather_execution_priors_refresh` 会 nightly materialize market/strategy/wallet cohort priors，并把 feedback suppression 写回统一的 `ranking_score` 主链。
 
 当前 `runtime / UI / paper candidate` 已统一按 penalty-aware `ranking_score` 排序；`edge_bps_executable` 继续保留 raw executable edge 语义。Execution science 读面也已升级到 capture / miss / distortion 视角。
@@ -27,7 +27,7 @@
 
 当前 UI read-model 也已完成 Phase 15 收口：`ui.read_model_catalog` 与 `ui.truth_source_checks` 已进入 UI lite build，split loader contracts 和 builder registry 也已把 truth-source、source badge、primary score baseline 固定为可测试 contract。
 
-深度审计提出的后续优化路线，已经收口为 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md) 中的历史 accepted remediation record；后续新工作从 `v2.0` 入口继续规划。
+深度审计提出的后续优化路线，已经收口为 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md) 中的历史 accepted remediation record；后续新工作继续从 `v2.0` umbrella 入口规划，待新的 tranche-specific plan 明确后再切换入口。
 
 ---
 
@@ -109,45 +109,51 @@ Asterion/
 6. 阅读 [Implementation_Index.md](./docs/10-implementation/Implementation_Index.md)
    - 这是所有实施文档的统一入口，后续阶段文档都从这里找
 7. 阅读 [V2_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md)
-   - 这是当前唯一 active implementation entry；已锁定 `Weather-first` v2.0 workstreams、phases、planned interfaces 与 acceptance 结构
-8. 阅读 [Implementation_Index.md](./docs/10-implementation/Implementation_Index.md) 中的 active / historical 分类
+   - 这是当前唯一 active implementation entry；作为 umbrella contract，已锁定 `Weather-first` v2.0 workstreams、phases、planned interfaces 与 acceptance 结构
+8. 阅读 [P8_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P8_Implementation_Plan.md)
+   - 这是最近 accepted tranche record；保留 `Phase 8 — Calibration Hard Gates and Scaling-Aware Capital Discipline` 的已交付 closeout 基线
+9. 如需回看刚完成的 deployable rerank / allocator v2 / economics closeout，再阅读 [P7_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P7_Implementation_Plan.md)
+   - 这是 `Phase 7` 的 accepted closeout record
+10. 再回看 deployable baseline 时，阅读 [P6_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P6_Implementation_Plan.md)
+   - 这是 `Phase 6` 的 accepted tranche baseline record
+11. 阅读 [Implementation_Index.md](./docs/10-implementation/Implementation_Index.md) 中的 active / historical 分类
    - 先区分当前 `v2.0 implementation active` 入口与 `P4`、post-P4 remediation 的历史 accepted records
-9. 阅读 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
+12. 阅读 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
    - 这是 `P4` 之后到 `v2.0` 之前的历史 accepted remediation 记录；current reassessment 与 deep audit 的后续工作已在其中完成收口
-10. 阅读 [P4_Implementation_Plan.md](./docs/10-implementation/versions/v1.0/phase-plans/P4_Implementation_Plan.md)
+13. 阅读 [P4_Implementation_Plan.md](./docs/10-implementation/versions/v1.0/phase-plans/P4_Implementation_Plan.md)
    - 这是 `P4 live prerequisites` 的 historical accepted phase record
-11. 阅读 [P4_Closeout_Checklist.md](./docs/10-implementation/versions/v1.0/checklists/P4_Closeout_Checklist.md)
+14. 阅读 [P4_Closeout_Checklist.md](./docs/10-implementation/versions/v1.0/checklists/P4_Closeout_Checklist.md)
    - 这是 `P4` closeout 的历史审查记录，不再是当前 active closeout 入口
-12. 阅读 supporting design docs（按历史 accepted 参考或后续 v2.0 细化需要选择）
+15. 阅读 supporting design docs（按历史 accepted 参考或后续 v2.0 细化需要选择）
    - [Controlled_Live_Boundary_Design.md](./docs/30-trading/Controlled_Live_Boundary_Design.md)
    - [Operator_Console_Truth_Source_Design.md](./docs/50-operations/Operator_Console_Truth_Source_Design.md)
    - [Execution_Economics_Design.md](./docs/30-trading/Execution_Economics_Design.md)
    - [Forecast_Calibration_v2_Design.md](./docs/40-weather/Forecast_Calibration_v2_Design.md)
    - [UI_Read_Model_Design.md](./docs/20-architecture/UI_Read_Model_Design.md)
-13. 阅读 [Analysis_Index.md](./docs/analysis/Analysis_Index.md)
+16. 阅读 [Analysis_Index.md](./docs/analysis/Analysis_Index.md)
    - `docs/analysis/` 现在统一先从这个索引进入；`01-09` 是 current analysis inputs，`10+` 是 historical snapshots，不再混作并列主入口
-14. 如需回看 historical operator records，再阅读 [P4_Controlled_Rollout_Decision_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
-15. 如需回看 historical controlled-live smoke records，再阅读 [P4_Controlled_Live_Smoke_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P4_Controlled_Live_Smoke_Runbook.md)
-16. 如需回看 historical smoke operator records，再阅读 [P4_Real_Weather_Chain_Smoke_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md)
-17. 阅读 [P3_Closeout_Checklist.md](./docs/10-implementation/versions/v1.0/checklists/P3_Closeout_Checklist.md)
+17. 如需回看 historical operator records，再阅读 [P4_Controlled_Rollout_Decision_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P4_Controlled_Rollout_Decision_Runbook.md)
+18. 如需回看 historical controlled-live smoke records，再阅读 [P4_Controlled_Live_Smoke_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P4_Controlled_Live_Smoke_Runbook.md)
+19. 如需回看 historical smoke operator records，再阅读 [P4_Real_Weather_Chain_Smoke_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P4_Real_Weather_Chain_Smoke_Runbook.md)
+20. 阅读 [P3_Closeout_Checklist.md](./docs/10-implementation/versions/v1.0/checklists/P3_Closeout_Checklist.md)
    - 这是 `P3` 是否具备 closeout 条件、是否可进入 `P4 planning` 的 closeout 审查入口
-18. 阅读 [P3_Paper_Execution_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P3_Paper_Execution_Runbook.md)
+21. 阅读 [P3_Paper_Execution_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P3_Paper_Execution_Runbook.md)
    - 这是 `P3 paper execution` 当前 canonical operator / daily ops / readiness 运行入口
-19. 如需进入 `P4` 之前的阶段边界，再阅读 [P3_Implementation_Plan.md](./docs/10-implementation/versions/v1.0/phase-plans/P3_Implementation_Plan.md)
-20. 阅读 [Checklist_Index.md](./docs/10-implementation/checklists/Checklist_Index.md)
+22. 如需进入 `P4` 之前的阶段边界，再阅读 [P3_Implementation_Plan.md](./docs/10-implementation/versions/v1.0/phase-plans/P3_Implementation_Plan.md)
+23. 阅读 [Checklist_Index.md](./docs/10-implementation/checklists/Checklist_Index.md)
    - 当前先区分 `v2.0` closeout placeholder、historical accepted checklists 和 archive checklist
-21. 阅读 [AlphaDesk_Migration_Ledger.md](./docs/10-implementation/versions/v1.0/migration-ledger/AlphaDesk_Migration_Ledger.md)
+24. 阅读 [AlphaDesk_Migration_Ledger.md](./docs/10-implementation/versions/v1.0/migration-ledger/AlphaDesk_Migration_Ledger.md)
    - 如果目标是回看 AlphaDesk exit gate 和剩余迁移结论，现在统一以 migration ledger 为准
-22. 阅读 [P2_Closeout_Checklist.md](./docs/10-implementation/versions/v1.0/checklists/P2_Closeout_Checklist.md)
+25. 阅读 [P2_Closeout_Checklist.md](./docs/10-implementation/versions/v1.0/checklists/P2_Closeout_Checklist.md)
    - 这是 `P2` 是否已经关闭、`P3` 是否可以开工、AlphaDesk Exit Gate 是否通过的唯一关闭依据
-23. 阅读 [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
+26. 阅读 [P1_Watch_Only_Replay_Cold_Path_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P1_Watch_Only_Replay_Cold_Path_Runbook.md)
    - 这是 `watch-only / replay / cold path` 当前 canonical 入口和 operator 读路径
-24. 阅读 [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
+27. 阅读 [P2_Cold_Path_Orchestration_Job_Map_Runbook.md](./docs/10-implementation/versions/v1.0/runbooks/P2_Cold_Path_Orchestration_Job_Map_Runbook.md)
    - 这是 `P2-07` 到 `P2-09` 的 canonical job map、schedule 和 handler 入口
-25. 如需回看 `P2` 的实施顺序，再阅读 [P2_Implementation_Plan.md](./docs/10-implementation/versions/v1.0/phase-plans/P2_Implementation_Plan.md)
-26. 如需回看 `P1` 阶段计划，再阅读 [P1_Implementation_Plan.md](./docs/10-implementation/versions/v1.0/phase-plans/P1_Implementation_Plan.md)
-27. 如需回看底座建设，再阅读 [P0_Implementation_Plan.md](./docs/10-implementation/versions/v1.0/phase-plans/P0_Implementation_Plan.md)
-28. 深入阅读详细设计文档（按需）
+28. 如需回看 `P2` 的实施顺序，再阅读 [P2_Implementation_Plan.md](./docs/10-implementation/versions/v1.0/phase-plans/P2_Implementation_Plan.md)
+29. 如需回看 `P1` 阶段计划，再阅读 [P1_Implementation_Plan.md](./docs/10-implementation/versions/v1.0/phase-plans/P1_Implementation_Plan.md)
+30. 如需回看底座建设，再阅读 [P0_Implementation_Plan.md](./docs/10-implementation/versions/v1.0/phase-plans/P0_Implementation_Plan.md)
+31. 深入阅读详细设计文档（按需）
 
 ### 1.1 文档归档规则
 
@@ -234,8 +240,9 @@ Weather smoke 当前默认行为：
 - 只抓 `active=true`、`closed=false`、`archived=false` 的市场
 - horizon 按 `14 -> 30 -> 60 -> 90` 自适应
 - 会批量处理所有当前开盘且能完成站点映射的市场，而不是只处理单一城市
-- `rule2spec_agent` 默认启用
-- `data_qa_agent` / `resolution_agent` 若当前链路无 canonical 输入，会明确显示 `not_run`
+- `rule2spec` 默认走 deterministic validation
+- `data_qa` 当前走 deterministic replay / provenance validation；若当前链路无 canonical 输入，会明确显示 `not_run`
+- `resolution_agent` 继续保留，但只在存在 canonical resolution 输入时参与 human review closure
 
 UI 当前重点页面：
 
@@ -310,14 +317,13 @@ dagster_asterion/           # Cold-path orchestration 壳
 
 agents/                     # AI Agent
 └── weather/
-    ├── rule2spec_agent.py
-    ├── data_qa_agent.py
     └── resolution_agent.py
 ```
 
 说明：
 
 - 上面只列当前仓库**已经落地**的主干模块
+- `rule2spec` / `data_qa` 当前 active reality 已切到 deterministic validation，不再作为默认 LLM review chain
 - `order_router_v1.py`、paper adapter、quote-based fill simulator、OMS state machine 已在 `P3` 落地
 - `capability_refresh_v1.py` 与 `clients/clob_public.py` 已在 `P4-02` 落地，用于 canonical capability refresh
 - `blockchain/wallet_state_v1.py` 与 `runtime.external_balance_observations` 已在 `P4-03` 落地，用于 external wallet state observation

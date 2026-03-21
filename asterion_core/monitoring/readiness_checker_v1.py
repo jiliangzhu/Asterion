@@ -80,11 +80,15 @@ _AGENT_SURFACE_TABLES = [
     "agent.evaluations",
 ]
 
-_REQUIRED_AGENT_JOBS = {
-    "weather_rule2spec_review",
-    "weather_data_qa_review",
-    "weather_resolution_review",
-}
+_RESOLUTION_REVIEW_TABLES = [
+    "resolution.operator_review_decisions",
+]
+
+_RESOLUTION_REVIEW_UI_TABLES = [
+    "ui.proposal_resolution_summary",
+]
+
+_REQUIRED_AGENT_JOBS = {"weather_resolution_review"}
 
 _OPERATOR_UI_TABLES = [
     "ui.execution_ticket_summary",
@@ -385,7 +389,7 @@ def _evaluate_agent_review_surface(config: ReadinessConfig) -> ReadinessGateResu
 
     if not config.require_agent_surface:
         return ReadinessGateResult(
-            gate_name="agent_review_surface",
+            gate_name="resolution_review_surface",
             passed=True,
             checks={"agent_surface.required": False},
             violations=[],
@@ -393,9 +397,9 @@ def _evaluate_agent_review_surface(config: ReadinessConfig) -> ReadinessGateResu
             metadata={},
         )
     result = _evaluate_table_gate(
-        gate_name="agent_review_surface",
+        gate_name="resolution_review_surface",
         db_path=config.db_path,
-        tables=_AGENT_SURFACE_TABLES,
+        tables=[*_AGENT_SURFACE_TABLES, *_RESOLUTION_REVIEW_TABLES],
         require_nonempty=False,
     )
     job_map = build_weather_cold_path_job_map()
@@ -403,14 +407,23 @@ def _evaluate_agent_review_surface(config: ReadinessConfig) -> ReadinessGateResu
     violations = list(result.violations)
     warnings = list(result.warnings)
     metadata = dict(result.metadata)
+    ui_gate = _evaluate_ui_table_gate(
+        config.ui_lite_db_path,
+        required_tables=list(_RESOLUTION_REVIEW_UI_TABLES),
+        nonempty_tables=[],
+    )
+    checks.update(ui_gate["checks"])
+    violations.extend(ui_gate["violations"])
+    warnings.extend(ui_gate["warnings"])
+    metadata.update(ui_gate["metadata"])
     for job_name in sorted(_REQUIRED_AGENT_JOBS):
         present = job_name in job_map and job_map[job_name].mode == "manual"
         checks[f"job:{job_name}.manual"] = present
         if not present:
-            violations.append(f"missing manual agent review job: {job_name}")
+            violations.append(f"missing manual resolution review job: {job_name}")
     metadata["required_agent_jobs"] = sorted(_REQUIRED_AGENT_JOBS)
     return ReadinessGateResult(
-        gate_name="agent_review_surface",
+        gate_name="resolution_review_surface",
         passed=not violations,
         checks=checks,
         violations=violations,
