@@ -576,17 +576,5 @@ for item in sidebar_truth["capability_boundary"]:
     st.sidebar.markdown(f"- `{item}`")
 for item in sidebar_truth["live_negations"]:
     st.sidebar.markdown(f"- `{item}`")
-
-st.sidebar.markdown("---")
-st.sidebar.caption(
-    " | ".join(
-        [
-            "Asterion v2.0 / Phase 9 in progress",
-            "core implemented / closeout pending",
-            sidebar_truth["current_phase_status"],
-            f"truth-source={sidebar_truth['truth_source_doc']}",
-        ]
-    )
-)
-
+    
 PAGES[page_key][1]()
