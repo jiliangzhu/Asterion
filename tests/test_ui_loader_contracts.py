@@ -26,7 +26,12 @@ class UiLoaderContractsTest(unittest.TestCase):
             with patch.dict(os.environ, {"ASTERION_UI_LITE_DB_PATH": str(db_path)}, clear=False):
                 with patch(
                     "ui.loaders.home_loader.load_home_decision_snapshot",
-                    return_value={"top_opportunities": pd.DataFrame(), "market_data": {"market_opportunity_source": "ui_lite"}, "action_queue": pd.DataFrame()},
+                    return_value={
+                        "top_opportunities": pd.DataFrame(),
+                        "market_data": {"market_opportunity_source": "ui_lite"},
+                        "action_queue": pd.DataFrame(),
+                        "surface_delivery_summary": pd.DataFrame(),
+                    },
                 ):
                     home_contract = load_home_surface_contract()
                 with patch(
@@ -60,9 +65,11 @@ class UiLoaderContractsTest(unittest.TestCase):
         self.assertEqual(markets_contract.primary_dataframe_name, "market_opportunities")
         self.assertEqual(execution_contract.primary_dataframe_name, "execution_science")
         self.assertIn("action_queue", home_contract.supporting_payload)
+        self.assertIn("surface_delivery_summary", home_contract.supporting_payload)
         self.assertIn("market_rows", markets_contract.supporting_payload)
         self.assertIn("cohort_history", markets_contract.supporting_payload)
         self.assertIn("cohort_history", execution_contract.supporting_payload)
+        self.assertEqual(system_contract.truth_source_summary["primary_table"], "ui.system_runtime_summary")
 
 
 if __name__ == "__main__":

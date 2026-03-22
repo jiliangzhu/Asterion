@@ -11,7 +11,7 @@
 > 本文件保留为 `v2.0 / Phase 8` 的 accepted closeout record。  
 > umbrella active implementation contract 仍是 [V2_Implementation_Plan.md](./V2_Implementation_Plan.md)。  
 > 当前仓库阶段状态统一表达为：`P4 accepted; post-P4 remediation accepted; v2.0 implementation active`。  
-> `Phase 0` 到 `Phase 8` 已 accepted；当前未打开新的 tranche-specific implementation plan，`Phase 9` 继续保留为 umbrella / roadmap reservation。
+> `Phase 0` 到 `Phase 8` 已 accepted；当前 tranche-specific implementation plan 已切换到 [P9_Implementation_Plan.md](./P9_Implementation_Plan.md)。
 
 ## 1. Summary
 

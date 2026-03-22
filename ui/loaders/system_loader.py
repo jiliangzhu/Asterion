@@ -17,7 +17,7 @@ def load_system_surface_contract() -> SurfaceLoaderContract:
         supporting_payload=payload,
         truth_source_summary=build_truth_source_summary(
             surface_id="system",
-            primary_table="ui.readiness_evidence_summary",
+            primary_table="ui.system_runtime_summary",
             source="ui_lite",
             supports_source_badges=False,
         ),

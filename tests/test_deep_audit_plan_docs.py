@@ -100,6 +100,7 @@ class DeepAuditPlanDocsTest(unittest.TestCase):
         self.assertIn("active implementation contract", plan)
         self.assertIn("当前唯一 active implementation entry", plan)
         self.assertIn("P8_Implementation_Plan.md", plan)
+        self.assertIn("P9_Implementation_Plan.md", plan)
         self.assertIn("P7_Implementation_Plan.md", plan)
         self.assertIn("P6_Implementation_Plan.md", plan)
         self.assertIn("WS0. Truth-Source and Delivery Baseline", plan)
@@ -107,6 +108,7 @@ class DeepAuditPlanDocsTest(unittest.TestCase):
         self.assertIn("Phase 6. Capital-Aware Ranking and Deployable Action Queue", plan)
         self.assertIn("Phase 7. Deployable Rerank, Allocator v2, and Execution Economics Closure", plan)
         self.assertIn("Phase 8. Calibration Hard Gates and Scaling-Aware Capital Discipline", plan)
+        self.assertIn("Phase 9. Operator Surface Delivery and Throughput Scaling", plan)
         self.assertIn("ui.daily_review_input.item_id", plan)
         self.assertIn("recommended_size", plan)
         self.assertIn("runtime.capital_allocation_runs", plan)
@@ -184,6 +186,24 @@ class DeepAuditPlanDocsTest(unittest.TestCase):
             / "P8_Closeout_Checklist.md"
         )
         self.assertTrue(checklist.exists())
+
+    def test_p9_plan_is_current_tranche_record(self) -> None:
+        plan_path = (
+            ROOT
+            / "docs"
+            / "10-implementation"
+            / "versions"
+            / "v2.0"
+            / "phase-plans"
+            / "P9_Implementation_Plan.md"
+        )
+        self.assertTrue(plan_path.exists())
+        plan = plan_path.read_text(encoding="utf-8")
+        self.assertIn("current tranche implementation plan", plan)
+        self.assertIn("Operator Surface Delivery and Throughput Scaling", plan)
+        self.assertIn("runtime.operator_surface_refresh_runs", plan)
+        self.assertIn("ui.surface_delivery_summary", plan)
+        self.assertIn("weather_operator_surface_refresh", plan)
 
 
 if __name__ == "__main__":

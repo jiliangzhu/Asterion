@@ -12,7 +12,7 @@
 > 本文件现在是当前唯一 active implementation entry。
 > `P4` 与 [Post_P4_Remediation_Implementation_Plan.md](../../v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md) 继续保留为 historical accepted records。
 > 最近 accepted tranche record 是 [P8_Implementation_Plan.md](./P8_Implementation_Plan.md)：`Phase 8 — Calibration Hard Gates and Scaling-Aware Capital Discipline`。
-> 当前未打开新的 tranche-specific implementation plan；`Phase 9` 继续只保留为 umbrella / roadmap reservation。
+> 当前 tranche-specific implementation plan 是 [P9_Implementation_Plan.md](./P9_Implementation_Plan.md)：`Phase 9 — Operator Surface Delivery and Throughput Scaling`。
 
 ## 1. Summary
 
@@ -26,7 +26,7 @@
 - **主输入**：以 [Asterion_Deep_Audit_and_v2_Planning_Blueprint_Revised.md](../../../../analysis/Asterion_Deep_Audit_and_v2_Planning_Blueprint_Revised.md) 为主；[Asterion_Deep_Audit_and_v2_Planning_Blueprint.md](../../../../analysis/Asterion_Deep_Audit_and_v2_Planning_Blueprint.md) 只保留仍成立的高价值判断
 - **范围边界**：不把 live boundary 扩张当成 `v2.0` 主线，不引入新的 `risk.*` schema 作为默认答案
 - **最近 accepted tranche**：`Phase 8 — Calibration Hard Gates and Scaling-Aware Capital Discipline`
-- **当前 tranche 状态**：未打开新的 tranche-specific implementation plan；`Phase 9` 仍为 reservation
+- **当前 tranche 状态**：`Phase 9 — Operator Surface Delivery and Throughput Scaling` in progress，且 `core implemented / closeout pending`
 
 ## 2. 当前代码现实与 Why Now
 
@@ -44,7 +44,7 @@
 - execution economics 虽已进入 deployable / feedback-backed 主链，但 empirical-primary 与 retrospective validation 仍需继续收口
 - allocator / sizing / capital discipline baseline 已落地，但 allocator v2 explanation / acceptance 仍需继续收口
 - calibration freshness / materialization ops 的基础运营闭环已落地，`P8` 已把 hard gate 与 scaling-aware capital discipline 推进到主链并完成 closeout
-- operator throughput 还不够高，Home / Markets / Execution 仍偏“研究 + console”而不是高效 action surface
+- operator throughput 还不够高，但 `P9` 主干已进入代码；当前剩余工作固定收口为 delivery contract closeout、acceptance hardening 与 final phase closeout sync
 
 当前 `Phase 0` 到 `Phase 6` 已 accepted，`v2.0` 当前真正要解决的 next-step bottlenecks 固定为：
 
@@ -67,6 +67,8 @@
 
 - active implementation contract：
   - [V2_Implementation_Plan.md](./V2_Implementation_Plan.md)
+- current tranche-specific implementation plan：
+  - [P9_Implementation_Plan.md](./P9_Implementation_Plan.md)
 - most recent accepted tranche record：
   - [P8_Implementation_Plan.md](./P8_Implementation_Plan.md)
 - earlier accepted tranche records：
@@ -868,16 +870,23 @@
   - fallback / degraded source truth-source hardening
   - `P8` / umbrella wording refresh
 
-### Phase 9. Delivery / Scaling Follow-On
+### Phase 9. Operator Surface Delivery and Throughput Scaling
 
 **状态**
 
-- reserved
+- current tranche in progress
+- core implemented / closeout pending
 
 **主题**
 
-- 仅在 `P6` 到 `P8` accepted 后再具体化
-- 默认不预先展开为当前实施合同
+- operator surface refresh orchestration
+- persisted surface delivery contract
+- fallback governance and delivery-aware operator gating
+- throughput scaling inside existing pages
+
+**实施文档**
+
+- [P9_Implementation_Plan.md](./P9_Implementation_Plan.md)
 
 ## 8. Non-Goals
 
@@ -927,10 +936,8 @@
 
 ## 11. Default Next Action
 
-`v2.0` 当前没有打开新的 tranche-specific implementation plan。
-
 当前默认状态：
 
 - `Phase 0` 到 `Phase 8` 已 accepted
-- `Phase 9` 继续只保留为 umbrella / roadmap reservation
-- 后续若进入 `P9`，应先单独落 tranche-specific plan，再切换入口文档
+- `Phase 9` 当前已打开 tranche-specific implementation plan
+- 当前默认下一步是继续按 [P9_Implementation_Plan.md](./P9_Implementation_Plan.md) 收口 delivery contract closeout / acceptance

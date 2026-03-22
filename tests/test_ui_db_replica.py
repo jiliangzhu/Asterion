@@ -135,6 +135,38 @@ class UiDbReplicaDuckDBTest(unittest.TestCase):
             self.assertEqual(meta["consecutive_failures"], 0)
             self.assertIsNone(meta["last_error"])
 
+    def test_refresh_success_meta_matches_operator_surface_refresh_seam(self) -> None:
+        import duckdb
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_path = os.path.join(tmpdir, "source.duckdb")
+            dst_path = os.path.join(tmpdir, "ui.duckdb")
+            meta_path = os.path.join(tmpdir, "ui.meta.json")
+
+            con = duckdb.connect(src_path)
+            try:
+                con.execute("CREATE TABLE sample (id INTEGER)")
+                con.execute("INSERT INTO sample VALUES (1)")
+            finally:
+                con.close()
+
+            with patch.dict(os.environ, {"ASTERION_UI_REPLICA_COPY_MODE": "copy"}, clear=False):
+                result = refresh_ui_db_replica_once(
+                    src_db_path=src_path,
+                    dst_db_path=dst_path,
+                    meta_path=meta_path,
+                    refresh_interval_s=7.5,
+                )
+
+            self.assertTrue(result.ok, result.error)
+            meta = load_ui_replica_meta(meta_path)
+            assert meta is not None
+            self.assertEqual(meta["source_db_path"], src_path)
+            self.assertEqual(meta["replica_db_path"], dst_path)
+            self.assertEqual(meta["refresh_interval_s"], 7.5)
+            self.assertEqual(result.src_db_path, src_path)
+            self.assertEqual(result.dst_db_path, dst_path)
+
 
 if __name__ == "__main__":
     unittest.main()

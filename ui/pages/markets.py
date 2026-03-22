@@ -5,6 +5,16 @@ import json
 import pandas as pd
 import streamlit as st
 
+from ui.components import (
+    render_delivery_badge,
+    render_detail_key_value,
+    render_empty_state,
+    render_kpi_band,
+    render_page_intro,
+    render_reason_chip_row,
+    render_section_header,
+    render_state_card,
+)
 from ui.data_access import load_market_chain_analysis_data, load_operator_surface_status
 
 
@@ -148,8 +158,15 @@ def show() -> None:
     refresh_state = report.get("refresh_state")
     refresh_note = report.get("refresh_note") or discovery.get("refresh_note")
 
-    st.markdown("### Opportunity Terminal")
-    st.caption("Markets 现在首先回答哪些市场最值得优先 review、最可执行、最值得研究，但它仍处于 constrained execution boundary 内，不暗示自动推进执行。")
+    render_page_intro(
+        "Opportunity Terminal",
+        "Markets 现在首先回答哪些市场最值得优先 review、最可执行、最值得研究，但它仍处于 constrained execution boundary 内，不暗示自动推进执行。",
+        kicker="Weather opportunities",
+        badges=[
+            ("deployable-value-first", "info"),
+            ("constrained execution boundary", "warn"),
+        ],
+    )
 
     if market_surface["status"] in {"read_error", "degraded_source", "refresh_in_progress", "no_data"}:
         if market_surface["status"] == "read_error":
@@ -162,16 +179,15 @@ def show() -> None:
     actionable = opportunities[opportunities["actionability_status"] == "actionable"] if ("actionability_status" in opportunities.columns and not opportunities.empty) else opportunities.iloc[0:0]
     top_row = opportunities.iloc[0] if not opportunities.empty else {}
 
-    top1, top2, top3, top4 = st.columns(4)
-    with top1:
-        st.metric("Actionable Markets", int(len(actionable.index)), delta=f"open={len(display_rows.index)}")
-    with top2:
-        st.metric("Top Ranking Score", _format_value(top_row.get("ranking_score")), delta=_format_value(top_row.get("location_name")))
-    with top3:
-        st.metric("Highest Edge", _format_value(pd.to_numeric(opportunities["edge_bps"], errors="coerce").abs().max()) if ("edge_bps" in opportunities.columns and not opportunities.empty) else "0", delta="bps")
-    with top4:
-        liquidity_ready = int(((pd.to_numeric(opportunities["liquidity_proxy"], errors="coerce").fillna(0) >= 60.0) & (opportunities["accepting_orders"] == True)).sum()) if ({"liquidity_proxy", "accepting_orders"} <= set(opportunities.columns)) else 0  # noqa: E712
-        st.metric("Liquidity-Ready Markets", liquidity_ready, delta=discovery.get("market_source") or payload.get("market_opportunity_source"))
+    liquidity_ready = int(((pd.to_numeric(opportunities["liquidity_proxy"], errors="coerce").fillna(0) >= 60.0) & (opportunities["accepting_orders"] == True)).sum()) if ({"liquidity_proxy", "accepting_orders"} <= set(opportunities.columns)) else 0  # noqa: E712
+    render_kpi_band(
+        [
+            {"label": "Actionable Markets", "value": int(len(actionable.index)), "delta": f"open={len(display_rows.index)}"},
+            {"label": "Top Ranking Score", "value": _format_value(top_row.get("ranking_score")), "delta": _format_value(top_row.get("location_name"))},
+            {"label": "Highest Edge", "value": _format_value(pd.to_numeric(opportunities["edge_bps"], errors="coerce").abs().max()) if ("edge_bps" in opportunities.columns and not opportunities.empty) else "0", "delta": "bps"},
+            {"label": "Liquidity-Ready Markets", "value": liquidity_ready, "delta": discovery.get("market_source") or payload.get("market_opportunity_source")},
+        ]
+    )
 
     if refresh_state == "initializing" or chain_status == "initializing":
         st.info(refresh_note or "市场链路正在生成首份或最新一轮报告，请稍候刷新。")
@@ -186,7 +202,7 @@ def show() -> None:
 
     overview_left, overview_right = st.columns([1.3, 1])
     with overview_left:
-        st.markdown("#### Market Coverage")
+        render_section_header("Market coverage", subtitle="先看 coverage 和优先级，再下钻到单个市场的研究细节。")
         st.caption(
             " | ".join(
                 [
@@ -197,7 +213,7 @@ def show() -> None:
             )
         )
         if display_rows.empty:
-            st.info("No actionable weather markets yet. 等待 open recent markets 或下一轮 report。")
+            render_empty_state("No actionable weather markets", "No actionable weather markets yet. 等待 open recent markets 或下一轮 report。")
         else:
             coverage_columns = [
                 column
@@ -228,49 +244,49 @@ def show() -> None:
             st.dataframe(display_rows[coverage_columns], width="stretch", hide_index=True)
 
     with overview_right:
-        st.markdown("#### Top Opportunity")
+        render_section_header("Top opportunity", subtitle="把最佳市场的机会结论、gate 和 deployable ladder 放到首屏右侧。")
         if display_rows.empty:
-            st.caption("当前没有市场进入机会排序。")
+            render_empty_state("No ranked opportunity", "当前没有市场进入机会排序。")
         else:
             top_display_row = dict(top_row.to_dict()) if not opportunities.empty else dict(display_rows.iloc[0].to_dict())
-            st.info(_opportunity_thesis(top_display_row))
-            st.dataframe(
-                _detail_frame(
-                    [
-                        {"字段": "Location", "值": top_display_row.get("location_name")},
-                        {"字段": "Question", "值": top_display_row.get("question")},
-                        {"字段": "Best Side", "值": top_display_row.get("best_side")},
-                        {"字段": "Operator Bucket", "值": top_display_row.get("operator_bucket")},
-                        {"字段": "Executable Edge (bps)", "值": top_display_row.get("edge_bps")},
-                        {"字段": "Model Edge (bps)", "值": top_display_row.get("edge_bps_model")},
-                        {"字段": "Mapping Confidence", "值": top_display_row.get("mapping_confidence")},
-                        {"字段": "Source Freshness", "值": top_display_row.get("source_freshness_status")},
-                        {"字段": "Calibration Freshness", "值": top_display_row.get("calibration_freshness_status")},
-                        {"字段": "Calibration Gate", "值": top_display_row.get("calibration_gate_status")},
-                        {"字段": "Calibration Gate Reasons", "值": ", ".join(str(item) for item in (top_display_row.get("calibration_gate_reason_codes") or [])) or "N/A"},
-                        {"字段": "Calibration Materialized At", "值": top_display_row.get("calibration_profile_materialized_at")},
-                        {"字段": "Calibration Profile Age (h)", "值": top_display_row.get("calibration_profile_age_hours")},
-                        {"字段": "Quality Status", "值": top_display_row.get("market_quality_status")},
-                        {"字段": "Source Badge", "值": top_display_row.get("source_badge")},
-                        {"字段": "Deployable Ranking Score", "值": top_display_row.get("ranking_score")},
-                        {"字段": "Base Ranking Score", "值": top_display_row.get("base_ranking_score")},
-                        {"字段": "Pre-Budget Deployable PnL", "值": top_display_row.get("pre_budget_deployable_expected_pnl")},
-                        {"字段": "Expected Dollar PnL", "值": top_display_row.get("expected_dollar_pnl")},
-                        {"字段": "Deployable Expected PnL", "值": top_display_row.get("deployable_expected_pnl")},
-                        {"字段": "Deployable Notional", "值": top_display_row.get("deployable_notional")},
-                        {"字段": "Max Deployable Size", "值": top_display_row.get("max_deployable_size")},
-                        {"字段": "Capture Probability", "值": top_display_row.get("capture_probability")},
-                        {"字段": "Feedback Status", "值": top_display_row.get("feedback_status")},
-                        {"字段": "Feedback Penalty", "值": top_display_row.get("feedback_penalty")},
-                        {"字段": "Recommended Size", "值": top_display_row.get("recommended_size")},
-                        {"字段": "Allocation Status", "值": top_display_row.get("allocation_status")},
-                        {"字段": "Allocation Decision", "值": top_display_row.get("allocation_decision_id")},
-                        {"字段": "Actionability", "值": top_display_row.get("actionability_status")},
-                    ]
-                ),
-                width="stretch",
-                hide_index=True,
+            render_state_card("opportunity thesis", _opportunity_thesis(top_display_row), tone="info")
+            render_detail_key_value(
+                [
+                    ("Location", top_display_row.get("location_name")),
+                    ("Question", top_display_row.get("question")),
+                    ("Best Side", top_display_row.get("best_side")),
+                    ("Operator Bucket", top_display_row.get("operator_bucket")),
+                    ("Executable Edge (bps)", top_display_row.get("edge_bps")),
+                    ("Model Edge (bps)", top_display_row.get("edge_bps_model")),
+                    ("Mapping Confidence", top_display_row.get("mapping_confidence")),
+                    ("Source Freshness", top_display_row.get("source_freshness_status")),
+                    ("Calibration Freshness", top_display_row.get("calibration_freshness_status")),
+                    ("Calibration Gate", top_display_row.get("calibration_gate_status")),
+                    ("Calibration Materialized At", top_display_row.get("calibration_profile_materialized_at")),
+                    ("Calibration Profile Age (h)", top_display_row.get("calibration_profile_age_hours")),
+                    ("Quality Status", top_display_row.get("market_quality_status")),
+                    ("Source Badge", top_display_row.get("source_badge")),
+                    ("Deployable Ranking Score", top_display_row.get("ranking_score")),
+                    ("Base Ranking Score", top_display_row.get("base_ranking_score")),
+                    ("Pre-Budget Deployable PnL", top_display_row.get("pre_budget_deployable_expected_pnl")),
+                    ("Expected Dollar PnL", top_display_row.get("expected_dollar_pnl")),
+                    ("Deployable Expected PnL", top_display_row.get("deployable_expected_pnl")),
+                    ("Deployable Notional", top_display_row.get("deployable_notional")),
+                    ("Max Deployable Size", top_display_row.get("max_deployable_size")),
+                    ("Capture Probability", top_display_row.get("capture_probability")),
+                    ("Feedback Status", top_display_row.get("feedback_status")),
+                    ("Feedback Penalty", top_display_row.get("feedback_penalty")),
+                    ("Recommended Size", top_display_row.get("recommended_size")),
+                    ("Allocation Status", top_display_row.get("allocation_status")),
+                    ("Allocation Decision", top_display_row.get("allocation_decision_id")),
+                    ("Actionability", top_display_row.get("actionability_status")),
+                    ("Capital Policy", top_display_row.get("capital_policy_id")),
+                    ("Surface Delivery", top_display_row.get("surface_delivery_status")),
+                    ("Fallback Origin", top_display_row.get("surface_fallback_origin")),
+                    ("Last Refresh", top_display_row.get("surface_last_refresh_ts")),
+                ]
             )
+            render_reason_chip_row(top_display_row.get("calibration_gate_reason_codes") or [], empty_label="calibration_gate:clear")
             budget_impact = _json_dict(top_display_row.get("budget_impact"))
             preview = _preview_summary(top_display_row)
             if budget_impact:
@@ -321,9 +337,9 @@ def show() -> None:
     if accepting_only and "accepting_orders" in filtered.columns:
         filtered = filtered[filtered["accepting_orders"] == True]  # noqa: E712
 
-    st.markdown("#### Opportunity Table")
+    render_section_header("Opportunity table", subtitle="默认列表只保留最关键列，更多研究细节放到右侧 selected market intelligence。")
     if filtered.empty:
-        st.info("当前筛选条件下没有市场。")
+        render_empty_state("No filtered markets", "当前筛选条件下没有市场。")
         return
 
     table_left, detail_right = st.columns([1.35, 1])
@@ -339,6 +355,8 @@ def show() -> None:
                 "edge_bps_model",
                 "ranking_score",
                 "source_badge",
+                "surface_delivery_status",
+                "surface_fallback_origin",
                 "liquidity_proxy",
                 "mapping_confidence",
                 "source_freshness_status",
@@ -375,292 +393,266 @@ def show() -> None:
         pricing_detail = selected_market.get("pricing") or {}
         signals_detail = selected_market.get("signals") or {}
 
-        st.markdown("#### Opportunity Thesis")
-        st.info(_opportunity_thesis(selected_market))
-        st.dataframe(
-            _detail_frame(
-                [
-                    {"字段": "Actionability", "值": selected_market.get("actionability_status")},
-                    {"字段": "Operator Bucket", "值": selected_market.get("operator_bucket")},
-                    {"字段": "Deployable Ranking Score", "值": selected_market.get("ranking_score")},
-                    {"字段": "Base Ranking Score", "值": selected_market.get("base_ranking_score")},
-                    {"字段": "Source Badge", "值": selected_market.get("source_badge")},
-                    {"字段": "Source Truth", "值": selected_market.get("source_truth_status")},
-                    {"字段": "Best Side", "值": selected_market.get("best_side")},
-                    {"字段": "Best Decision", "值": selected_market.get("best_decision")},
-                    {"字段": "Quality Status", "值": selected_market.get("market_quality_status")},
-                    {"字段": "Review Status", "值": selected_market.get("agent_review_status")},
-                ]
-            ),
-            width="stretch",
-            hide_index=True,
+        render_section_header("Selected market intelligence", subtitle="单个市场详情改成 overview + deployment + calibration + evidence + diagnostics，不再是连续长表。")
+        render_state_card("opportunity thesis", _opportunity_thesis(selected_market), tone="info")
+        render_delivery_badge(selected_market.get("surface_delivery_status"), origin=selected_market.get("surface_fallback_origin"))
+
+        overview_tab, deployment_tab, calibration_tab, evidence_tab, diagnostics_tab = st.tabs(
+            ["Overview", "Deployment", "Calibration", "Evidence", "Diagnostics"]
         )
 
-        st.markdown("#### Operator Decision Summary")
-        st.dataframe(
-            _detail_frame(
+        with overview_tab:
+            render_detail_key_value(
                 [
-                    {"字段": "Operator Bucket", "值": selected_market.get("operator_bucket")},
-                    {"字段": "Queue Priority", "值": selected_market.get("queue_priority")},
-                    {"字段": "Queue Reason Codes", "值": ", ".join(str(item) for item in (selected_market.get("queue_reason_codes") or [])) or "N/A"},
-                    {"字段": "Pre-Budget Deployable PnL", "值": selected_market.get("pre_budget_deployable_expected_pnl")},
-                    {"字段": "Deployable Expected PnL", "值": selected_market.get("deployable_expected_pnl")},
-                    {"字段": "Deployable Notional", "值": selected_market.get("deployable_notional")},
-                    {"字段": "Max Deployable Size", "值": selected_market.get("max_deployable_size")},
-                    {"字段": "Requested Size", "值": preview.get("requested_size")},
-                    {"字段": "Recommended Size", "值": selected_market.get("recommended_size")},
-                    {"字段": "Allocation Status", "值": selected_market.get("allocation_status")},
-                    {"字段": "Allocation Decision", "值": selected_market.get("allocation_decision_id")},
-                    {"字段": "Preview Binding Limit Scope", "值": preview.get("preview_binding_limit_scope")},
-                    {"字段": "Preview Binding Limit Key", "值": preview.get("preview_binding_limit_key")},
-                    {"字段": "Binding Limit Scope", "值": selected_market.get("binding_limit_scope")},
-                    {"字段": "Binding Limit Key", "值": selected_market.get("binding_limit_key")},
-                    {"字段": "Rerank Position", "值": selected_market.get("rerank_position")},
-                    {"字段": "Rerank Reasons", "值": ", ".join(str(item) for item in (preview.get("rerank_reason_codes") or [])) or "N/A"},
-                    {"字段": "Capital Scarcity Penalty", "值": selected_market.get("capital_scarcity_penalty")},
-                    {"字段": "Concentration Penalty", "值": selected_market.get("concentration_penalty")},
-                    {"字段": "Feedback Status", "值": selected_market.get("feedback_status")},
-                    {"字段": "Calibration Freshness", "值": selected_market.get("calibration_freshness_status")},
-                    {"字段": "Calibration Gate", "值": selected_market.get("calibration_gate_status")},
-                    {"字段": "Calibration Gate Reasons", "值": ", ".join(str(item) for item in (selected_market.get("calibration_gate_reason_codes") or [])) or "N/A"},
-                    {"字段": "Capital Policy", "值": selected_market.get("capital_policy_id")},
-                    {"字段": "Capital Scaling Reasons", "值": ", ".join(str(item) for item in (selected_market.get("capital_scaling_reason_codes") or [])) or "N/A"},
-                    {"字段": "Source Badge", "值": selected_market.get("source_badge")},
+                    ("Actionability", selected_market.get("actionability_status")),
+                    ("Operator Bucket", selected_market.get("operator_bucket")),
+                    ("Deployable Ranking Score", selected_market.get("ranking_score")),
+                    ("Base Ranking Score", selected_market.get("base_ranking_score")),
+                    ("Source Badge", selected_market.get("source_badge")),
+                    ("Source Truth", selected_market.get("source_truth_status")),
+                    ("Surface Delivery", selected_market.get("surface_delivery_status")),
+                    ("Surface Fallback", selected_market.get("surface_fallback_origin")),
+                    ("Best Side", selected_market.get("best_side")),
+                    ("Best Decision", selected_market.get("best_decision")),
+                    ("Quality Status", selected_market.get("market_quality_status")),
+                    ("Review Status", selected_market.get("agent_review_status")),
+                    ("Market ID", selected_market.get("market_id")),
+                    ("Question", selected_market.get("question")),
+                    ("Location", selected_market.get("location_name") or spec_detail.get("location_name")),
+                    ("Station", selected_market.get("station_id") or spec_detail.get("station_id")),
+                    ("Mapping Confidence", selected_market.get("mapping_confidence")),
+                    ("Close Time", selected_market.get("market_close_time") or selected_market.get("close_time")),
+                    ("Accepting Orders", selected_market.get("accepting_orders")),
                 ]
-            ),
-            width="stretch",
-            hide_index=True,
-        )
-
-        st.markdown("#### Market Structure")
-        st.dataframe(
-            _detail_frame(
-                [
-                    {"字段": "Market ID", "值": selected_market.get("market_id")},
-                    {"字段": "Question", "值": selected_market.get("question")},
-                    {"字段": "Location", "值": selected_market.get("location_name") or spec_detail.get("location_name")},
-                    {"字段": "Station", "值": selected_market.get("station_id") or spec_detail.get("station_id")},
-                    {"字段": "Mapping Confidence", "值": selected_market.get("mapping_confidence")},
-                    {"字段": "Close Time", "值": selected_market.get("market_close_time") or selected_market.get("close_time")},
-                    {"字段": "Accepting Orders", "值": selected_market.get("accepting_orders")},
-                ]
-            ),
-            width="stretch",
-            hide_index=True,
-        )
-
-        st.markdown("#### Pricing & Edge")
-        st.caption(
-            "deployable ladder: "
-            f"base={_format_value(selected_market.get('base_ranking_score'))} | "
-            f"pre_budget={_format_value(selected_market.get('pre_budget_deployable_expected_pnl'))} | "
-            f"final={_format_value(selected_market.get('ranking_score'))} | "
-            f"preview_limit={preview.get('preview_binding_limit_scope') or 'none'} | "
-            f"final_limit={selected_market.get('binding_limit_scope') or 'none'}"
-        )
-        st.dataframe(
-            _detail_frame(
-                [
-                    {"字段": "Market Price", "值": selected_market.get("market_price")},
-                    {"字段": "Model Fair Value", "值": selected_market.get("model_fair_value")},
-                    {"字段": "Execution-Adjusted Fair Value", "值": selected_market.get("execution_adjusted_fair_value") or selected_market.get("fair_value")},
-                    {"字段": "Model Edge (bps)", "值": selected_market.get("edge_bps_model")},
-                    {"字段": "Executable Edge (bps)", "值": selected_market.get("edge_bps_executable") or selected_market.get("edge_bps")},
-                    {"字段": "Fees (bps)", "值": selected_market.get("fees_bps")},
-                    {"字段": "Slippage (bps)", "值": selected_market.get("slippage_bps")},
-                    {"字段": "Liquidity Penalty (bps)", "值": selected_market.get("liquidity_penalty_bps")},
-                    {"字段": "Fill Probability", "值": selected_market.get("fill_probability")},
-                    {"字段": "Liquidity Proxy", "值": selected_market.get("liquidity_proxy")},
-                    {"字段": "Confidence Score", "值": selected_market.get("confidence_score") or selected_market.get("confidence_proxy")},
-                        {"字段": "Expected Value Score", "值": selected_market.get("expected_value_score")},
-                        {"字段": "Expected PnL Score", "值": selected_market.get("expected_pnl_score")},
-                        {"字段": "Expected Dollar PnL", "值": selected_market.get("expected_dollar_pnl")},
-                        {"字段": "Pre-Budget Deployable PnL", "值": selected_market.get("pre_budget_deployable_expected_pnl")},
-                        {"字段": "Deployable Expected PnL", "值": selected_market.get("deployable_expected_pnl")},
-                        {"字段": "Capture Probability", "值": selected_market.get("capture_probability")},
-                        {"字段": "Risk Penalty", "值": selected_market.get("risk_penalty")},
-                        {"字段": "Capital Efficiency", "值": selected_market.get("capital_efficiency")},
-                    {"字段": "Feedback Status", "值": selected_market.get("feedback_status")},
-                    {"字段": "Feedback Penalty", "值": selected_market.get("feedback_penalty")},
-                    {"字段": "Cohort Prior Version", "值": selected_market.get("cohort_prior_version")},
-                ]
-            ),
-            width="stretch",
-            hide_index=True,
-        )
-        fair_values = pricing_detail.get("fair_values") or []
-        if fair_values:
-            st.dataframe(pd.DataFrame(fair_values), width="stretch", hide_index=True)
-
-        st.markdown("#### Input Integrity")
-        st.dataframe(
-            _detail_frame(
-                [
-                    {"字段": "Source Freshness", "值": selected_market.get("source_freshness_status")},
-                    {"字段": "Calibration Freshness", "值": selected_market.get("calibration_freshness_status")},
-                    {"字段": "Calibration Gate", "值": selected_market.get("calibration_gate_status")},
-                    {"字段": "Calibration Gate Reasons", "值": ", ".join(str(item) for item in (selected_market.get("calibration_gate_reason_codes") or [])) or "N/A"},
-                    {"字段": "Calibration Materialized At", "值": selected_market.get("calibration_profile_materialized_at")},
-                    {"字段": "Calibration Profile Window End", "值": selected_market.get("calibration_profile_window_end")},
-                    {"字段": "Calibration Profile Age (h)", "值": selected_market.get("calibration_profile_age_hours")},
-                    {"字段": "Price Staleness (ms)", "值": selected_market.get("price_staleness_ms")},
-                    {"字段": "Mapping Confidence", "值": selected_market.get("mapping_confidence")},
-                    {"字段": "Market Quality Status", "值": selected_market.get("market_quality_status")},
-                    {"字段": "Forecast Status", "值": selected_market.get("forecast_status") or forecast_detail.get("status")},
-                    {"字段": "Forecast Source", "值": forecast_detail.get("source_used") or selected_market.get("latest_run_source")},
-                    {"字段": "Forecast Items", "值": forecast_detail.get("forecast_item_count")},
-                    {"字段": "Authoritative Source", "值": spec_detail.get("authoritative_source")},
-                    {"字段": "Threshold (bps)", "值": selected_market.get("threshold_bps")},
-                ]
-            ),
-            width="stretch",
-            hide_index=True,
-        )
-
-        why_ranked = _json_dict(selected_market.get("why_ranked_json"))
-        if why_ranked:
-            st.markdown("#### Why Ranked")
-            st.dataframe(
-                _detail_frame(
-                    [
-                        {"字段": "Mode", "值": why_ranked.get("mode")},
-                        {"字段": "Prior Quality", "值": why_ranked.get("prior_quality_status")},
-                        {"字段": "Capture Probability", "值": why_ranked.get("capture_probability")},
-                        {"字段": "Expected Dollar PnL", "值": why_ranked.get("expected_dollar_pnl")},
-                        {"字段": "Deployable Expected PnL", "值": why_ranked.get("deployable_expected_pnl")},
-                        {"字段": "Pre-Budget Deployable PnL", "值": why_ranked.get("pre_budget_deployable_expected_pnl")},
-                        {"字段": "Base Ranking Score", "值": why_ranked.get("base_ranking_score")},
-                        {"字段": "Deployable Ranking Score", "值": why_ranked.get("ranking_score")},
-                        {"字段": "Calibration Gate", "值": why_ranked.get("calibration_gate_status")},
-                        {"字段": "Calibration Gate Reasons", "值": ", ".join(str(item) for item in (why_ranked.get("calibration_gate_reason_codes") or [])) or "N/A"},
-                        {"字段": "Requested Size", "值": why_ranked.get("requested_size")},
-                        {"字段": "Max Deployable Size", "值": why_ranked.get("max_deployable_size")},
-                        {"字段": "Preview Binding Limit Scope", "值": why_ranked.get("preview_binding_limit_scope")},
-                        {"字段": "Preview Binding Limit Key", "值": why_ranked.get("preview_binding_limit_key")},
-                        {"字段": "Binding Limit Scope", "值": why_ranked.get("binding_limit_scope")},
-                        {"字段": "Binding Limit Key", "值": why_ranked.get("binding_limit_key")},
-                        {"字段": "Rerank Position", "值": why_ranked.get("rerank_position")},
-                        {"字段": "Rerank Reasons", "值": ", ".join(str(item) for item in (why_ranked.get("rerank_reason_codes") or [])) or "N/A"},
-                        {"字段": "Risk Penalty", "值": why_ranked.get("risk_penalty")},
-                        {"字段": "Capital Efficiency", "值": why_ranked.get("capital_efficiency")},
-                        {"字段": "Capital Scarcity Penalty", "值": why_ranked.get("capital_scarcity_penalty")},
-                        {"字段": "Concentration Penalty", "值": why_ranked.get("concentration_penalty")},
-                        {"字段": "Capital Policy", "值": why_ranked.get("capital_policy_id")},
-                        {"字段": "Capital Scaling Reasons", "值": ", ".join(str(item) for item in (why_ranked.get("capital_scaling_reason_codes") or [])) or "N/A"},
-                        {"字段": "Feedback Status", "值": why_ranked.get("feedback_status")},
-                        {"字段": "Feedback Penalty", "值": why_ranked.get("feedback_penalty")},
-                        {"字段": "Pre-Feedback Ranking Score", "值": why_ranked.get("pre_feedback_ranking_score")},
-                        {"字段": "Ops Tie-Breaker", "值": why_ranked.get("ops_tie_breaker")},
-                        {"字段": "Ranking Score", "值": why_ranked.get("ranking_score")},
-                    ]
-                ),
-                width="stretch",
-                hide_index=True,
             )
 
-        st.markdown("#### Execution Reality")
-        executed_evidence = selected_market.get("executed_evidence") or {}
-        watch_only_vs_executed = selected_market.get("watch_only_vs_executed") or {}
-        market_research = selected_market.get("market_research") or {}
-        cohort_history = selected_market.get("cohort_history") or []
-        if not executed_evidence.get("has_executed_evidence"):
-            st.info("no executed evidence yet")
-        else:
-            st.caption("这里展示的是 executed evidence 与 research decomposition，不代表 execution certainty。")
-            st.dataframe(
-                _detail_frame(
-                    [
-                        {"字段": "Latest Ticket", "值": executed_evidence.get("latest_ticket_id")},
-                        {"字段": "Latest Order", "值": executed_evidence.get("latest_order_id")},
-                        {"字段": "Predicted Edge (bps)", "值": executed_evidence.get("predicted_edge_bps")},
-                        {"字段": "Expected Fill Price", "值": executed_evidence.get("expected_fill_price")},
-                        {"字段": "Realized Fill Price", "值": executed_evidence.get("realized_fill_price")},
-                        {"字段": "Resolution Value", "值": executed_evidence.get("resolution_value")},
-                        {"字段": "Realized PnL", "值": executed_evidence.get("realized_pnl")},
-                        {"字段": "Post-Trade Error", "值": executed_evidence.get("post_trade_error")},
-                        {"字段": "Lifecycle Stage", "值": executed_evidence.get("execution_lifecycle_stage")},
-                        {"字段": "Fill Ratio", "值": executed_evidence.get("fill_ratio")},
-                        {"字段": "Adverse Fill Slippage (bps)", "值": executed_evidence.get("adverse_fill_slippage_bps")},
-                        {"字段": "Resolution Lag (hrs)", "值": executed_evidence.get("resolution_lag_hours")},
-                        {"字段": "Miss Reason", "值": executed_evidence.get("miss_reason_bucket")},
-                        {"字段": "Source Disagreement", "值": executed_evidence.get("source_disagreement")},
-                        {"字段": "Evaluation Status", "值": executed_evidence.get("evaluation_status")},
-                    ]
-                ),
-                width="stretch",
-                hide_index=True,
+        with deployment_tab:
+            render_detail_key_value(
+                [
+                    ("Operator Bucket", selected_market.get("operator_bucket")),
+                    ("Queue Priority", selected_market.get("queue_priority")),
+                    ("Pre-Budget Deployable PnL", selected_market.get("pre_budget_deployable_expected_pnl")),
+                    ("Deployable Expected PnL", selected_market.get("deployable_expected_pnl")),
+                    ("Deployable Notional", selected_market.get("deployable_notional")),
+                    ("Max Deployable Size", selected_market.get("max_deployable_size")),
+                    ("Requested Size", preview.get("requested_size")),
+                    ("Recommended Size", selected_market.get("recommended_size")),
+                    ("Allocation Status", selected_market.get("allocation_status")),
+                    ("Allocation Decision", selected_market.get("allocation_decision_id")),
+                    ("Preview Binding Limit Scope", preview.get("preview_binding_limit_scope")),
+                    ("Preview Binding Limit Key", preview.get("preview_binding_limit_key")),
+                    ("Binding Limit Scope", selected_market.get("binding_limit_scope")),
+                    ("Binding Limit Key", selected_market.get("binding_limit_key")),
+                    ("Rerank Position", selected_market.get("rerank_position")),
+                    ("Capital Scarcity Penalty", selected_market.get("capital_scarcity_penalty")),
+                    ("Concentration Penalty", selected_market.get("concentration_penalty")),
+                    ("Feedback Status", selected_market.get("feedback_status")),
+                    ("Capital Policy", selected_market.get("capital_policy_id")),
+                    ("Source Badge", selected_market.get("source_badge")),
+                    ("Capital Scaling Reasons", ", ".join(str(item) for item in (selected_market.get("capital_scaling_reason_codes") or [])) or "N/A"),
+                ]
             )
-        st.dataframe(
-            _detail_frame(
+            render_reason_chip_row(selected_market.get("queue_reason_codes") or [], empty_label="queue:none")
+            render_reason_chip_row(preview.get("rerank_reason_codes") or [], empty_label="rerank:none")
+            render_reason_chip_row(selected_market.get("capital_scaling_reason_codes") or [], empty_label="scaling:none")
+
+        with calibration_tab:
+            render_detail_key_value(
                 [
-                    {"字段": "Executed Evidence Status", "值": market_research.get("executed_evidence_status")},
-                    {"字段": "Source Badge", "值": watch_only_vs_executed.get("source_badge") or executed_evidence.get("source_badge")},
-                    {"字段": "Submission Capture Ratio", "值": watch_only_vs_executed.get("submission_capture_ratio")},
-                    {"字段": "Fill Capture Ratio", "值": watch_only_vs_executed.get("fill_capture_ratio")},
-                    {"字段": "Resolution Capture Ratio", "值": watch_only_vs_executed.get("resolution_capture_ratio")},
-                    {"字段": "Executed Ticket Count", "值": watch_only_vs_executed.get("executed_ticket_count")},
-                    {"字段": "Dominant Lifecycle", "值": watch_only_vs_executed.get("dominant_lifecycle_stage")},
-                    {"字段": "Miss Reason", "值": watch_only_vs_executed.get("miss_reason_bucket")},
-                    {"字段": "Distortion Reason", "值": watch_only_vs_executed.get("distortion_reason_bucket")},
-                    {"字段": "Feedback Status", "值": watch_only_vs_executed.get("feedback_status")},
-                    {"字段": "Feedback Penalty", "值": watch_only_vs_executed.get("feedback_penalty")},
-                    {"字段": "Resolved Trade Count", "值": market_research.get("resolved_trade_count")},
-                    {"字段": "Avg Post-Trade Error", "值": market_research.get("avg_post_trade_error")},
+                    ("Source Freshness", selected_market.get("source_freshness_status")),
+                    ("Calibration Freshness", selected_market.get("calibration_freshness_status")),
+                    ("Calibration Gate", selected_market.get("calibration_gate_status")),
+                    ("Calibration Materialized At", selected_market.get("calibration_profile_materialized_at")),
+                    ("Calibration Profile Window End", selected_market.get("calibration_profile_window_end")),
+                    ("Calibration Profile Age (h)", selected_market.get("calibration_profile_age_hours")),
+                    ("Price Staleness (ms)", selected_market.get("price_staleness_ms")),
+                    ("Mapping Confidence", selected_market.get("mapping_confidence")),
+                    ("Market Quality Status", selected_market.get("market_quality_status")),
+                    ("Forecast Status", selected_market.get("forecast_status") or forecast_detail.get("status")),
+                    ("Forecast Source", forecast_detail.get("source_used") or selected_market.get("latest_run_source")),
+                    ("Forecast Items", forecast_detail.get("forecast_item_count")),
+                    ("Authoritative Source", spec_detail.get("authoritative_source")),
+                    ("Threshold (bps)", selected_market.get("threshold_bps")),
                 ]
-            ),
-            width="stretch",
-            hide_index=True,
-        )
+            )
+            render_reason_chip_row(selected_market.get("calibration_gate_reason_codes") or [], empty_label="calibration_gate:clear")
 
-        st.markdown("#### Cohort History")
-        if not cohort_history:
-            st.info("当前没有 retrospective cohort history rows。")
-        else:
-            cohort_frame = pd.DataFrame(cohort_history)
-            preferred_columns = [
-                column
-                for column in [
-                    "run_id",
-                    "strategy_id",
-                    "ranking_decile",
-                    "top_k_bucket",
-                    "evaluation_status",
-                    "submitted_capture_ratio",
-                    "fill_capture_ratio",
-                    "resolution_capture_ratio",
-                    "avg_ranking_score",
-                    "avg_realized_pnl",
-                    "forecast_replay_change_rate",
-                    "feedback_status",
-                    "calibration_freshness_status",
-                    "source_badge",
-                ]
-                if column in cohort_frame.columns
-            ]
-            st.dataframe(cohort_frame[preferred_columns], width="stretch", hide_index=True)
-
-        st.markdown("#### Execution Readiness")
-        st.dataframe(
-            _detail_frame(
+        with evidence_tab:
+            render_section_header("Deployable ladder", subtitle="让 operator 直接看到 base -> pre-budget -> final 的层级关系。")
+            st.caption(
+                "deployable ladder: "
+                f"base={_format_value(selected_market.get('base_ranking_score'))} | "
+                f"pre_budget={_format_value(selected_market.get('pre_budget_deployable_expected_pnl'))} | "
+                f"final={_format_value(selected_market.get('ranking_score'))} | "
+                f"preview_limit={preview.get('preview_binding_limit_scope') or 'none'} | "
+                f"final_limit={selected_market.get('binding_limit_scope') or 'none'}"
+            )
+            render_detail_key_value(
                 [
-                    {"字段": "Live-Prereq", "值": selected_market.get("live_prereq_status")},
-                    {"字段": "Accepting Orders", "值": selected_market.get("accepting_orders")},
-                    {"字段": "Best Side", "值": selected_market.get("best_side")},
+                    ("Market Price", selected_market.get("market_price")),
+                    ("Model Fair Value", selected_market.get("model_fair_value")),
+                    ("Execution-Adjusted Fair Value", selected_market.get("execution_adjusted_fair_value") or selected_market.get("fair_value")),
+                    ("Model Edge (bps)", selected_market.get("edge_bps_model")),
+                    ("Executable Edge (bps)", selected_market.get("edge_bps_executable") or selected_market.get("edge_bps")),
+                    ("Fees (bps)", selected_market.get("fees_bps")),
+                    ("Slippage (bps)", selected_market.get("slippage_bps")),
+                    ("Liquidity Penalty (bps)", selected_market.get("liquidity_penalty_bps")),
+                    ("Fill Probability", selected_market.get("fill_probability")),
+                    ("Liquidity Proxy", selected_market.get("liquidity_proxy")),
+                    ("Confidence Score", selected_market.get("confidence_score") or selected_market.get("confidence_proxy")),
+                    ("Expected Value Score", selected_market.get("expected_value_score")),
+                    ("Expected PnL Score", selected_market.get("expected_pnl_score")),
+                    ("Expected Dollar PnL", selected_market.get("expected_dollar_pnl")),
+                    ("Pre-Budget Deployable PnL", selected_market.get("pre_budget_deployable_expected_pnl")),
+                    ("Deployable Expected PnL", selected_market.get("deployable_expected_pnl")),
+                    ("Capture Probability", selected_market.get("capture_probability")),
+                    ("Risk Penalty", selected_market.get("risk_penalty")),
+                    ("Capital Efficiency", selected_market.get("capital_efficiency")),
+                    ("Feedback Status", selected_market.get("feedback_status")),
+                    ("Feedback Penalty", selected_market.get("feedback_penalty")),
+                    ("Cohort Prior Version", selected_market.get("cohort_prior_version")),
                 ]
-            ),
-            width="stretch",
-            hide_index=True,
-        )
+            )
+            fair_values = pricing_detail.get("fair_values") or []
+            if fair_values:
+                st.dataframe(pd.DataFrame(fair_values), width="stretch", hide_index=True)
 
-        st.markdown("#### Validation and Review")
-        st.caption("Rule2Spec / Data QA 现在来自 deterministic validation；只有 resolution 仍是 agent-assisted review。")
-        st.dataframe(_agent_review_frame(selected_market), width="stretch", hide_index=True)
+            why_ranked = _json_dict(selected_market.get("why_ranked_json"))
+            if why_ranked:
+                render_section_header("Why ranked", subtitle="保留交易/部署解释，但把它从长表变成结构化 detail grid。")
+                render_detail_key_value(
+                    [
+                        ("Mode", why_ranked.get("mode")),
+                        ("Prior Quality", why_ranked.get("prior_quality_status")),
+                        ("Capture Probability", why_ranked.get("capture_probability")),
+                        ("Expected Dollar PnL", why_ranked.get("expected_dollar_pnl")),
+                        ("Deployable Expected PnL", why_ranked.get("deployable_expected_pnl")),
+                        ("Pre-Budget Deployable PnL", why_ranked.get("pre_budget_deployable_expected_pnl")),
+                        ("Base Ranking Score", why_ranked.get("base_ranking_score")),
+                        ("Deployable Ranking Score", why_ranked.get("ranking_score")),
+                        ("Calibration Gate", why_ranked.get("calibration_gate_status")),
+                        ("Requested Size", why_ranked.get("requested_size")),
+                        ("Max Deployable Size", why_ranked.get("max_deployable_size")),
+                        ("Preview Binding Limit Scope", why_ranked.get("preview_binding_limit_scope")),
+                        ("Preview Binding Limit Key", why_ranked.get("preview_binding_limit_key")),
+                        ("Binding Limit Scope", why_ranked.get("binding_limit_scope")),
+                        ("Binding Limit Key", why_ranked.get("binding_limit_key")),
+                        ("Rerank Position", why_ranked.get("rerank_position")),
+                        ("Risk Penalty", why_ranked.get("risk_penalty")),
+                        ("Capital Efficiency", why_ranked.get("capital_efficiency")),
+                        ("Capital Scarcity Penalty", why_ranked.get("capital_scarcity_penalty")),
+                        ("Concentration Penalty", why_ranked.get("concentration_penalty")),
+                        ("Capital Policy", why_ranked.get("capital_policy_id")),
+                        ("Feedback Status", why_ranked.get("feedback_status")),
+                        ("Feedback Penalty", why_ranked.get("feedback_penalty")),
+                        ("Pre-Feedback Ranking Score", why_ranked.get("pre_feedback_ranking_score")),
+                        ("Ops Tie-Breaker", why_ranked.get("ops_tie_breaker")),
+                        ("Ranking Score", why_ranked.get("ranking_score")),
+                    ]
+                )
+                render_reason_chip_row(why_ranked.get("calibration_gate_reason_codes") or [], empty_label="calibration_gate:clear")
+                render_reason_chip_row(why_ranked.get("rerank_reason_codes") or [], empty_label="rerank:none")
+                render_reason_chip_row(why_ranked.get("capital_scaling_reason_codes") or [], empty_label="scaling:none")
 
-        with st.expander("Diagnostic Details", expanded=False):
-            diag_payload = {
-                "spec": spec_detail,
-                "forecast": forecast_detail,
-                "pricing": pricing_detail,
-                "signals": signals_detail,
-            }
-            st.code(json.dumps(diag_payload, ensure_ascii=False, indent=2, default=str), language="json")
+            render_section_header("Execution reality", subtitle="这里展示的是 executed evidence 与 research decomposition，不代表 execution certainty。")
+            executed_evidence = selected_market.get("executed_evidence") or {}
+            watch_only_vs_executed = selected_market.get("watch_only_vs_executed") or {}
+            market_research = selected_market.get("market_research") or {}
+            cohort_history = selected_market.get("cohort_history") or []
+            if not executed_evidence.get("has_executed_evidence"):
+                render_empty_state("No executed evidence", "no executed evidence yet")
+            else:
+                render_detail_key_value(
+                    [
+                        ("Latest Ticket", executed_evidence.get("latest_ticket_id")),
+                        ("Latest Order", executed_evidence.get("latest_order_id")),
+                        ("Predicted Edge (bps)", executed_evidence.get("predicted_edge_bps")),
+                        ("Expected Fill Price", executed_evidence.get("expected_fill_price")),
+                        ("Realized Fill Price", executed_evidence.get("realized_fill_price")),
+                        ("Resolution Value", executed_evidence.get("resolution_value")),
+                        ("Realized PnL", executed_evidence.get("realized_pnl")),
+                        ("Post-Trade Error", executed_evidence.get("post_trade_error")),
+                        ("Lifecycle Stage", executed_evidence.get("execution_lifecycle_stage")),
+                        ("Fill Ratio", executed_evidence.get("fill_ratio")),
+                        ("Adverse Fill Slippage (bps)", executed_evidence.get("adverse_fill_slippage_bps")),
+                        ("Resolution Lag (hrs)", executed_evidence.get("resolution_lag_hours")),
+                        ("Miss Reason", executed_evidence.get("miss_reason_bucket")),
+                        ("Source Disagreement", executed_evidence.get("source_disagreement")),
+                        ("Evaluation Status", executed_evidence.get("evaluation_status")),
+                    ]
+                )
+            render_detail_key_value(
+                [
+                    ("Executed Evidence Status", market_research.get("executed_evidence_status")),
+                    ("Source Badge", watch_only_vs_executed.get("source_badge") or executed_evidence.get("source_badge")),
+                    ("Submission Capture Ratio", watch_only_vs_executed.get("submission_capture_ratio")),
+                    ("Fill Capture Ratio", watch_only_vs_executed.get("fill_capture_ratio")),
+                    ("Resolution Capture Ratio", watch_only_vs_executed.get("resolution_capture_ratio")),
+                    ("Executed Ticket Count", watch_only_vs_executed.get("executed_ticket_count")),
+                    ("Dominant Lifecycle", watch_only_vs_executed.get("dominant_lifecycle_stage")),
+                    ("Miss Reason", watch_only_vs_executed.get("miss_reason_bucket")),
+                    ("Distortion Reason", watch_only_vs_executed.get("distortion_reason_bucket")),
+                    ("Feedback Status", watch_only_vs_executed.get("feedback_status")),
+                    ("Feedback Penalty", watch_only_vs_executed.get("feedback_penalty")),
+                    ("Resolved Trade Count", market_research.get("resolved_trade_count")),
+                    ("Avg Post-Trade Error", market_research.get("avg_post_trade_error")),
+                ]
+            )
+
+            render_section_header("Cohort history", subtitle="retrospective cohort rows 保留为研究证据，不抢主视图叙事。")
+            if not cohort_history:
+                render_empty_state("No retrospective cohort rows", "当前没有 retrospective cohort history rows。")
+            else:
+                cohort_frame = pd.DataFrame(cohort_history)
+                preferred_columns = [
+                    column
+                    for column in [
+                        "run_id",
+                        "strategy_id",
+                        "ranking_decile",
+                        "top_k_bucket",
+                        "evaluation_status",
+                        "submitted_capture_ratio",
+                        "fill_capture_ratio",
+                        "resolution_capture_ratio",
+                        "avg_ranking_score",
+                        "avg_realized_pnl",
+                        "forecast_replay_change_rate",
+                        "feedback_status",
+                        "calibration_freshness_status",
+                        "source_badge",
+                    ]
+                    if column in cohort_frame.columns
+                ]
+                st.dataframe(cohort_frame[preferred_columns], width="stretch", hide_index=True)
+
+            render_section_header("Execution readiness", subtitle="保留 live-prereq，可见但不抢占主视图。")
+            render_detail_key_value(
+                [
+                    ("Live-Prereq", selected_market.get("live_prereq_status")),
+                    ("Accepting Orders", selected_market.get("accepting_orders")),
+                    ("Best Side", selected_market.get("best_side")),
+                ]
+            )
+
+        with diagnostics_tab:
+            render_section_header("Surface delivery", subtitle="直接显示 persisted delivery 状态，不再让 operator 靠系统页去猜。")
+            render_detail_key_value(
+                [
+                    ("Surface Delivery", selected_market.get("surface_delivery_status")),
+                    ("Fallback Origin", selected_market.get("surface_fallback_origin")),
+                    ("Delivery Reasons", ", ".join(str(item) for item in (selected_market.get("surface_delivery_reason_codes") or [])) or "N/A"),
+                    ("Last Refresh", selected_market.get("surface_last_refresh_ts")),
+                ]
+            )
+            render_reason_chip_row(selected_market.get("surface_delivery_reason_codes") or [], empty_label="delivery:ok")
+            render_section_header("Validation and review", subtitle="Rule2Spec / Data QA 现在来自 deterministic validation；只有 resolution 仍是 agent-assisted review。")
+            st.dataframe(_agent_review_frame(selected_market), width="stretch", hide_index=True)
+            with st.expander("Diagnostic Details", expanded=False):
+                diag_payload = {
+                    "spec": spec_detail,
+                    "forecast": forecast_detail,
+                    "pricing": pricing_detail,
+                    "signals": signals_detail,
+                }
+                st.code(json.dumps(diag_payload, ensure_ascii=False, indent=2, default=str), language="json")

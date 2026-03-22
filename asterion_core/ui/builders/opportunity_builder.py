@@ -88,6 +88,7 @@ def _create_action_queue_summary(con, *, table_row_counts: dict[str, int]) -> No
         feedback_status = str(row.get("feedback_status") or watch_only.get("feedback_status") or "")
         source_truth_status = str(row.get("source_truth_status") or "")
         live_prereq_status = str(row.get("live_prereq_status") or "")
+        surface_delivery_status = str(row.get("surface_delivery_status") or "ok")
 
         operator_bucket, queue_priority, reason_codes = _classify_operator_bucket(
             actionability_status=actionability_status,
@@ -100,6 +101,7 @@ def _create_action_queue_summary(con, *, table_row_counts: dict[str, int]) -> No
             feedback_status=feedback_status,
             source_truth_status=source_truth_status,
             live_prereq_status=live_prereq_status,
+            surface_delivery_status=surface_delivery_status,
         )
 
         allocation_reason_codes = _json_list(allocation.get("reason_codes_json"))
@@ -155,6 +157,10 @@ def _create_action_queue_summary(con, *, table_row_counts: dict[str, int]) -> No
                 "source_freshness_status": source_freshness_status or None,
                 "source_badge": row.get("source_badge"),
                 "source_truth_status": row.get("source_truth_status"),
+                "surface_delivery_status": surface_delivery_status,
+                "surface_fallback_origin": row.get("surface_fallback_origin"),
+                "surface_delivery_reason_codes_json": row.get("surface_delivery_reason_codes_json") or "[]",
+                "surface_last_refresh_ts": row.get("surface_last_refresh_ts") or updated_at,
                 "operator_bucket": operator_bucket,
                 "queue_priority": queue_priority,
                 "queue_reason_codes_json": json.dumps(reason_codes, ensure_ascii=True, sort_keys=True),
@@ -243,6 +249,10 @@ def _create_empty_action_queue_summary(con, *, table_row_counts: dict[str, int])
             source_freshness_status TEXT,
             source_badge TEXT,
             source_truth_status TEXT,
+            surface_delivery_status TEXT,
+            surface_fallback_origin TEXT,
+            surface_delivery_reason_codes_json TEXT,
+            surface_last_refresh_ts TIMESTAMP,
             operator_bucket TEXT,
             queue_priority BIGINT,
             queue_reason_codes_json TEXT,
@@ -278,8 +288,12 @@ def _classify_operator_bucket(
     feedback_status: str,
     source_truth_status: str,
     live_prereq_status: str,
+    surface_delivery_status: str,
 ) -> tuple[str, int, list[str]]:
     reasons: list[str] = []
+    if surface_delivery_status in {"read_error", "missing"}:
+        reasons.append(f"surface_delivery:{surface_delivery_status}")
+        return "blocked", 4, reasons
     if calibration_gate_status == "research_only":
         reasons.append("calibration_gate:research_only")
         return "research_only", 5, reasons
@@ -302,6 +316,9 @@ def _classify_operator_bucket(
             reasons.append("actionability:review_required")
         if agent_review_status and agent_review_status != "passed":
             reasons.append(f"agent_review:{agent_review_status}")
+        return "review_required", 3, reasons
+    if surface_delivery_status in {"degraded_source", "stale"}:
+        reasons.append(f"surface_delivery:{surface_delivery_status}")
         return "review_required", 3, reasons
     high_risk_reasons = []
     if calibration_freshness_status and calibration_freshness_status != "fresh":

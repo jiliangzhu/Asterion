@@ -114,6 +114,43 @@ class TruthSourceChecksTest(unittest.TestCase):
         self.assertTrue(any("capital_policy_id" in str(row[2]) for row in rows))
         self.assertTrue(any("research_only_market_count" in str(row[2]) for row in rows))
 
+    def test_truth_source_checks_lock_p9_delivery_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ui_truth_p9.duckdb"
+            build_minimal_ui_read_model_db(
+                db_path,
+                skip_columns={
+                    "ui.market_opportunity_summary": {"surface_delivery_status", "surface_delivery_reason_codes_json"},
+                    "ui.action_queue_summary": {"surface_fallback_origin", "surface_delivery_reason_codes_json"},
+                    "ui.surface_delivery_summary": {"degraded_reason_codes_json"},
+                    "ui.system_runtime_summary": {"degraded_surface_count"},
+                },
+            )
+            con = duckdb.connect(str(db_path), read_only=True)
+            try:
+                rows = con.execute(
+                    """
+                    SELECT table_name, check_status, issues_json
+                    FROM ui.truth_source_checks
+                    WHERE table_name IN (
+                        'ui.market_opportunity_summary',
+                        'ui.action_queue_summary',
+                        'ui.surface_delivery_summary',
+                        'ui.system_runtime_summary'
+                    )
+                    ORDER BY table_name
+                    """
+                ).fetchall()
+            finally:
+                con.close()
+        self.assertTrue(rows)
+        self.assertTrue(all(str(row[1]) == "fail" for row in rows))
+        self.assertTrue(any("surface_delivery_status" in str(row[2]) for row in rows))
+        self.assertTrue(any("surface_fallback_origin" in str(row[2]) for row in rows))
+        self.assertTrue(any("surface_delivery_reason_codes_json" in str(row[2]) for row in rows))
+        self.assertTrue(any("degraded_reason_codes_json" in str(row[2]) for row in rows))
+        self.assertTrue(any("degraded_surface_count" in str(row[2]) for row in rows))
+
 
 if __name__ == "__main__":
     unittest.main()

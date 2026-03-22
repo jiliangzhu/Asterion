@@ -72,6 +72,8 @@ UI_TABLES = {
     "action_queue_summary": "ui.action_queue_summary",
     "cohort_history_summary": "ui.cohort_history_summary",
     "proposal_resolution_summary": "ui.proposal_resolution_summary",
+    "surface_delivery_summary": "ui.surface_delivery_summary",
+    "system_runtime_summary": "ui.system_runtime_summary",
     "read_model_catalog": "ui.read_model_catalog",
     "truth_source_checks": "ui.truth_source_checks",
 }
@@ -184,6 +186,10 @@ def _apply_p8_overlay_defaults(row: dict[str, Any]) -> dict[str, Any]:
     row.setdefault("capital_scaling_reason_codes", [])
     row.setdefault("preview_binding_limit_scope", None)
     row.setdefault("preview_binding_limit_key", None)
+    row.setdefault("surface_delivery_status", "ok")
+    row.setdefault("surface_fallback_origin", None)
+    row.setdefault("surface_delivery_reason_codes_json", "[]")
+    row.setdefault("surface_last_refresh_ts", row.get("signal_created_at"))
     return row
 
 
@@ -1054,6 +1060,10 @@ def _read_weather_market_rows_from_runtime_result(db_path: Path) -> dict[str, An
                     item.get("rule2spec_verdict"),
                     item.get("data_qa_verdict"),
                 )
+                item["surface_delivery_status"] = "degraded_source"
+                item["surface_fallback_origin"] = "runtime_db"
+                item["surface_delivery_reason_codes_json"] = _json_array_text(["fallback:runtime_db"])
+                item["surface_last_refresh_ts"] = None
                 patched_rows.append(_apply_p8_overlay_defaults(item))
             frame = pd.DataFrame(patched_rows)
         return {"frame": frame, "error": None}
@@ -1221,6 +1231,10 @@ def _build_opportunity_row(
     capital_policy_id: str | None = None,
     capital_policy_version: str | None = None,
     capital_scaling_reason_codes: list[str] | None = None,
+    surface_delivery_status: str = "degraded_source",
+    surface_fallback_origin: str | None = "smoke_report",
+    surface_delivery_reason_codes: list[str] | None = None,
+    surface_last_refresh_ts: Any = None,
 ) -> dict[str, Any]:
     assessment = build_weather_opportunity_assessment(
         market_id=market_id,
@@ -1358,6 +1372,10 @@ def _build_opportunity_row(
         "source_badge": "fallback",
         "source_truth_status": "fallback",
         "is_degraded_source": True,
+        "surface_delivery_status": surface_delivery_status,
+        "surface_fallback_origin": surface_fallback_origin,
+        "surface_delivery_reason_codes_json": _json_array_text(list(surface_delivery_reason_codes or [f"fallback:{surface_fallback_origin or 'unknown'}"])),
+        "surface_last_refresh_ts": surface_last_refresh_ts or signal_created_at,
         "primary_score_label": "ranking_score",
     }
 
@@ -1509,6 +1527,10 @@ def _derive_market_opportunities_from_report(report: dict[str, Any] | None) -> p
                         "latest_forecast_target_time": None,
                         "threshold_bps": int(_coerce_float((best_signal or {}).get("threshold_bps")) or 0),
                         "signal_created_at": report.get("timestamp"),
+                        "surface_delivery_status": "degraded_source",
+                        "surface_fallback_origin": "smoke_report",
+                        "surface_delivery_reason_codes_json": _json_array_text(["fallback:smoke_report"]),
+                        "surface_last_refresh_ts": report.get("timestamp"),
                     }
                 )
             )
@@ -1544,6 +1566,10 @@ def _derive_market_opportunities_from_report(report: dict[str, Any] | None) -> p
                 calibration_reason_codes=(best_signal or {}).get("calibration_reason_codes")
                 if isinstance((best_signal or {}).get("calibration_reason_codes"), list)
                 else None,
+                surface_delivery_status="degraded_source",
+                surface_fallback_origin="smoke_report",
+                surface_delivery_reason_codes=["fallback:smoke_report"],
+                surface_last_refresh_ts=report.get("timestamp"),
             )
         )
     return _sort_market_opportunities(pd.DataFrame(rows))
@@ -1722,6 +1748,15 @@ def load_market_opportunity_data() -> dict[str, Any]:
     )
     if not frame.empty:
         return {"source": "ui_lite", "frame": frame, "read_error": snapshot.get("read_error")}
+    runtime_result = _read_weather_market_rows_from_runtime_result(_resolve_real_weather_chain_db_path())
+    runtime_frame = annotate_frame_with_source_truth(
+        _sort_market_opportunities(runtime_result["frame"]),
+        source_origin="weather_smoke_db",
+        derived=False,
+        freshness_column="source_freshness_status",
+    )
+    if not runtime_frame.empty:
+        return {"source": "weather_smoke_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
     report = load_real_weather_smoke_report()
     report_frame = annotate_frame_with_source_truth(
         _derive_market_opportunities_from_report(report),
@@ -1736,14 +1771,12 @@ def load_market_opportunity_data() -> dict[str, Any]:
         refresh_state = _ensure_text(report.get("refresh_state"))
         if chain_status not in {"initializing", "unknown"} and refresh_state != "initializing":
             return {"source": "smoke_report", "frame": report_frame, "read_error": snapshot.get("read_error")}
-    runtime_result = _read_weather_market_rows_from_runtime_result(_resolve_real_weather_chain_db_path())
-    runtime_frame = annotate_frame_with_source_truth(
-        _sort_market_opportunities(runtime_result["frame"]),
-        source_origin="weather_smoke_db",
-        derived=False,
-        freshness_column="source_freshness_status",
-    )
     return {"source": "weather_smoke_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
+
+
+def load_surface_delivery_summary() -> pd.DataFrame:
+    snapshot = load_ui_lite_snapshot()
+    return _sort_desc(snapshot["tables"]["surface_delivery_summary"], "last_refresh_ts")
 
 
 def _read_proposal_resolution_summary_result(db_path: Path) -> dict[str, Any]:
@@ -2100,6 +2133,8 @@ def load_system_runtime_status() -> dict[str, Any]:
     readiness = load_readiness_summary()
     evidence = load_readiness_evidence_bundle()
     snapshot = load_ui_lite_snapshot()
+    runtime_summary = _sort_desc(snapshot["tables"]["system_runtime_summary"], "generated_at")
+    surface_delivery = _sort_desc(snapshot["tables"]["surface_delivery_summary"], "last_refresh_ts")
     report_result = _read_json_result(_resolve_real_weather_smoke_report_path())
     report = report_result["payload"]
     opportunity_payload = load_market_opportunity_data()
@@ -2123,6 +2158,8 @@ def load_system_runtime_status() -> dict[str, Any]:
         and {"station_id", "impacted_market_count", "hard_gate_market_count", "review_required_market_count", "research_only_market_count"}.issubset(calibration_health.columns)
         else pd.DataFrame()
     )
+    persisted_runtime = runtime_summary.iloc[0].to_dict() if not runtime_summary.empty else {}
+    latest_delivery = surface_delivery.iloc[0].to_dict() if not surface_delivery.empty else {}
     return {
         "ui_lite_db_path": snapshot["db_path"],
         "ui_lite_exists": snapshot["exists"],
@@ -2147,6 +2184,14 @@ def load_system_runtime_status() -> dict[str, Any]:
         "weather_smoke_report_exists": _resolve_real_weather_smoke_report_path().exists(),
         "weather_smoke_status": (report or {}).get("chain_status"),
         "weather_smoke_report_error": report_result["error"],
+        "latest_surface_refresh_run_id": persisted_runtime.get("latest_surface_refresh_run_id"),
+        "latest_surface_refresh_status": persisted_runtime.get("latest_surface_refresh_status"),
+        "ui_replica_status": persisted_runtime.get("ui_replica_status"),
+        "ui_lite_status": persisted_runtime.get("ui_lite_status"),
+        "readiness_status": persisted_runtime.get("readiness_status"),
+        "weather_chain_status": persisted_runtime.get("weather_chain_status") or latest_delivery.get("delivery_status"),
+        "degraded_surface_count": int(_coerce_float(persisted_runtime.get("degraded_surface_count")) or 0),
+        "read_error_surface_count": int(_coerce_float(persisted_runtime.get("read_error_surface_count")) or 0),
         "table_row_counts": snapshot["table_row_counts"],
         "ui_lite_read_error": snapshot.get("read_error"),
         "opportunity_row_count": int(len(opportunities.index)),
@@ -2163,9 +2208,10 @@ def load_system_runtime_status() -> dict[str, Any]:
         "latest_calibration_freshness_status": latest_calibration.get("calibration_freshness_status"),
         "latest_calibration_profile_age_hours": latest_calibration.get("profile_age_hours"),
         "calibration_impacted_market_count": int(calibration_station_rollup["impacted_market_count"].sum()) if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("impacted_market_count")) or 0),
-        "calibration_hard_gate_market_count": int(calibration_station_rollup["hard_gate_market_count"].sum()) if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("hard_gate_market_count")) or 0),
+        "calibration_hard_gate_market_count": int(_coerce_float(persisted_runtime.get("calibration_hard_gate_market_count")) or (calibration_station_rollup["hard_gate_market_count"].sum() if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("hard_gate_market_count")) or 0))),
         "calibration_review_required_market_count": int(calibration_station_rollup["review_required_market_count"].sum()) if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("review_required_market_count")) or 0),
         "calibration_research_only_market_count": int(calibration_station_rollup["research_only_market_count"].sum()) if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("research_only_market_count")) or 0),
+        "surface_delivery_summary": surface_delivery,
     }
 
 
@@ -2203,6 +2249,66 @@ def _status_rank(status: str) -> int:
 
 
 def load_operator_surface_status() -> dict[str, dict[str, Any]]:
+    surface_delivery = load_surface_delivery_summary()
+    if not surface_delivery.empty:
+        surfaces: dict[str, dict[str, Any]] = {}
+        label_map = {
+            "home": "Home Surface",
+            "markets": "Market 链路",
+            "execution": "Execution / Live-Prereq",
+            "system": "System Runtime",
+            "agents": "Resolution Review",
+        }
+        for _, row in surface_delivery.iterrows():
+            surface_id = str(row.get("surface_id") or "")
+            if not surface_id:
+                continue
+            delivery_status = str(row.get("delivery_status") or "ok")
+            label = label_map.get(surface_id, surface_id)
+            if delivery_status == "ok":
+                payload = _surface_status(
+                    "ok",
+                    f"{label} 正常",
+                    "persisted delivery surface is available.",
+                    str(row.get("primary_source") or "ui_lite"),
+                    row.get("last_refresh_ts"),
+                )
+            elif delivery_status in {"degraded_source", "stale"}:
+                payload = _surface_status(
+                    "degraded_source",
+                    f"{label} 处于降级数据源",
+                    ", ".join(str(item) for item in _json_list(row.get("degraded_reason_codes_json"))) or "persisted delivery summary reports degraded source.",
+                    str(row.get("fallback_origin") or row.get("primary_source") or "ui_lite"),
+                    row.get("last_refresh_ts"),
+                )
+            elif delivery_status == "missing":
+                payload = _surface_status(
+                    "no_data",
+                    f"{label} 缺失",
+                    "persisted delivery summary reports missing surface data.",
+                    str(row.get("primary_source") or "missing"),
+                    row.get("last_refresh_ts"),
+                )
+            else:
+                payload = _surface_status(
+                    "read_error",
+                    f"{label} 读取失败",
+                    ", ".join(str(item) for item in _json_list(row.get("degraded_reason_codes_json"))) or "persisted delivery summary reports read errors.",
+                    str(row.get("primary_source") or "ui_lite"),
+                    row.get("last_refresh_ts"),
+                )
+            surfaces[surface_id if surface_id != "markets" else "market_chain"] = payload
+        if surfaces:
+            if "market_chain" not in surfaces and "markets" in surfaces:
+                surfaces["market_chain"] = surfaces.pop("markets")
+            worst_name, worst_surface = max(surfaces.items(), key=lambda item: _status_rank(item[1]["status"]))
+            return {
+                **surfaces,
+                "overall": {
+                    "surface": worst_name,
+                    **worst_surface,
+                },
+            }
     readiness = load_readiness_summary()
     evidence = load_readiness_evidence_bundle()
     execution = load_execution_console_data()

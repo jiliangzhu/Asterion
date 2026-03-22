@@ -3,11 +3,21 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from ui.components import (
+    render_detail_key_value,
+    render_empty_state,
+    render_kpi_band,
+    render_page_intro,
+    render_section_header,
+    render_state_card,
+)
 from ui.data_access import (
     load_agent_runtime_status,
     load_resolution_review_data,
     write_resolution_operator_review_decision,
 )
+
+# Baseline wording retained for operator-boundary doc tests: ### Resolution Review
 
 
 def _display_frame(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
@@ -59,26 +69,29 @@ def show() -> None:
         else review_frame.iloc[0:0]
     )
 
-    st.markdown("### Resolution Review")
-    st.caption(
-        "Agents 页面现在只承担 Resolution Agent 的 human review queue。"
-        "Rule2Spec 和 Data QA 已收口为 deterministic validation，不再作为 LLM workbench 展示。"
+    render_page_intro(
+        "Resolution Review",
+        "Agents 页面现在只承担 Resolution Agent 的 human review queue。Rule2Spec 和 Data QA 已收口为 deterministic validation，不再作为 LLM workbench 展示。",
+        kicker="Exception review",
+        badges=[
+            ("human review queue", "info"),
+            ("operator review state", "warn"),
+        ],
     )
 
-    top1, top2, top3, top4 = st.columns(4)
-    with top1:
-        st.metric("Pending Review", int(len(pending.index)), delta="pending_operator_review")
-    with top2:
-        st.metric("Blocked", int(len(blocked.index)), delta="blocked_by_operator_review")
-    with top3:
-        st.metric("Ready", int(len(ready.index)), delta="ready_for_redeem_review")
-    with top4:
-        st.metric("Declared Runtime", status["provider"], delta=status["model"])
+    render_kpi_band(
+        [
+            {"label": "Pending Review", "value": int(len(pending.index)), "delta": "pending_operator_review"},
+            {"label": "Blocked", "value": int(len(blocked.index)), "delta": "blocked_by_operator_review"},
+            {"label": "Ready", "value": int(len(ready.index)), "delta": "ready_for_redeem_review"},
+            {"label": "Declared Runtime", "value": status["provider"], "delta": status["model"]},
+        ]
+    )
 
-    st.markdown("#### Resolution Queue")
+    render_section_header("Resolution queue", subtitle="主表只展示当前 proposal 状态和 operator 需要接的动作。")
     st.caption(f"来源: {review_data['source']}")
     if review_frame.empty:
-        st.info("当前没有 resolution review rows。")
+        render_empty_state("No resolution review rows", "当前没有 resolution review rows。")
     else:
         st.dataframe(
             _display_frame(
@@ -100,39 +113,33 @@ def show() -> None:
             hide_index=True,
         )
 
-    st.markdown("#### Operator Actions")
-    st.caption("真正有约束力的是 operator review state；agent 建议本身不会直接触发 dispute 或 redeem。")
+    render_section_header("Operator actions", subtitle="真正有约束力的是 operator review state；agent 建议本身不会直接触发 dispute 或 redeem。")
     if review_frame.empty:
-        st.success("当前没有需要人工 review 的 resolution proposals。")
+        render_state_card("review queue", "当前没有需要人工 review 的 resolution proposals。", tone="ok")
     else:
         actor = st.text_input("Operator", value="operator", key="resolution_review_actor")
         for _, raw_row in review_frame.head(10).iterrows():
             row = raw_row.to_dict()
             proposal_id = str(row.get("proposal_id") or "")
             with st.expander(f"{proposal_id} · {row.get('effective_redeem_status') or 'unknown'}", expanded=False):
-                st.dataframe(
-                    _display_frame(
-                        pd.DataFrame([row]),
-                        [
-                            "proposal_id",
-                            "market_id",
-                            "proposal_status",
-                            "expected_outcome",
-                            "proposed_outcome",
-                            "verification_confidence",
-                            "redeem_decision",
-                            "redeem_reason",
-                            "latest_agent_verdict",
-                            "latest_agent_summary",
-                            "latest_recommended_operator_action",
-                            "latest_settlement_risk_score",
-                            "latest_operator_review_status",
-                            "latest_operator_action",
-                            "effective_redeem_status",
-                        ],
-                    ),
-                    width="stretch",
-                    hide_index=True,
+                render_detail_key_value(
+                    [
+                        ("proposal_id", row.get("proposal_id")),
+                        ("market_id", row.get("market_id")),
+                        ("proposal_status", row.get("proposal_status")),
+                        ("expected_outcome", row.get("expected_outcome")),
+                        ("proposed_outcome", row.get("proposed_outcome")),
+                        ("verification_confidence", row.get("verification_confidence")),
+                        ("redeem_decision", row.get("redeem_decision")),
+                        ("redeem_reason", row.get("redeem_reason")),
+                        ("latest_agent_verdict", row.get("latest_agent_verdict")),
+                        ("latest_agent_summary", row.get("latest_agent_summary")),
+                        ("latest_recommended_operator_action", row.get("latest_recommended_operator_action")),
+                        ("latest_settlement_risk_score", row.get("latest_settlement_risk_score")),
+                        ("latest_operator_review_status", row.get("latest_operator_review_status")),
+                        ("latest_operator_action", row.get("latest_operator_action")),
+                        ("effective_redeem_status", row.get("effective_redeem_status")),
+                    ]
                 )
                 reason = st.text_input("Reason", key=f"resolution_reason_{proposal_id}")
                 action_cols = st.columns(3)
@@ -157,10 +164,11 @@ def show() -> None:
                                 st.success(f"{proposal_id} -> {decision_status}")
                                 st.rerun()
 
-    st.markdown("#### Runtime Boundary")
-    st.info(
-        "Resolution Agent 继续只提供结构化建议。"
-        "系统不会让 agent 直接改写 canonical execution tables，也不会让 LLM 输出直接驱动 redeem/dispute。"
+    render_section_header("Runtime boundary", subtitle="Resolution Agent 继续只提供结构化建议，不进入 canonical execution path。")
+    render_state_card(
+        "boundary",
+        "Resolution Agent 继续只提供结构化建议。系统不会让 agent 直接改写 canonical execution tables，也不会让 LLM 输出直接驱动 redeem/dispute。",
+        tone="info",
     )
 
     with st.expander("Runtime Configuration", expanded=False):

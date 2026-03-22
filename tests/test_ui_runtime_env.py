@@ -6,7 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ui.runtime_env import export_ui_runtime_env_shell, load_ui_runtime_boundary_status, resolve_ui_runtime_env
+from ui.runtime_env import (
+    export_ui_runtime_env_shell,
+    hydrate_ui_runtime_env,
+    load_ui_runtime_boundary_status,
+    resolve_ui_runtime_env,
+)
 
 
 class UiRuntimeEnvTest(unittest.TestCase):
@@ -98,6 +103,27 @@ class UiRuntimeEnvTest(unittest.TestCase):
             status = load_ui_runtime_boundary_status()
         self.assertEqual(status.status, "ok")
         self.assertEqual(status.bind_scope, "public")
+
+    def test_hydrate_ui_runtime_env_populates_missing_allowlisted_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "ASTERION_UI_USERNAME=operator",
+                        "ASTERION_UI_PASSWORD_HASH=hash123",
+                        "ASTERION_OPENAI_COMPATIBLE_API_KEY=secret-should-not-leak",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                payload = hydrate_ui_runtime_env(env_path=env_path)
+                self.assertEqual(os.environ["ASTERION_UI_USERNAME"], "operator")
+                self.assertEqual(os.environ["ASTERION_UI_PASSWORD_HASH"], "hash123")
+                self.assertNotIn("ASTERION_OPENAI_COMPATIBLE_API_KEY", os.environ)
+                self.assertEqual(payload["ASTERION_UI_USERNAME"], "operator")
 
 
 if __name__ == "__main__":

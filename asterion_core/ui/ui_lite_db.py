@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,18 @@ DEFAULT_READINESS_REPORT_JSON_PATH = "data/ui/asterion_readiness_p3.json"
 DEFAULT_READINESS_EVIDENCE_JSON_PATH = "data/ui/asterion_readiness_evidence_p4.json"
 
 _REQUIRED_UI_TABLES = list(required_ui_tables())
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value in {None, ""}:
+        return []
+    try:
+        payload = json.loads(str(value))
+    except Exception:  # noqa: BLE001
+        return []
+    return payload if isinstance(payload, list) else []
 
 
 def default_ui_lite_db_path() -> str:
@@ -1605,6 +1618,11 @@ def _build_ui_lite_contract(
             table_row_counts=table_row_counts,
         )
         build_catalog_tables(con, table_row_counts=table_row_counts)
+        _create_surface_delivery_summary(con, table_row_counts=table_row_counts)
+        _create_system_runtime_summary(con, table_row_counts=table_row_counts)
+        build_catalog_tables(con, table_row_counts=table_row_counts)
+        _create_surface_delivery_summary(con, table_row_counts=table_row_counts)
+        _create_system_runtime_summary(con, table_row_counts=table_row_counts)
         return table_row_counts
     finally:
         con.close()
@@ -3271,11 +3289,215 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
         derived=False,
         freshness_column="source_freshness_status",
     )
+    refresh_columns = [column for column in ["signal_created_at", "agent_updated_at", "live_updated_at", "calibration_profile_materialized_at"] if column in result.columns]
+    if refresh_columns:
+        result["surface_last_refresh_ts"] = result[refresh_columns].bfill(axis=1).iloc[:, 0]
+    else:
+        result["surface_last_refresh_ts"] = None
+    result["surface_delivery_status"] = "ok"
+    result["surface_fallback_origin"] = None
+    result["surface_delivery_reason_codes_json"] = "[]"
     con.register("market_opportunity_summary_df", result)
     con.execute("CREATE OR REPLACE TABLE ui.market_opportunity_summary AS SELECT * FROM market_opportunity_summary_df")
     row = con.execute("SELECT COUNT(*) FROM ui.market_opportunity_summary").fetchone()
     table_row_counts["ui.market_opportunity_summary"] = int(row[0]) if row is not None else 0
     con.unregister("market_opportunity_summary_df")
+
+
+def _create_surface_delivery_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    check_rows = con.execute(
+        """
+        SELECT surface_id, table_name, check_status, issues_json, checked_at
+        FROM ui.truth_source_checks
+        """
+    ).fetchall()
+    checks_by_surface: dict[str, list[dict[str, Any]]] = {}
+    for surface_id, table_name, check_status, issues_json, checked_at in check_rows:
+        if str(table_name) in {"ui.surface_delivery_summary", "ui.system_runtime_summary"}:
+            continue
+        checks_by_surface.setdefault(str(surface_id), []).append(
+            {
+                "table_name": str(table_name),
+                "check_status": str(check_status),
+                "issues": _json_list(issues_json),
+                "checked_at": checked_at,
+            }
+        )
+    primary_tables = {
+        "home": "ui.action_queue_summary",
+        "markets": "ui.market_opportunity_summary",
+        "execution": "ui.execution_science_summary",
+        "system": "ui.system_runtime_summary",
+        "agents": "ui.proposal_resolution_summary",
+    }
+    rows: list[dict[str, Any]] = []
+    for surface_id, checks in checks_by_surface.items():
+        primary_table = primary_tables.get(surface_id) or (checks[0]["table_name"] if checks else None)
+        primary_source = "ui_lite"
+        fallback_origin = None
+        truth_check_status = "ok"
+        truth_check_issue_count = 0
+        degraded_reasons: list[str] = []
+        last_refresh_ts = None
+        row_count = 0
+        delivery_status = "ok"
+        if checks:
+            if any(item["check_status"] == "fail" for item in checks):
+                truth_check_status = "fail"
+                delivery_status = "read_error"
+            elif any(item["check_status"] == "warn" for item in checks):
+                truth_check_status = "warn"
+            truth_check_issue_count = sum(len(item["issues"]) for item in checks)
+            degraded_reasons = [issue for item in checks for issue in item["issues"]]
+            last_refresh_ts = max((item["checked_at"] for item in checks if item["checked_at"] is not None), default=None)
+        if primary_table and _table_exists(con, primary_table):
+            row_count = int(con.execute(f"SELECT COUNT(*) FROM {primary_table}").fetchone()[0])
+            columns = {str(row[1]) for row in con.execute(f"PRAGMA table_info('{primary_table}')").fetchall()}
+            if "surface_delivery_status" in columns and row_count > 0:
+                statuses = {
+                    str(row[0])
+                    for row in con.execute(
+                        f"SELECT DISTINCT surface_delivery_status FROM {primary_table} WHERE surface_delivery_status IS NOT NULL"
+                    ).fetchall()
+                }
+                if "read_error" in statuses or "missing" in statuses:
+                    delivery_status = "read_error" if "read_error" in statuses else "missing"
+                elif "degraded_source" in statuses:
+                    delivery_status = "degraded_source"
+                elif "stale" in statuses:
+                    delivery_status = "stale"
+            if "surface_fallback_origin" in columns and row_count > 0:
+                fallback_row = con.execute(
+                    f"""
+                    SELECT surface_fallback_origin
+                    FROM {primary_table}
+                    WHERE surface_fallback_origin IS NOT NULL AND surface_fallback_origin <> ''
+                    ORDER BY surface_last_refresh_ts DESC NULLS LAST
+                    LIMIT 1
+                    """
+                ).fetchone()
+                fallback_origin = str(fallback_row[0]) if fallback_row is not None else None
+            if "surface_last_refresh_ts" in columns and row_count > 0:
+                refresh_row = con.execute(f"SELECT MAX(surface_last_refresh_ts) FROM {primary_table}").fetchone()
+                if refresh_row is not None:
+                    last_refresh_ts = refresh_row[0] or last_refresh_ts
+            if "source_truth_status" in columns and row_count > 0 and delivery_status == "ok":
+                truth_statuses = {
+                    str(row[0])
+                    for row in con.execute(
+                        f"SELECT DISTINCT source_truth_status FROM {primary_table} WHERE source_truth_status IS NOT NULL"
+                    ).fetchall()
+                }
+                if {"fallback", "degraded", "stale"} & truth_statuses:
+                    delivery_status = "degraded_source"
+                    if fallback_origin is None:
+                        fallback_origin = "runtime_db"
+        elif primary_table:
+            delivery_status = "missing"
+            degraded_reasons.append(f"table_missing:{primary_table}")
+        rows.append(
+            {
+                "surface_id": surface_id,
+                "primary_table": primary_table,
+                "delivery_status": delivery_status,
+                "primary_source": primary_source,
+                "fallback_origin": fallback_origin,
+                "truth_check_status": truth_check_status,
+                "truth_check_issue_count": truth_check_issue_count,
+                "row_count": row_count,
+                "last_refresh_ts": last_refresh_ts,
+                "degraded_reason_codes_json": json.dumps(degraded_reasons, ensure_ascii=True, sort_keys=True),
+                "primary_score_label": "surface_delivery_status",
+            }
+        )
+    frame = pd.DataFrame(rows)
+    con.register("surface_delivery_df", frame)
+    con.execute("CREATE OR REPLACE TABLE ui.surface_delivery_summary AS SELECT * FROM surface_delivery_df")
+    table_row_counts["ui.surface_delivery_summary"] = int(len(frame.index))
+    con.unregister("surface_delivery_df")
+
+
+def _create_system_runtime_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    latest_refresh = None
+    if _table_exists(con, "src.runtime.operator_surface_refresh_runs"):
+        latest_refresh = con.execute(
+            """
+            SELECT
+                refresh_run_id,
+                CASE
+                    WHEN COALESCE(error, '') <> '' OR NOT ui_lite_ok OR NOT ui_replica_ok THEN 'read_error'
+                    WHEN read_error_surface_count > 0 THEN 'read_error'
+                    WHEN degraded_surface_count > 0 THEN 'degraded_source'
+                    ELSE 'ok'
+                END AS refresh_status,
+                ui_replica_ok,
+                ui_lite_ok,
+                degraded_surface_count,
+                read_error_surface_count,
+                refreshed_at
+            FROM src.runtime.operator_surface_refresh_runs
+            ORDER BY refreshed_at DESC, refresh_run_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    delivery = con.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN delivery_status = 'degraded_source' THEN 1 ELSE 0 END), 0) AS degraded_surface_count,
+            COALESCE(SUM(CASE WHEN delivery_status = 'read_error' THEN 1 ELSE 0 END), 0) AS read_error_surface_count
+        FROM ui.surface_delivery_summary
+        """
+    ).fetchone()
+    readiness = con.execute(
+        """
+        SELECT
+            COALESCE(MAX(go_decision), 'UNKNOWN') AS readiness_status
+        FROM ui.phase_readiness_summary
+        """
+    ).fetchone()
+    weather_chain = con.execute(
+        """
+        SELECT
+            CASE
+                WHEN COUNT(*) = 0 THEN 'missing'
+                WHEN SUM(CASE WHEN source_truth_status IN ('fallback', 'degraded', 'stale') THEN 1 ELSE 0 END) > 0 THEN 'degraded'
+                ELSE 'ok'
+            END AS weather_chain_status
+        FROM ui.market_opportunity_summary
+        """
+    ).fetchone()
+    calibration = con.execute(
+        """
+        SELECT
+            COALESCE(SUM(hard_gate_market_count), 0) AS calibration_hard_gate_market_count
+        FROM ui.calibration_health_summary
+        """
+    ).fetchone()
+    resolution = con.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN effective_redeem_status = 'pending_operator_review' THEN 1 ELSE 0 END), 0) AS pending_operator_review_count
+        FROM ui.proposal_resolution_summary
+        """
+    ).fetchone()
+    row = {
+        "generated_at": datetime.now(UTC).replace(tzinfo=None),
+        "latest_surface_refresh_run_id": latest_refresh[0] if latest_refresh else None,
+        "latest_surface_refresh_status": latest_refresh[1] if latest_refresh else ("read_error" if int(delivery[1] or 0) > 0 else "ok"),
+        "ui_replica_status": "ok" if (latest_refresh[2] if latest_refresh else True) else "read_error",
+        "ui_lite_status": "ok" if (latest_refresh[3] if latest_refresh else True) else "read_error",
+        "readiness_status": readiness[0] if readiness else "UNKNOWN",
+        "weather_chain_status": weather_chain[0] if weather_chain else "missing",
+        "degraded_surface_count": int(delivery[0] or 0),
+        "read_error_surface_count": int(delivery[1] or 0),
+        "calibration_hard_gate_market_count": int(calibration[0] or 0),
+        "pending_operator_review_count": int(resolution[0] or 0),
+    }
+    frame = pd.DataFrame([row])
+    con.register("system_runtime_df", frame)
+    con.execute("CREATE OR REPLACE TABLE ui.system_runtime_summary AS SELECT * FROM system_runtime_df")
+    table_row_counts["ui.system_runtime_summary"] = 1
+    con.unregister("system_runtime_df")
 
 
 def _create_table_from_src(con, *, target: str, sql_body: str, table_row_counts: dict[str, int]) -> None:

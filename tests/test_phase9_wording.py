@@ -14,6 +14,7 @@ class Phase9WordingBaselineTest(unittest.TestCase):
                 "Operator Console for Constrained Execution",
                 "v2.0 implementation active",
                 "P4/remediation accepted",
+                "Phase 9 in progress",
                 "Exception Review",
                 "Readiness Evidence",
                 "load_boundary_sidebar_truth",
@@ -82,12 +83,14 @@ class Phase9WordingBaselineTest(unittest.TestCase):
             ROOT / "README.md": [
                 "P4 accepted; post-P4 remediation accepted; v2.0 implementation active",
                 "V2_Implementation_Plan.md",
+                "P9_Implementation_Plan.md",
                 "P8_Implementation_Plan.md",
                 "P8_Closeout_Checklist.md",
                 "P7_Implementation_Plan.md",
                 "当前唯一 active implementation entry",
                 "operator console + constrained execution infra",
                 "最近 accepted tranche: `Phase 8`",
+                "current tranche: `Phase 9` in progress",
                 "不表示 unattended live",
             ],
             ROOT / "AGENTS.md": [
@@ -99,6 +102,7 @@ class Phase9WordingBaselineTest(unittest.TestCase):
             ROOT / "docs" / "00-overview" / "versions" / "v2.0" / "Asterion_Project_Plan.md": [
                 "operator console + constrained execution infra",
                 "V2_Implementation_Plan.md",
+                "P9_Implementation_Plan.md",
                 "P8_Implementation_Plan.md",
                 "P8_Closeout_Checklist.md",
                 "P7_Implementation_Plan.md",
@@ -109,6 +113,7 @@ class Phase9WordingBaselineTest(unittest.TestCase):
             ROOT / "docs" / "00-overview" / "versions" / "v2.0" / "DEVELOPMENT_ROADMAP.md": [
                 "当前 active implementation entry",
                 "V2_Implementation_Plan.md",
+                "P9_Implementation_Plan.md",
                 "P8_Implementation_Plan.md",
                 "P8_Closeout_Checklist.md",
                 "P7_Implementation_Plan.md",
@@ -118,6 +123,7 @@ class Phase9WordingBaselineTest(unittest.TestCase):
             ROOT / "docs" / "00-overview" / "Documentation_Index.md": [
                 "当前状态与 operator 边界的 truth-source",
                 "V2_Implementation_Plan.md",
+                "P9_Implementation_Plan.md",
                 "P8_Implementation_Plan.md",
                 "P8_Closeout_Checklist.md",
                 "P7_Implementation_Plan.md",
@@ -125,6 +131,7 @@ class Phase9WordingBaselineTest(unittest.TestCase):
             ],
             ROOT / "docs" / "10-implementation" / "Implementation_Index.md": [
                 "V2_Implementation_Plan.md",
+                "P9_Implementation_Plan.md",
                 "P8_Implementation_Plan.md",
                 "P8_Closeout_Checklist.md",
                 "P7_Implementation_Plan.md",

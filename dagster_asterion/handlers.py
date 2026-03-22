@@ -158,7 +158,18 @@ from asterion_core.runtime import (
     run_strategy_engine,
 )
 from asterion_core.storage.write_queue import WriteQueueConfig
-from asterion_core.ui import build_ui_lite_db_once, refresh_ui_db_replica_once
+from asterion_core.ui import (
+    build_ui_lite_db_once,
+    default_ui_db_replica_path,
+    default_ui_lite_db_path,
+    default_ui_lite_meta_path,
+    default_ui_replica_meta_path,
+    refresh_ui_db_replica_once,
+)
+from asterion_core.ui.surface_refresh_runtime import (
+    OperatorSurfaceRefreshRunRecord,
+    persist_operator_surface_refresh_run,
+)
 from domains.weather.forecast import (
     AdapterRouter,
     CalibrationProfileMaterializationStatus,
@@ -217,6 +228,9 @@ from domains.weather.spec import (
     load_weather_markets_for_rule2spec,
     parse_rule2spec_draft,
 )
+
+
+DEFAULT_READINESS_EVIDENCE_JSON_PATH = "data/ui/asterion_readiness_evidence_p4.json"
 
 
 @dataclass(frozen=True)
@@ -1461,17 +1475,17 @@ def run_weather_live_prereq_readiness_job(
         evidence_bundle,
         json_path=readiness_evidence_json_path,
     )
-    replica_result = refresh_ui_db_replica_once(
-        src_db_path=db_path,
-        dst_db_path=ui_replica_db_path,
-        meta_path=ui_replica_meta_path,
-    )
-    lite_result = build_ui_lite_db_once(
-        src_db_path=ui_replica_db_path,
-        dst_db_path=ui_lite_db_path,
-        meta_path=ui_lite_meta_path,
+    refresh_metadata = run_operator_surface_refresh(
+        con,
+        job_name="weather_live_prereq_readiness",
+        trigger_mode="scheduled",
+        ui_replica_db_path=ui_replica_db_path,
+        ui_replica_meta_path=ui_replica_meta_path,
+        ui_lite_db_path=ui_lite_db_path,
+        ui_lite_meta_path=ui_lite_meta_path,
         readiness_report_json_path=readiness_report_json_path,
         readiness_evidence_json_path=readiness_evidence_json_path,
+        run_id=request_id,
     )
     failed_gate_names = [item.gate_name for item in report.gate_results if not item.passed]
     return ColdPathHandlerResult(
@@ -1492,10 +1506,117 @@ def run_weather_live_prereq_readiness_job(
             "capability_manifest_status": report.capability_manifest_status,
             "evidence_blocker_count": len(evidence_bundle.blockers),
             "evidence_warning_count": len(evidence_bundle.warnings),
-            "ui_replica_ok": replica_result.ok,
-            "ui_lite_ok": lite_result.ok,
+            **refresh_metadata,
         },
     )
+
+
+def run_operator_surface_refresh(
+    con,
+    *,
+    job_name: str,
+    trigger_mode: str,
+    ui_replica_db_path: str,
+    ui_replica_meta_path: str,
+    ui_lite_db_path: str,
+    ui_lite_meta_path: str,
+    readiness_report_json_path: str,
+    readiness_evidence_json_path: str,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    refresh_run_id = run_id or new_request_id()
+    db_path = _resolve_connection_db_path(con)
+    replica_result = refresh_ui_db_replica_once(
+        src_db_path=db_path,
+        dst_db_path=ui_replica_db_path,
+        meta_path=ui_replica_meta_path,
+    )
+    lite_result = build_ui_lite_db_once(
+        src_db_path=ui_replica_db_path,
+        dst_db_path=ui_lite_db_path,
+        meta_path=ui_lite_meta_path,
+        readiness_report_json_path=readiness_report_json_path,
+        readiness_evidence_json_path=readiness_evidence_json_path,
+    )
+    truth_check_fail_count = 0
+    degraded_surface_count = 0
+    read_error_surface_count = 0
+    refreshed_at = datetime.now(UTC)
+    if lite_result.ok:
+        import duckdb
+
+        lite_con = duckdb.connect(str(ui_lite_db_path), read_only=True)
+        try:
+            truth_check_fail_count = int(
+                lite_con.execute(
+                    "SELECT COUNT(*) FROM ui.truth_source_checks WHERE check_status = 'fail'"
+                ).fetchone()[0]
+            )
+            if _duckdb_table_exists(lite_con, "ui.surface_delivery_summary"):
+                degraded_surface_count = int(
+                    lite_con.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM ui.surface_delivery_summary
+                        WHERE delivery_status = 'degraded_source'
+                        """
+                    ).fetchone()[0]
+                )
+                read_error_surface_count = int(
+                    lite_con.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM ui.surface_delivery_summary
+                        WHERE delivery_status = 'read_error'
+                        """
+                    ).fetchone()[0]
+                )
+        finally:
+            lite_con.close()
+
+    persist_operator_surface_refresh_run(
+        db_path,
+        OperatorSurfaceRefreshRunRecord(
+            refresh_run_id=refresh_run_id,
+            job_name=job_name,
+            trigger_mode=trigger_mode,
+            source_db_path=db_path,
+            ui_replica_ok=bool(replica_result.ok),
+            ui_lite_ok=bool(lite_result.ok),
+            truth_check_fail_count=truth_check_fail_count,
+            degraded_surface_count=degraded_surface_count,
+            read_error_surface_count=read_error_surface_count,
+            refreshed_at=refreshed_at,
+            error=replica_result.error or lite_result.error,
+        ),
+    )
+    return {
+        "surface_refresh_run_id": refresh_run_id,
+        "ui_replica_ok": replica_result.ok,
+        "ui_lite_ok": lite_result.ok,
+        "truth_check_fail_count": truth_check_fail_count,
+        "degraded_surface_count": degraded_surface_count,
+        "read_error_surface_count": read_error_surface_count,
+        "surface_refresh_error": replica_result.error or lite_result.error,
+        "surface_refresh_refreshed_at": refreshed_at.isoformat(),
+    }
+
+
+def _duckdb_table_exists(con, table_name: str) -> bool:
+    schema_name, _, short_name = table_name.partition(".")
+    if not short_name:
+        schema_name = "main"
+        short_name = schema_name
+    row = con.execute(
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = ? AND table_name = ?
+        LIMIT 1
+        """,
+        [schema_name, short_name],
+    ).fetchone()
+    return row is not None
 
 
 def run_weather_spec_sync(
@@ -2829,6 +2950,18 @@ def run_weather_paper_execution_job(
         )
     )
     task_ids.extend(_append_task_id(enqueue_journal_event_upserts(queue_cfg, journal_events=journal_events, run_id=request_id)))
+    refresh_metadata = run_operator_surface_refresh(
+        con,
+        job_name="weather_paper_execution",
+        trigger_mode="manual",
+        ui_replica_db_path=default_ui_db_replica_path(),
+        ui_replica_meta_path=default_ui_replica_meta_path(replica_db_path=default_ui_db_replica_path()),
+        ui_lite_db_path=default_ui_lite_db_path(),
+        ui_lite_meta_path=default_ui_lite_meta_path(lite_db_path=default_ui_lite_db_path()),
+        readiness_report_json_path=os.getenv("ASTERION_READINESS_REPORT_JSON_PATH", "data/ui/asterion_readiness_p4.json"),
+        readiness_evidence_json_path=os.getenv("ASTERION_READINESS_EVIDENCE_JSON_PATH", DEFAULT_READINESS_EVIDENCE_JSON_PATH),
+        run_id=request_id,
+    )
     return ColdPathHandlerResult(
         job_name="weather_paper_execution",
         run_id=request_id,
@@ -2860,7 +2993,42 @@ def run_weather_paper_execution_job(
             "execution_context_count": len(execution_context_records_by_id),
             "ticket_execution_context_ids": ticket_execution_context_ids,
             "strategy_run_id": strategy_run.run_id,
+            **refresh_metadata,
         },
+    )
+
+
+def run_weather_operator_surface_refresh_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    ui_replica_db_path: str,
+    ui_replica_meta_path: str,
+    ui_lite_db_path: str,
+    ui_lite_meta_path: str,
+    readiness_report_json_path: str,
+    readiness_evidence_json_path: str,
+    run_id: str | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    metadata = run_operator_surface_refresh(
+        con,
+        job_name="weather_operator_surface_refresh",
+        trigger_mode="scheduled",
+        ui_replica_db_path=ui_replica_db_path,
+        ui_replica_meta_path=ui_replica_meta_path,
+        ui_lite_db_path=ui_lite_db_path,
+        ui_lite_meta_path=ui_lite_meta_path,
+        readiness_report_json_path=readiness_report_json_path,
+        readiness_evidence_json_path=readiness_evidence_json_path,
+        run_id=request_id,
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_operator_surface_refresh",
+        run_id=request_id,
+        task_ids=[],
+        item_count=1,
+        metadata=metadata,
     )
 
 
@@ -2888,6 +3056,18 @@ def run_weather_resolution_review_job(
         for request in requests
     ]
     task_ids = enqueue_agent_artifact_upserts(queue_cfg, artifacts=artifacts, run_id=request_id)
+    refresh_metadata = run_operator_surface_refresh(
+        con,
+        job_name="weather_resolution_review",
+        trigger_mode="manual",
+        ui_replica_db_path=default_ui_db_replica_path(),
+        ui_replica_meta_path=default_ui_replica_meta_path(replica_db_path=default_ui_db_replica_path()),
+        ui_lite_db_path=default_ui_lite_db_path(),
+        ui_lite_meta_path=default_ui_lite_meta_path(lite_db_path=default_ui_lite_db_path()),
+        readiness_report_json_path=os.getenv("ASTERION_READINESS_REPORT_JSON_PATH", "data/ui/asterion_readiness_p4.json"),
+        readiness_evidence_json_path=os.getenv("ASTERION_READINESS_EVIDENCE_JSON_PATH", DEFAULT_READINESS_EVIDENCE_JSON_PATH),
+        run_id=request_id,
+    )
     return ColdPathHandlerResult(
         job_name="weather_resolution_review",
         run_id=request_id,
@@ -2896,6 +3076,7 @@ def run_weather_resolution_review_job(
         metadata={
             "output_count": sum(1 for item in artifacts if item.output is not None),
             "subject_ids": [item.invocation.subject_id for item in artifacts],
+            **refresh_metadata,
         },
     )
 

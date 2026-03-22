@@ -24,7 +24,8 @@ print_boundary_summary() {
     echo "  - default-off"
     echo "  - approve_usdc only"
     echo "  - latest accepted tranche: Phase 8"
-    echo "  - no current tranche-specific plan open"
+    echo "  - current tranche: Phase 9 in progress"
+    echo "  - phase status: core implemented / closeout pending"
 }
 
 require_path() {

@@ -5,6 +5,14 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from ui.components import (
+    render_detail_key_value,
+    render_empty_state,
+    render_kpi_band,
+    render_page_intro,
+    render_section_header,
+    render_state_card,
+)
 from ui.data_access import (
     load_operator_surface_status,
     load_readiness_evidence_bundle,
@@ -16,6 +24,15 @@ from ui.data_access import (
 def _build_component_rows(status: dict[str, object], readiness: dict[str, object]) -> list[dict[str, object]]:
     report = readiness.get("report") or {}
     return [
+        {
+            "组件": "Operator Surface Refresh",
+            "状态": (status.get("latest_surface_refresh_status") or "UNKNOWN").upper(),
+            "来源": status.get("latest_surface_refresh_run_id"),
+            "详情": (
+                f"degraded={status.get('degraded_surface_count', 0)} "
+                f"read_error={status.get('read_error_surface_count', 0)}"
+            ),
+        },
         {
             "组件": "P4 Readiness Contract",
             "状态": readiness.get("go_decision") or "UNKNOWN",
@@ -78,8 +95,15 @@ def show() -> None:
     status = load_system_runtime_status()
     surface_status = load_operator_surface_status()
 
-    st.markdown("### Readiness Evidence")
-    st.caption("System 页面主叙事是 readiness evidence 与 constrained execution boundary，而不是单一的 GO/NO-GO 口号或 file-path console。")
+    render_page_intro(
+        "Readiness Evidence",
+        "System 页面主叙事是 readiness evidence 与 constrained execution boundary，而不是单一的 GO/NO-GO 口号或 file-path console。",
+        kicker="Runtime evidence wall",
+        badges=[
+            ("readiness evidence", "info"),
+            ("constrained execution boundary", "warn"),
+        ],
+    )
 
     surface_rows = [
         {
@@ -101,22 +125,21 @@ def show() -> None:
         else:
             st.info(f"{worst_surface['label']}: {worst_surface['detail']}")
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("Readiness", readiness.get("go_decision") or "UNKNOWN", delta=readiness.get("target") or "p4_live_prerequisites")
-    with c2:
-        st.metric("Failed Gates", len(readiness.get("failed_gate_names") or []), delta="P4 readiness")
-    with c3:
-        st.metric("UI Lite DB", "READY" if status["ui_lite_exists"] else "MISSING", delta=Path(status["ui_lite_db_path"]).name)
-    with c4:
-        st.metric(
-            "Weather Smoke",
-            status.get("weather_smoke_status") or "unknown",
-            delta=f"hard_gate={status.get('calibration_hard_gate_market_count', 0)}",
-        )
+    render_kpi_band(
+        [
+            {"label": "Readiness", "value": readiness.get("go_decision") or "UNKNOWN", "delta": readiness.get("target") or "p4_live_prerequisites"},
+            {"label": "Failed Gates", "value": len(readiness.get("failed_gate_names") or []), "delta": "P4 readiness"},
+            {"label": "UI Lite DB", "value": status.get("ui_lite_status") or ("READY" if status["ui_lite_exists"] else "MISSING"), "delta": Path(status["ui_lite_db_path"]).name},
+            {"label": "Surface Refresh", "value": status.get("latest_surface_refresh_status") or "unknown", "delta": f"hard_gate={status.get('calibration_hard_gate_market_count', 0)}"},
+        ]
+    )
 
-    st.markdown("#### Decision")
-    st.info(evidence.get("decision_reason") or readiness.get("decision_reason") or "尚未生成 readiness 证据包。")
+    render_section_header("Decision", subtitle="先回答 readiness decision，再下沉 boundary、delivery 和 evidence 细节。")
+    render_state_card(
+        "decision",
+        evidence.get("decision_reason") or readiness.get("decision_reason") or "尚未生成 readiness 证据包。",
+        tone="info",
+    )
     boundary = evidence.get("capability_boundary_summary") or readiness.get("capability_boundary_summary") or {}
     if boundary:
         st.caption(
@@ -128,92 +151,111 @@ def show() -> None:
             f"constrained_real_submit_enabled={boundary.get('constrained_real_submit_enabled')} · "
             f"manifest_status={boundary.get('manifest_status')}"
         )
-    st.markdown("#### Capability Boundary")
-    boundary_rows = [
-        {"字段": "manifest_status", "值": evidence.get("capability_manifest_status") or readiness.get("capability_manifest_status")},
-        {"字段": "manual_only", "值": boundary.get("manual_only")},
-        {"字段": "default_off", "值": boundary.get("default_off")},
-        {"字段": "approve_usdc_only", "值": boundary.get("approve_usdc_only")},
-        {"字段": "shadow_submitter_only", "值": boundary.get("shadow_submitter_only")},
-        {"字段": "constrained_real_submit_enabled", "值": boundary.get("constrained_real_submit_enabled")},
-    ]
-    st.dataframe(pd.DataFrame(boundary_rows), width="stretch", hide_index=True)
-
-    st.markdown("#### Dependency Freshness")
-    dependency_rows = []
-    for name, payload in (evidence.get("dependency_statuses") or {}).items():
-        dependency_rows.append(
-            {
-                "Dependency": name,
-                "Status": payload.get("status"),
-                "Updated At": payload.get("updated_at"),
-                "Path": payload.get("path"),
-            }
+    delivery_left, delivery_right = st.columns([1.1, 1.05])
+    with delivery_left:
+        render_section_header("Capability boundary", subtitle="当前系统不是 unattended live；所有真实 side effects 保持 default-off + auditable。")
+        render_detail_key_value(
+            [
+                ("manifest_status", evidence.get("capability_manifest_status") or readiness.get("capability_manifest_status")),
+                ("manual_only", boundary.get("manual_only")),
+                ("default_off", boundary.get("default_off")),
+                ("approve_usdc_only", boundary.get("approve_usdc_only")),
+                ("shadow_submitter_only", boundary.get("shadow_submitter_only")),
+                ("constrained_real_submit_enabled", boundary.get("constrained_real_submit_enabled")),
+            ]
         )
-    if dependency_rows:
-        st.dataframe(pd.DataFrame(dependency_rows), width="stretch", hide_index=True)
-    else:
-        st.info("当前还没有 readiness evidence dependency rows。")
 
-    st.markdown("#### Calibration Gate Summary")
-    gate_rows = [
-        {"Metric": "Impacted Markets", "Value": status.get("calibration_impacted_market_count", 0)},
-        {"Metric": "Hard-Gated Markets", "Value": status.get("calibration_hard_gate_market_count", 0)},
-        {"Metric": "Review Required Markets", "Value": status.get("calibration_review_required_market_count", 0)},
-        {"Metric": "Research Only Markets", "Value": status.get("calibration_research_only_market_count", 0)},
-    ]
-    st.dataframe(pd.DataFrame(gate_rows), width="stretch", hide_index=True)
-
-    st.markdown("#### Evidence Paths")
-    path_rows = [{"路径类型": key, "路径": value} for key, value in (evidence.get("evidence_paths") or {}).items()]
-    if path_rows:
-        st.dataframe(pd.DataFrame(path_rows), width="stretch", hide_index=True)
-    else:
-        st.info("当前还没有 evidence path rows。")
-
-    st.markdown("#### Blockers / Warnings")
-    blocker_rows = [{"type": "blocker", "value": item} for item in (evidence.get("blockers") or [])]
-    blocker_rows.extend({"type": "warning", "value": item} for item in (evidence.get("warnings") or []))
-    if blocker_rows:
-        st.dataframe(pd.DataFrame(blocker_rows), width="stretch", hide_index=True)
-    else:
-        st.success("当前 evidence bundle 没有 blockers / warnings。")
-
-    st.markdown("#### Runtime Component Surface")
-    rows = _build_component_rows(status, readiness)
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-
-    st.markdown("#### Surface Status Summary")
-    st.dataframe(pd.DataFrame(surface_rows), width="stretch", hide_index=True)
-
-    st.markdown("#### Minimal Health Summary")
-    health_rows = [
-        {"组件": "Opportunity Surface", "值": status.get("opportunity_row_count"), "说明": "当前机会排序读面行数"},
-        {"组件": "Actionable Markets", "值": status.get("actionable_market_count"), "说明": "当前可优先 review 的市场数"},
-        {"组件": "Resolution Review Rows", "值": status.get("agent_row_count"), "说明": "Resolution Agent 当前可见 review rows"},
-        {"组件": "Pending Operator Review", "值": status.get("pending_operator_review_count"), "说明": "建议 hold/manual/dispute 且尚未 operator 接纳的 proposal"},
-        {"组件": "Blocked By Operator", "值": status.get("blocked_by_operator_review_count"), "说明": "operator 已明确阻断的 proposal"},
-        {"组件": "Ready For Redeem Review", "值": status.get("ready_for_redeem_review_count"), "说明": "operator 已放行到 redeem review 的 proposal"},
-        {"组件": "Calibration Freshness", "值": status.get("latest_calibration_freshness_status"), "说明": "最新 calibration profile materialization freshness"},
-    ]
-    st.dataframe(pd.DataFrame(health_rows), width="stretch", hide_index=True)
-
-    phase_table = readiness["phase_table"]
-    if not phase_table.empty:
-        with st.expander("Readiness Gate Details", expanded=False):
-            st.dataframe(phase_table, width="stretch", hide_index=True)
-
-    with st.expander("File Paths", expanded=False):
-        path_rows = [
-            {"路径类型": "UI Lite DB", "路径": status["ui_lite_db_path"]},
-            {"路径类型": "UI Replica DB", "路径": status["ui_replica_db_path"]},
-            {"路径类型": "Readiness JSON", "路径": status["readiness_report_path"]},
-            {"路径类型": "Readiness Markdown", "路径": status["readiness_report_markdown_path"]},
-            {"路径类型": "Readiness Evidence", "路径": status["readiness_evidence_path"]},
-            {"路径类型": "Capability Manifest", "路径": status["capability_manifest_path"]},
-            {"路径类型": "Weather Smoke Report", "路径": status["weather_smoke_report_path"]},
+    with delivery_right:
+        render_section_header("Calibration gate summary", subtitle="把 calibration impacted market counts 固定放在 system 顶部，而不是埋在底部表格。")
+        gate_rows = [
+            {"Metric": "Impacted Markets", "Value": status.get("calibration_impacted_market_count", 0)},
+            {"Metric": "Hard-Gated Markets", "Value": status.get("calibration_hard_gate_market_count", 0)},
+            {"Metric": "Review Required Markets", "Value": status.get("calibration_review_required_market_count", 0)},
+            {"Metric": "Research Only Markets", "Value": status.get("calibration_research_only_market_count", 0)},
         ]
-        st.dataframe(pd.DataFrame(path_rows), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(gate_rows), width="stretch", hide_index=True)
+
+    runtime_tab, evidence_tab, debug_tab = st.tabs(["Runtime delivery", "Evidence & blockers", "Debug paths"])
+
+    with runtime_tab:
+        render_section_header("Runtime delivery", subtitle="主叙事切到 persisted runtime summary + surface delivery summary，不再依赖 file-path console。")
+        surface_delivery = status.get("surface_delivery_summary")
+        if isinstance(surface_delivery, pd.DataFrame) and not surface_delivery.empty:
+            st.dataframe(surface_delivery, width="stretch", hide_index=True)
+        else:
+            render_empty_state("No surface delivery rows", "当前还没有 persisted surface delivery summary rows。")
+
+        render_section_header("Runtime component surface")
+        rows = _build_component_rows(status, readiness)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+        render_section_header("Surface status summary")
+        st.dataframe(pd.DataFrame(surface_rows), width="stretch", hide_index=True)
+
+        render_section_header("Minimal health summary")
+        health_rows = [
+            {"组件": "Latest Surface Refresh", "值": status.get("latest_surface_refresh_status"), "说明": "persisted operator surface refresh seam"},
+            {"组件": "Degraded Surfaces", "值": status.get("degraded_surface_count"), "说明": "persisted delivery surfaces currently degraded"},
+            {"组件": "Read Error Surfaces", "值": status.get("read_error_surface_count"), "说明": "persisted delivery surfaces currently failing"},
+            {"组件": "Opportunity Surface", "值": status.get("opportunity_row_count"), "说明": "当前机会排序读面行数"},
+            {"组件": "Actionable Markets", "值": status.get("actionable_market_count"), "说明": "当前可优先 review 的市场数"},
+            {"组件": "Resolution Review Rows", "值": status.get("agent_row_count"), "说明": "Resolution Agent 当前可见 review rows"},
+            {"组件": "Pending Operator Review", "值": status.get("pending_operator_review_count"), "说明": "建议 hold/manual/dispute 且尚未 operator 接纳的 proposal"},
+            {"组件": "Blocked By Operator", "值": status.get("blocked_by_operator_review_count"), "说明": "operator 已明确阻断的 proposal"},
+            {"组件": "Ready For Redeem Review", "值": status.get("ready_for_redeem_review_count"), "说明": "operator 已放行到 redeem review 的 proposal"},
+            {"组件": "Calibration Freshness", "值": status.get("latest_calibration_freshness_status"), "说明": "最新 calibration profile materialization freshness"},
+        ]
+        st.dataframe(pd.DataFrame(health_rows), width="stretch", hide_index=True)
+
+    with evidence_tab:
+        render_section_header("Dependency freshness", subtitle="dependency rows 继续保留，但下沉到 evidence tab。")
+        dependency_rows = []
+        for name, payload in (evidence.get("dependency_statuses") or {}).items():
+            dependency_rows.append(
+                {
+                    "Dependency": name,
+                    "Status": payload.get("status"),
+                    "Updated At": payload.get("updated_at"),
+                    "Path": payload.get("path"),
+                }
+            )
+        if dependency_rows:
+            st.dataframe(pd.DataFrame(dependency_rows), width="stretch", hide_index=True)
+        else:
+            render_empty_state("No dependency rows", "当前还没有 readiness evidence dependency rows。")
+
+        render_section_header("Blockers / warnings")
+        blocker_rows = [{"type": "blocker", "value": item} for item in (evidence.get("blockers") or [])]
+        blocker_rows.extend({"type": "warning", "value": item} for item in (evidence.get("warnings") or []))
+        if blocker_rows:
+            st.dataframe(pd.DataFrame(blocker_rows), width="stretch", hide_index=True)
+        else:
+            render_state_card("evidence", "当前 evidence bundle 没有 blockers / warnings。", tone="ok")
+
+        phase_table = readiness["phase_table"]
+        if not phase_table.empty:
+            with st.expander("Readiness Gate Details", expanded=False):
+                st.dataframe(phase_table, width="stretch", hide_index=True)
+
+    with debug_tab:
+        render_section_header("Evidence paths", subtitle="文件路径和 debug rows 继续保留，但不占默认主视图叙事。")
+        path_rows = [{"路径类型": key, "路径": value} for key, value in (evidence.get("evidence_paths") or {}).items()]
+        if path_rows:
+            st.dataframe(pd.DataFrame(path_rows), width="stretch", hide_index=True)
+        else:
+            render_empty_state("No evidence path rows", "当前还没有 evidence path rows。")
+
+        with st.expander("File Paths", expanded=False):
+            path_rows = [
+                {"路径类型": "UI Lite DB", "路径": status["ui_lite_db_path"]},
+                {"路径类型": "UI Replica DB", "路径": status["ui_replica_db_path"]},
+                {"路径类型": "Readiness JSON", "路径": status["readiness_report_path"]},
+                {"路径类型": "Readiness Markdown", "路径": status["readiness_report_markdown_path"]},
+                {"路径类型": "Readiness Evidence", "路径": status["readiness_evidence_path"]},
+                {"路径类型": "Capability Manifest", "路径": status["capability_manifest_path"]},
+                {"路径类型": "Weather Smoke Report", "路径": status["weather_smoke_report_path"]},
+            ]
+            st.dataframe(pd.DataFrame(path_rows), width="stretch", hide_index=True)
 
     st.caption(
         "当前 UI 保持 constrained execution boundary：`GO` 只表示 ready for controlled live rollout decision，"

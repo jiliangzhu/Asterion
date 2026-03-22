@@ -88,6 +88,9 @@ class UiPagesSmokeTest(unittest.TestCase):
                         "allocation_status": "resized",
                         "actionability_status": "actionable",
                         "calibration_gate_status": "review_required",
+                        "surface_delivery_status": "degraded_source",
+                        "surface_fallback_origin": "runtime_db",
+                        "surface_last_refresh_ts": "2026-03-21T11:00:00+00:00",
                         "capital_policy_id": "cap_policy_1",
                         "capital_scaling_reason_codes_json": '["regime_bucket:tight"]',
                         "queue_reason_codes_json": '["allocation:resized"]',
@@ -117,7 +120,7 @@ class UiPagesSmokeTest(unittest.TestCase):
         }
 
         with patch("ui.pages.home.load_home_decision_snapshot", return_value=fake_snapshot), \
-            patch.object(home.st, "markdown"), \
+            patch.object(home.st, "markdown", new=MagicMock()) as markdown_mock, \
             patch.object(home.st, "caption"), \
             patch.object(home.st, "metric"), \
             patch.object(home.st, "info"), \
@@ -130,10 +133,11 @@ class UiPagesSmokeTest(unittest.TestCase):
             home.show()
 
         warning_mock.assert_called()
+        self.assertTrue(any("Decision Console" in str(call.args[0]) for call in markdown_mock.call_args_list if call.args))
         rendered_frames = [call.args[0] for call in dataframe_mock.call_args_list if call.args]
         self.assertTrue(any("source_badge" in getattr(frame, "columns", []) for frame in rendered_frames))
         self.assertTrue(any("calibration_gate_status" in getattr(frame, "columns", []) for frame in rendered_frames))
-        self.assertTrue(any("capital_policy_id" in str(call.args[0]) for call in write_mock.call_args_list if call.args))
+        self.assertTrue(any("capital_policy_id" in str(call.args[0]) for call in markdown_mock.call_args_list if call.args))
 
     def test_markets_show_renders_calibration_freshness_without_crashing(self) -> None:
         fake_payload = {
@@ -197,23 +201,35 @@ class UiPagesSmokeTest(unittest.TestCase):
             "market_chain": {"status": "ok", "label": "ok", "detail": "", "source": "ui_lite", "updated_at": None}
         }
         dataframe_mock = MagicMock()
+        markdown_mock = MagicMock()
         with patch("ui.pages.markets.load_market_chain_analysis_data", return_value=fake_payload), \
             patch("ui.pages.markets.load_operator_surface_status", return_value=fake_surface), \
-            patch.object(markets.st, "markdown"), \
+            patch.object(markets.st, "markdown", new=markdown_mock), \
             patch.object(markets.st, "caption"), \
             patch.object(markets.st, "info"), \
             patch.object(markets.st, "warning"), \
             patch.object(markets.st, "dataframe", new=dataframe_mock), \
             patch.object(markets.st, "columns", side_effect=lambda spec: [_DummyContext() for _ in range(spec if isinstance(spec, int) else len(spec))]), \
             patch.object(markets.st, "selectbox", side_effect=lambda label, options, **kwargs: options[0] if options else "All"), \
-            patch.object(markets.st, "checkbox", return_value=False):
+            patch.object(markets.st, "checkbox", return_value=False), \
+            patch.object(markets.st, "tabs", side_effect=lambda names: [_DummyContext() for _ in names]):
             markets.show()
+        self.assertTrue(any("Opportunity Terminal" in str(call.args[0]) for call in markdown_mock.call_args_list if call.args))
         rendered_frames = [call.args[0] for call in dataframe_mock.call_args_list if call.args]
         self.assertTrue(
             any(
-                "字段" in getattr(frame, "columns", [])
-                and {"Calibration Gate", "Capital Policy", "Capital Scaling Reasons"}.issubset(set(frame["字段"].tolist()))
-                for frame in rendered_frames
+                needle in str(call.args[0])
+                for needle in ["Calibration Gate", "Capital Policy", "Capital Scaling Reasons"]
+                for call in markdown_mock.call_args_list
+                if call.args
+            )
+        )
+        self.assertTrue(
+            any(
+                needle in str(call.args[0])
+                for needle in ["Surface Delivery", "Fallback Origin", "Last Refresh"]
+                for call in markdown_mock.call_args_list
+                if call.args
             )
         )
 
@@ -256,6 +272,9 @@ class UiPagesSmokeTest(unittest.TestCase):
             "ui_lite_exists": True,
             "ui_lite_db_path": "lite.duckdb",
             "weather_smoke_status": "ok",
+            "latest_surface_refresh_status": "degraded_source",
+            "degraded_surface_count": 1,
+            "read_error_surface_count": 0,
             "calibration_impacted_market_count": 3,
             "calibration_hard_gate_market_count": 2,
             "calibration_review_required_market_count": 1,
@@ -281,13 +300,24 @@ class UiPagesSmokeTest(unittest.TestCase):
             "pending_operator_review_count": 0,
             "blocked_by_operator_review_count": 0,
             "ready_for_redeem_review_count": 0,
+            "surface_delivery_summary": pd.DataFrame(
+                [
+                    {
+                        "surface_id": "markets",
+                        "delivery_status": "degraded_source",
+                        "fallback_origin": "runtime_db",
+                        "last_refresh_ts": "2026-03-21T10:00:00+00:00",
+                    }
+                ]
+            ),
         }
         dataframe_mock = MagicMock()
+        markdown_mock = MagicMock()
         with patch("ui.pages.system.load_readiness_summary", return_value=readiness), \
             patch("ui.pages.system.load_readiness_evidence_bundle", return_value=evidence), \
             patch("ui.pages.system.load_system_runtime_status", return_value=status), \
             patch("ui.pages.system.load_operator_surface_status", return_value={"overall": {"status": "ok", "label": "ok", "detail": "", "source": "ui_lite"}, "market_chain": {"status": "ok", "label": "ok", "detail": "", "source": "ui_lite"}}), \
-            patch.object(system.st, "markdown"), \
+            patch.object(system.st, "markdown", new=markdown_mock), \
             patch.object(system.st, "caption"), \
             patch.object(system.st, "metric"), \
             patch.object(system.st, "info"), \
@@ -296,13 +326,22 @@ class UiPagesSmokeTest(unittest.TestCase):
             patch.object(system.st, "error"), \
             patch.object(system.st, "dataframe", new=dataframe_mock), \
             patch.object(system.st, "columns", side_effect=lambda spec: [_DummyContext() for _ in range(spec if isinstance(spec, int) else len(spec))]), \
-            patch.object(system.st, "expander", side_effect=lambda *args, **kwargs: _DummyContext()):
+            patch.object(system.st, "expander", side_effect=lambda *args, **kwargs: _DummyContext()), \
+            patch.object(system.st, "tabs", side_effect=lambda names: [_DummyContext() for _ in names]):
             system.show()
+        self.assertTrue(any("Readiness Evidence" in str(call.args[0]) for call in markdown_mock.call_args_list if call.args))
         rendered_frames = [call.args[0] for call in dataframe_mock.call_args_list if call.args]
         self.assertTrue(
             any(
                 "Metric" in getattr(frame, "columns", [])
                 and {"Hard-Gated Markets", "Review Required Markets", "Research Only Markets"}.issubset(set(frame["Metric"].tolist()))
+                for frame in rendered_frames
+            )
+        )
+        self.assertTrue(
+            any(
+                "组件" in getattr(frame, "columns", [])
+                and {"Latest Surface Refresh", "Degraded Surfaces", "Read Error Surfaces"}.issubset(set(frame["组件"].tolist()))
                 for frame in rendered_frames
             )
         )

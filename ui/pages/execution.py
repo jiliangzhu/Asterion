@@ -3,6 +3,14 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from ui.components import (
+    render_detail_key_value,
+    render_empty_state,
+    render_kpi_band,
+    render_page_intro,
+    render_section_header,
+    render_state_card,
+)
 from ui.data_access import load_execution_console_data
 
 
@@ -27,28 +35,34 @@ def show() -> None:
     predicted_vs_realized = payload.get("predicted_vs_realized", pd.DataFrame())
     watch_only_vs_executed = payload.get("watch_only_vs_executed", pd.DataFrame())
     execution_science = payload.get("execution_science", pd.DataFrame())
-    calibration_health = payload.get("calibration_health", pd.DataFrame())
     cohort_history = payload.get("cohort_history", pd.DataFrame())
 
-    st.markdown("### Execution Reality")
-    st.caption("Execution 页面现在优先展示 execution science 与 execution-path evidence，再下沉 cohort capture、live-prereq exceptions 和 ticket attention。")
+    render_page_intro(
+        "Execution Reality",
+        "Execution 页面现在优先展示 execution science 与 execution-path evidence，再下沉 cohort capture、live-prereq exceptions 和 ticket attention。",
+        kicker="Evidence lab",
+        badges=[
+            ("execution science", "info"),
+            ("execution-path evidence", "ok"),
+        ],
+    )
 
-    top1, top2, top3, top4 = st.columns(4)
     resolved_count = int((predicted_vs_realized["evaluation_status"] == "resolved").sum()) if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0
     pending_resolution_count = int((predicted_vs_realized["evaluation_status"] == "pending_resolution").sum()) if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0
-    with top1:
-        st.metric("Resolved Trades", resolved_count, delta="execution evidence")
-    with top2:
-        st.metric("Pending Resolution", pending_resolution_count, delta="lifecycle open")
-    with top3:
-        avg_predicted_edge = float(pd.to_numeric(predicted_vs_realized["predicted_edge_bps"], errors="coerce").dropna().mean()) if ("predicted_edge_bps" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0.0
-        st.metric("Avg Predicted Edge", f"{avg_predicted_edge:.1f}", delta="bps diagnostic")
-    with top4:
-        resolved_frame = predicted_vs_realized[predicted_vs_realized["evaluation_status"] == "resolved"] if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else predicted_vs_realized.iloc[0:0]
-        avg_realized_pnl = float(pd.to_numeric(resolved_frame["realized_pnl"], errors="coerce").dropna().mean()) if ("realized_pnl" in resolved_frame.columns and not resolved_frame.empty) else 0.0
-        st.metric("Avg Realized PnL", f"{avg_realized_pnl:.4f}", delta="resolved only")
+    avg_predicted_edge = float(pd.to_numeric(predicted_vs_realized["predicted_edge_bps"], errors="coerce").dropna().mean()) if ("predicted_edge_bps" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else 0.0
+    resolved_frame = predicted_vs_realized[predicted_vs_realized["evaluation_status"] == "resolved"] if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty) else predicted_vs_realized.iloc[0:0]
+    avg_realized_pnl = float(pd.to_numeric(resolved_frame["realized_pnl"], errors="coerce").dropna().mean()) if ("realized_pnl" in resolved_frame.columns and not resolved_frame.empty) else 0.0
 
-    st.markdown("#### Cohort Summary")
+    render_kpi_band(
+        [
+            {"label": "Resolved Trades", "value": resolved_count, "delta": "execution evidence"},
+            {"label": "Pending Resolution", "value": pending_resolution_count, "delta": "lifecycle open"},
+            {"label": "Avg Predicted Edge", "value": f"{avg_predicted_edge:.1f}", "delta": "bps diagnostic"},
+            {"label": "Avg Realized PnL", "value": f"{avg_realized_pnl:.4f}", "delta": "resolved only"},
+        ]
+    )
+
+    render_section_header("Cohort summary", subtitle="把 capture reality 固定在顶部，作为 execution quality 的第一层事实。")
     cohort_left, cohort_mid, cohort_right = st.columns(3)
     with cohort_left:
         submission_capture = float(pd.to_numeric(watch_only_vs_executed["submission_capture_ratio"], errors="coerce").dropna().mean()) if ("submission_capture_ratio" in watch_only_vs_executed.columns and not watch_only_vs_executed.empty) else 0.0
@@ -95,6 +109,7 @@ def show() -> None:
         filtered_pvr = filtered_pvr[filtered_pvr["strategy_id"] == selected_strategy]
     if selected_evaluation != "全部" and "evaluation_status" in filtered_pvr.columns:
         filtered_pvr = filtered_pvr[filtered_pvr["evaluation_status"] == selected_evaluation]
+
     if not filtered_tickets.empty:
         operator_attention = (
             filtered_tickets["operator_attention_required"] == True  # noqa: E712
@@ -106,28 +121,36 @@ def show() -> None:
             if "live_prereq_attention_required" in filtered_tickets.columns
             else False
         )
-        attention_tickets = filtered_tickets[operator_attention | live_attention] if ("operator_attention_required" in filtered_tickets.columns or "live_prereq_attention_required" in filtered_tickets.columns) else filtered_tickets.iloc[0:0]
+        if "operator_attention_required" in filtered_tickets.columns or "live_prereq_attention_required" in filtered_tickets.columns:
+            attention_tickets = filtered_tickets[operator_attention | live_attention]
+        else:
+            attention_tickets = filtered_tickets.iloc[0:0]
     else:
         attention_tickets = filtered_tickets
 
-    st.markdown("#### Predicted vs Realized")
-    if filtered_pvr.empty:
-        st.info("当前没有 execution-path evidence rows。")
-    else:
-        columns = [
-            column
-            for column in [
-                "ticket_id",
-                "wallet_id",
-                "strategy_id",
-                "market_id",
-                "predicted_edge_bps",
-                "expected_fill_price",
-                "realized_fill_price",
-                "realized_pnl",
-                "resolution_value",
-                "source_badge",
-                "post_trade_error",
+    evidence_tab, attention_tab, science_tab, history_tab, live_tab = st.tabs(
+        ["Predicted vs realized", "Attention queue", "Execution science", "Cohort history", "Live prereq"]
+    )
+
+    with evidence_tab:
+        render_section_header("Predicted vs realized", subtitle="这里是 execution-path evidence 主表，不再和其他 attention/debug rows 混在一起。")
+        if filtered_pvr.empty:
+            render_empty_state("No execution evidence", "当前没有 execution-path evidence rows。")
+        else:
+            columns = [
+                column
+                for column in [
+                    "ticket_id",
+                    "wallet_id",
+                    "strategy_id",
+                    "market_id",
+                    "predicted_edge_bps",
+                    "expected_fill_price",
+                    "realized_fill_price",
+                    "realized_pnl",
+                    "resolution_value",
+                    "source_badge",
+                    "post_trade_error",
                     "source_disagreement",
                     "evaluation_status",
                     "latest_fill_at",
@@ -136,37 +159,58 @@ def show() -> None:
                 ]
                 if column in filtered_pvr.columns
             ]
-        st.dataframe(filtered_pvr[columns], width="stretch", hide_index=True)
+            st.dataframe(filtered_pvr[columns], width="stretch", hide_index=True)
 
-    st.markdown("#### Attention Queue")
-    st.caption("这里聚合 execution / live-prereq exceptions，不是新的 execution gate。")
-    if attention_tickets.empty and exceptions.empty:
-        st.success("当前没有 execution / live-prereq attention rows。")
-    else:
-        attention_columns = [
-            column
-            for column in [
-                "ticket_id",
-                "wallet_id",
-                "market_id",
-                "execution_result",
-                "external_reconciliation_status",
-                "live_prereq_execution_status",
-                "operator_attention_required",
-                "live_prereq_attention_required",
+        render_section_header("Executed evidence detail", subtitle="把单个 executed case 组织成 case card，而不是纯 dataframe。")
+        if filtered_pvr.empty:
+            render_empty_state("No selected evidence", "当前筛选下没有 executed evidence。")
+        else:
+            latest = filtered_pvr.iloc[0]
+            render_detail_key_value(
+                [
+                    ("Ticket", latest.get("ticket_id")),
+                    ("Predicted Edge (bps)", latest.get("predicted_edge_bps")),
+                    ("Expected Fill Price", latest.get("expected_fill_price")),
+                    ("Realized Fill Price", latest.get("realized_fill_price")),
+                    ("Resolution Value", latest.get("resolution_value")),
+                    ("Realized PnL", latest.get("realized_pnl")),
+                    ("Post-Trade Error", latest.get("post_trade_error")),
+                    ("Lifecycle Stage", latest.get("execution_lifecycle_stage")),
+                    ("Fill Ratio", latest.get("fill_ratio")),
+                    ("Adverse Fill Slippage (bps)", latest.get("adverse_fill_slippage_bps")),
+                    ("Resolution Lag (hrs)", latest.get("resolution_lag_hours")),
+                    ("Miss Reason", latest.get("miss_reason_bucket")),
+                    ("Source Disagreement", latest.get("source_disagreement")),
+                ]
+            )
+
+    with attention_tab:
+        render_section_header("Attention queue", subtitle="这里聚合 execution / live-prereq exceptions，不是新的 execution gate。")
+        if attention_tickets.empty and exceptions.empty:
+            render_state_card("attention", "当前没有 execution / live-prereq attention rows。", tone="ok")
+        else:
+            attention_columns = [
+                column
+                for column in [
+                    "ticket_id",
+                    "wallet_id",
+                    "market_id",
+                    "execution_result",
+                    "external_reconciliation_status",
+                    "live_prereq_execution_status",
+                    "operator_attention_required",
+                    "live_prereq_attention_required",
+                ]
+                if column in attention_tickets.columns
             ]
-            if column in attention_tickets.columns
-        ]
-        if attention_columns:
-            st.dataframe(attention_tickets[attention_columns].head(20), width="stretch", hide_index=True)
-        if not exceptions.empty:
-            st.dataframe(exceptions.head(12), width="stretch", hide_index=True)
+            if attention_columns:
+                st.dataframe(attention_tickets[attention_columns].head(20), width="stretch", hide_index=True)
+            if not exceptions.empty:
+                st.dataframe(exceptions.head(12), width="stretch", hide_index=True)
 
-    details_left, details_right = st.columns([1.2, 1.05])
-    with details_left:
-        st.markdown("#### Ticket Summary")
+        render_section_header("Ticket summary", subtitle="保留 ticket 表，但作为 attention queue 的支撑层，而不是默认主画面。")
         if filtered_tickets.empty:
-            st.info("当前没有 execution ticket 数据，或 UI lite DB 尚未生成。")
+            render_empty_state("No execution tickets", "当前没有 execution ticket 数据，或 UI lite DB 尚未生成。")
         else:
             preferred_columns = [
                 column
@@ -185,56 +229,10 @@ def show() -> None:
             ]
             st.dataframe(filtered_tickets[preferred_columns], width="stretch", hide_index=True)
 
-    with details_right:
-        st.markdown("#### Executed Evidence Detail")
-        if filtered_pvr.empty:
-            st.info("当前筛选下没有 executed evidence。")
-        else:
-            latest = filtered_pvr.iloc[0]
-            detail_rows = pd.DataFrame(
-                [
-                    {"字段": "Ticket", "值": latest.get("ticket_id")},
-                    {"字段": "Predicted Edge (bps)", "值": latest.get("predicted_edge_bps")},
-                    {"字段": "Expected Fill Price", "值": latest.get("expected_fill_price")},
-                    {"字段": "Realized Fill Price", "值": latest.get("realized_fill_price")},
-                    {"字段": "Resolution Value", "值": latest.get("resolution_value")},
-                    {"字段": "Realized PnL", "值": latest.get("realized_pnl")},
-                    {"字段": "Post-Trade Error", "值": latest.get("post_trade_error")},
-                    {"字段": "Lifecycle Stage", "值": latest.get("execution_lifecycle_stage")},
-                    {"字段": "Fill Ratio", "值": latest.get("fill_ratio")},
-                    {"字段": "Adverse Fill Slippage (bps)", "值": latest.get("adverse_fill_slippage_bps")},
-                    {"字段": "Resolution Lag (hrs)", "值": latest.get("resolution_lag_hours")},
-                    {"字段": "Miss Reason", "值": latest.get("miss_reason_bucket")},
-                    {"字段": "Source Disagreement", "值": latest.get("source_disagreement")},
-                ]
-            )
-            st.dataframe(detail_rows, width="stretch", hide_index=True)
-
-        st.markdown("#### Live-Prereq Execution")
-        if filtered_live.empty:
-            st.info("当前没有进入 signer / submitter / external reconciliation 的 execution rows。")
-        else:
-            preferred_columns = [
-                column
-                for column in [
-                    "ticket_id",
-                    "wallet_id",
-                    "order_id",
-                    "latest_sign_attempt_status",
-                    "latest_submit_status",
-                    "external_order_status",
-                    "external_reconciliation_status",
-                    "live_prereq_execution_status",
-                ]
-                if column in filtered_live.columns
-            ]
-            st.dataframe(filtered_live[preferred_columns], width="stretch", hide_index=True)
-
-    lower_left, lower_right = st.columns([1.15, 1])
-    with lower_left:
-        st.markdown("#### Execution Science Cohorts")
+    with science_tab:
+        render_section_header("Execution science cohorts", subtitle="保留 cohort 指标，但用它回答 capture 与 distortion，而不是当成杂表。")
         if execution_science.empty:
-            st.info("当前没有 `ui.execution_science_summary` 数据。")
+            render_empty_state("No execution science rows", "当前没有 `ui.execution_science_summary` 数据。")
         else:
             strategy_science = execution_science[execution_science["cohort_type"] == "strategy"] if "cohort_type" in execution_science.columns else execution_science
             preferred_columns = [
@@ -255,9 +253,34 @@ def show() -> None:
             ]
             st.dataframe(strategy_science[preferred_columns].head(10), width="stretch", hide_index=True)
 
-        st.markdown("#### Cohort History")
+        render_section_header("Watch-only vs executed", subtitle="保留 watch-only 对 executed 的对照，作为 capture reality 的补充。")
+        if watch_only_vs_executed.empty:
+            render_empty_state("No watch-only comparison rows", "当前没有 `ui.watch_only_vs_executed_summary` 数据。")
+        else:
+            preferred_columns = [
+                column
+                for column in [
+                    "market_id",
+                    "source_badge",
+                    "avg_executable_edge_bps",
+                    "submission_capture_ratio",
+                    "fill_capture_ratio",
+                    "resolution_capture_ratio",
+                    "feedback_status",
+                    "feedback_penalty",
+                    "executed_ticket_count",
+                    "dominant_lifecycle_stage",
+                    "miss_reason_bucket",
+                    "distortion_reason_bucket",
+                ]
+                if column in watch_only_vs_executed.columns
+            ]
+            st.dataframe(watch_only_vs_executed[preferred_columns].head(10), width="stretch", hide_index=True)
+
+    with history_tab:
+        render_section_header("Cohort history", subtitle="历史 cohort rows 和 run summary 继续保留，但不占默认主叙事。")
         if cohort_history.empty:
-            st.info("当前没有 retrospective cohort history rows。")
+            render_empty_state("No cohort history rows", "当前没有 retrospective cohort history rows。")
         else:
             filtered_history = cohort_history.copy()
             if selected_market != "全部" and "market_id" in filtered_history.columns:
@@ -287,39 +310,35 @@ def show() -> None:
             ]
             st.dataframe(filtered_history[preferred_columns].head(20), width="stretch", hide_index=True)
 
-        st.markdown("#### Run Summary")
+        render_section_header("Run summary")
         if runs.empty:
-            st.info("当前没有 `ui.execution_run_summary` 数据。")
+            render_empty_state("No run summary rows", "当前没有 `ui.execution_run_summary` 数据。")
         else:
             st.dataframe(runs.head(12), width="stretch", hide_index=True)
 
-    with lower_right:
-        st.markdown("#### Watch-Only vs Executed")
-        if watch_only_vs_executed.empty:
-            st.info("当前没有 `ui.watch_only_vs_executed_summary` 数据。")
+        render_section_header("Daily ops projection")
+        if daily_ops.empty:
+            render_empty_state("No daily ops rows", "当前没有 `ui.daily_ops_summary` 数据。")
+        else:
+            st.dataframe(daily_ops.head(10), width="stretch", hide_index=True)
+
+    with live_tab:
+        render_section_header("Live-prereq execution", subtitle="signer / submitter / reconciliation rows 继续可见，但不和主 evidence 混排。")
+        if filtered_live.empty:
+            render_empty_state("No live-prereq execution rows", "当前没有进入 signer / submitter / external reconciliation 的 execution rows。")
         else:
             preferred_columns = [
                 column
                 for column in [
-                    "market_id",
-                    "source_badge",
-                    "avg_executable_edge_bps",
-                    "submission_capture_ratio",
-                    "fill_capture_ratio",
-                    "resolution_capture_ratio",
-                    "feedback_status",
-                    "feedback_penalty",
-                    "executed_ticket_count",
-                    "dominant_lifecycle_stage",
-                    "miss_reason_bucket",
-                    "distortion_reason_bucket",
+                    "ticket_id",
+                    "wallet_id",
+                    "order_id",
+                    "latest_sign_attempt_status",
+                    "latest_submit_status",
+                    "external_order_status",
+                    "external_reconciliation_status",
+                    "live_prereq_execution_status",
                 ]
-                if column in watch_only_vs_executed.columns
+                if column in filtered_live.columns
             ]
-            st.dataframe(watch_only_vs_executed[preferred_columns].head(10), width="stretch", hide_index=True)
-
-    st.markdown("#### Daily Ops Projection")
-    if daily_ops.empty:
-        st.info("当前没有 `ui.daily_ops_summary` 数据。")
-    else:
-        st.dataframe(daily_ops.head(10), width="stretch", hide_index=True)
+            st.dataframe(filtered_live[preferred_columns], width="stretch", hide_index=True)

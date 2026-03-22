@@ -37,6 +37,12 @@ class RealWeatherChainSmokeTest(unittest.TestCase):
         self.assertFalse(args.skip_agent)
         self.assertFalse(args.with_agent)
 
+    def test_parse_args_defaults_output_dir_to_dev_smoke_artifacts(self) -> None:
+        with patch("sys.argv", ["run_real_weather_chain_smoke.py"]):
+            args = self.smoke.parse_args()
+        self.assertIn("data/dev/real_weather_chain", str(args.output_dir))
+        self.assertNotIn("data/ui", str(args.output_dir))
+
     def test_script_uses_deterministic_rule2spec_validation_instead_of_llm_agent(self) -> None:
         text = SCRIPT_PATH.read_text(encoding="utf-8")
         self.assertIn("validate_rule2spec_draft(", text)

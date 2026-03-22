@@ -35,6 +35,10 @@ def build_ops_console_overview() -> dict[str, Any]:
             ascending=[True, False, False],
             na_position="last",
         ).reset_index(drop=True)
+        if "surface_delivery_status" in action_queue_full.columns:
+            action_queue_full = action_queue_full[
+                action_queue_full["surface_delivery_status"].fillna("ok").isin(["ok", "degraded_source", "stale", "read_error", "missing"])
+            ]
     wallet_attention = (
         wallets[wallets["attention_required"] == True]  # noqa: E712
         if "attention_required" in wallets.columns
@@ -46,7 +50,7 @@ def build_ops_console_overview() -> dict[str, Any]:
         else opportunities.iloc[0:0]
     )
     top_opportunities = actionable.head(5) if not actionable.empty else opportunities.head(5)
-    action_queue = action_queue_full[action_queue_full["operator_bucket"].isin(["ready_now", "high_risk", "review_required"])].head(10) if ("operator_bucket" in action_queue_full.columns and not action_queue_full.empty) else action_queue_full.head(10)
+    action_queue = action_queue_full[action_queue_full["operator_bucket"].isin(["ready_now", "high_risk", "review_required", "blocked"])].head(10) if ("operator_bucket" in action_queue_full.columns and not action_queue_full.empty) else action_queue_full.head(10)
     resolved_rows = (
         predicted_vs_realized[predicted_vs_realized["evaluation_status"] == "resolved"]
         if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty)
@@ -110,6 +114,7 @@ def build_ops_console_overview() -> dict[str, Any]:
         "calibration_health_summary": calibration_health,
         "uncaptured_high_edge_markets": uncaptured_high_edge,
         "surface_status": compat.load_operator_surface_status(),
+        "surface_delivery_summary": compat.load_surface_delivery_summary(),
         "boundary_sidebar_summary": compat.load_boundary_sidebar_truth(),
         "top_opportunities": top_opportunities,
         "action_queue": action_queue,
@@ -158,8 +163,18 @@ def build_ops_console_overview() -> dict[str, Any]:
 
 def load_home_decision_snapshot() -> dict[str, Any]:
     overview = build_ops_console_overview()
-    agent_frame = overview["agent_data"]["frame"]
-    top_agent_row = agent_frame.iloc[0].to_dict() if not agent_frame.empty else {}
+    agent_payload = overview["agent_data"]
+    agent_frame = agent_payload["frame"]
+    resolution_frame = (
+        agent_frame[agent_frame["agent_type"] == "resolution"]
+        if (
+            agent_payload.get("source") == "ui_lite"
+            and "agent_type" in agent_frame.columns
+            and not agent_frame.empty
+        )
+        else agent_frame.iloc[0:0]
+    )
+    top_agent_row = resolution_frame.iloc[0].to_dict() if not resolution_frame.empty else {}
     return {
         **overview,
         "recent_agent_summary": {

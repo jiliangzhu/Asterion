@@ -53,6 +53,8 @@ docs/10-implementation/
 
 - [V2_Implementation_Plan.md](./versions/v2.0/phase-plans/V2_Implementation_Plan.md)
   - 当前唯一 active implementation entry；作为 umbrella contract，已锁定 `Weather-first` v2.0 的 workstreams、phases、planned interfaces 与 acceptance 结构
+- [P9_Implementation_Plan.md](./versions/v2.0/phase-plans/P9_Implementation_Plan.md)
+  - 当前 tranche-specific implementation plan；`Phase 9 — Operator Surface Delivery and Throughput Scaling` 已进入 `core implemented / closeout pending`
 - [P8_Implementation_Plan.md](./versions/v2.0/phase-plans/P8_Implementation_Plan.md)
   - 最近 accepted tranche record；保留 `Phase 8 — Calibration Hard Gates and Scaling-Aware Capital Discipline` 的 accepted closeout 基线
 - [P7_Implementation_Plan.md](./versions/v2.0/phase-plans/P7_Implementation_Plan.md)
@@ -212,11 +214,13 @@ docs/10-implementation/
 1. [Implementation_Index.md](./Implementation_Index.md)
 2. [V2_Implementation_Plan.md](./versions/v2.0/phase-plans/V2_Implementation_Plan.md)
    - 当前唯一 active implementation entry；作为 umbrella contract
-3. [P8_Implementation_Plan.md](./versions/v2.0/phase-plans/P8_Implementation_Plan.md)
+3. [P9_Implementation_Plan.md](./versions/v2.0/phase-plans/P9_Implementation_Plan.md)
+   - 当前 tranche-specific implementation plan；当前 `v2.0` 直接按这个 tranche 收口 operator surface delivery / throughput
+4. [P8_Implementation_Plan.md](./versions/v2.0/phase-plans/P8_Implementation_Plan.md)
    - 最近 accepted tranche record；如需回看 calibration hard gate / scaling-aware capital discipline closeout，从这里进入
-4. [P7_Implementation_Plan.md](./versions/v2.0/phase-plans/P7_Implementation_Plan.md)
+5. [P7_Implementation_Plan.md](./versions/v2.0/phase-plans/P7_Implementation_Plan.md)
    - accepted closeout record；如需回看 deployable rerank / allocator v2 / economics closeout，从这里进入
-5. [P8_Closeout_Checklist.md](./versions/v2.0/checklists/P8_Closeout_Checklist.md)
+6. [P8_Closeout_Checklist.md](./versions/v2.0/checklists/P8_Closeout_Checklist.md)
    - 最近 accepted tranche 的 closeout checklist；用于锁住 hard gate / scaling-aware policy / fallback truth-source acceptance
 6. [P6_Implementation_Plan.md](./versions/v2.0/phase-plans/P6_Implementation_Plan.md)
    - accepted tranche baseline record；如需回看 deployable baseline 的首轮收口，从这里进入

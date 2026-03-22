@@ -158,6 +158,14 @@ def resolve_ui_runtime_env(*, env_path: str | Path | None = None) -> dict[str, s
     return dict(sorted(payload.items()))
 
 
+def hydrate_ui_runtime_env(*, env_path: str | Path | None = None, override_existing: bool = False) -> dict[str, str]:
+    payload = resolve_ui_runtime_env(env_path=env_path)
+    for key, value in payload.items():
+        if override_existing or key not in os.environ:
+            os.environ[key] = value
+    return payload
+
+
 def export_ui_runtime_env_shell(*, env_path: str | Path | None = None) -> str:
     exports = []
     for key, value in resolve_ui_runtime_env(env_path=env_path).items():

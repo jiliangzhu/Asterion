@@ -320,6 +320,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_allocation_preview_refresh",
             "weather_forecast_calibration_profiles_v2_refresh",
             "weather_resolution_review",
+            "weather_operator_surface_refresh",
         })
         self.assertEqual(jobs["weather_spec_sync"].upstream_jobs, ["weather_market_discovery"])
         self.assertEqual(jobs["weather_capability_refresh"].upstream_jobs, ["weather_market_discovery"])
@@ -340,6 +341,10 @@ class ColdPathJobMapTest(unittest.TestCase):
             jobs["weather_controlled_live_smoke"].upstream_jobs,
             ["weather_live_prereq_readiness"],
         )
+        self.assertEqual(
+            jobs["weather_operator_surface_refresh"].upstream_jobs,
+            ["weather_live_prereq_readiness"],
+        )
         self.assertEqual(jobs["weather_forecast_refresh"].upstream_jobs, ["weather_spec_sync"])
         self.assertEqual(jobs["weather_market_discovery"].mode, "scheduled")
         self.assertEqual(jobs["weather_watcher_backfill"].mode, "scheduled")
@@ -350,6 +355,7 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertEqual(jobs["weather_external_execution_reconciliation"].mode, "scheduled")
         self.assertEqual(jobs["weather_chain_tx_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_live_prereq_readiness"].mode, "scheduled")
+        self.assertEqual(jobs["weather_operator_surface_refresh"].mode, "scheduled")
         self.assertEqual(jobs["weather_controlled_live_smoke"].mode, "manual")
         self.assertEqual(jobs["weather_execution_priors_refresh"].mode, "scheduled")
         self.assertEqual(jobs["weather_execution_priors_refresh"].default_schedule_key, "weather_execution_priors_nightly")
@@ -363,10 +369,15 @@ class ColdPathJobMapTest(unittest.TestCase):
             jobs["weather_forecast_calibration_profiles_v2_refresh"].default_schedule_key,
             "weather_forecast_calibration_profiles_v2_nightly",
         )
+        self.assertEqual(
+            jobs["weather_operator_surface_refresh"].default_schedule_key,
+            "weather_operator_surface_refresh_hourly",
+        )
         self.assertIn(
             "runtime.calibration_profile_materializations",
             jobs["weather_forecast_calibration_profiles_v2_refresh"].output_tables,
         )
+        self.assertIn("runtime.operator_surface_refresh_runs", jobs["weather_operator_surface_refresh"].output_tables)
         self.assertEqual(jobs["weather_paper_execution"].upstream_jobs, ["weather_forecast_replay", "weather_capability_refresh"])
         self.assertIn("runtime.capital_allocation_runs", jobs["weather_paper_execution"].output_tables)
         self.assertEqual(jobs["weather_resolution_review"].upstream_jobs, ["weather_resolution_reconciliation"])
@@ -385,6 +396,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_wallet_state_refresh_hourly",
             "weather_external_execution_reconciliation_hourly",
             "weather_live_prereq_readiness_hourly",
+            "weather_operator_surface_refresh_hourly",
             "weather_watcher_backfill_bihourly",
             "weather_resolution_reconciliation_bihourly",
             "weather_execution_priors_nightly",
@@ -394,6 +406,8 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertTrue(schedules["weather_execution_priors_nightly"].enabled_by_default)
         self.assertEqual(schedules["weather_forecast_calibration_profiles_v2_nightly"].cron_schedule, "15 3 * * *")
         self.assertTrue(schedules["weather_forecast_calibration_profiles_v2_nightly"].enabled_by_default)
+        self.assertEqual(schedules["weather_operator_surface_refresh_hourly"].cron_schedule, "58 * * * *")
+        self.assertTrue(schedules["weather_operator_surface_refresh_hourly"].enabled_by_default)
 
 
 class ColdPathResourcesTest(unittest.TestCase):
@@ -1182,16 +1196,19 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
                     return_value=type("ReadinessEvidenceBundleStub", (), {"blockers": [], "warnings": []})(),
                 )
             )
-            refresh_replica = stack.enter_context(
+            refresh_surfaces = stack.enter_context(
                 patch(
-                    "dagster_asterion.handlers.refresh_ui_db_replica_once",
-                    return_value=type("ReplicaRefreshResultStub", (), {"ok": True})(),
-                )
-            )
-            build_lite = stack.enter_context(
-                patch(
-                    "dagster_asterion.handlers.build_ui_lite_db_once",
-                    return_value=type("UiLiteBuildResultStub", (), {"ok": True, "error": None})(),
+                    "dagster_asterion.handlers.run_operator_surface_refresh",
+                    return_value={
+                        "surface_refresh_run_id": "run_live_prereq",
+                        "ui_replica_ok": True,
+                        "ui_lite_ok": True,
+                        "truth_check_fail_count": 0,
+                        "degraded_surface_count": 0,
+                        "read_error_surface_count": 0,
+                        "surface_refresh_error": None,
+                        "surface_refresh_refreshed_at": "2026-03-21T00:00:00+00:00",
+                    },
                 )
             )
             result = run_weather_live_prereq_readiness_job(
@@ -1212,13 +1229,25 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         write_report.assert_called_once()
         build_evidence.assert_called_once()
         write_evidence.assert_called_once()
-        refresh_replica.assert_called_once()
-        build_lite.assert_called_once()
+        refresh_surfaces.assert_called_once()
         self.assertEqual(result.metadata["target"], "p4_live_prerequisites")
         self.assertEqual(result.metadata["go_decision"], "GO")
         self.assertEqual(result.metadata["failed_gate_names"], [])
         self.assertEqual(result.metadata["readiness_evidence_json_path"], "data/ui/asterion_readiness_evidence_p4.json")
         self.assertTrue(result.metadata["ui_lite_ok"])
+        self.assertTrue(
+            {
+                "surface_refresh_run_id",
+                "ui_replica_ok",
+                "ui_lite_ok",
+                "truth_check_fail_count",
+                "degraded_surface_count",
+                "read_error_surface_count",
+                "surface_refresh_error",
+                "surface_refresh_refreshed_at",
+            }
+            <= set(result.metadata)
+        )
 
     def test_weather_controlled_live_smoke_blocks_when_not_armed(self) -> None:
         import tempfile
@@ -1811,6 +1840,21 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_exposure_snapshot_upserts", return_value="task_exposure"))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_reconciliation_result_upserts", return_value="task_reconciliation"))
             stack.enter_context(patch("dagster_asterion.handlers.enqueue_journal_event_upserts", return_value="task_journal"))
+            stack.enter_context(
+                patch(
+                    "dagster_asterion.handlers.run_operator_surface_refresh",
+                    return_value={
+                        "surface_refresh_run_id": "paper_refresh",
+                        "ui_replica_ok": True,
+                        "ui_lite_ok": True,
+                        "truth_check_fail_count": 0,
+                        "degraded_surface_count": 0,
+                        "read_error_surface_count": 0,
+                        "surface_refresh_error": None,
+                        "surface_refresh_refreshed_at": "2026-03-21T00:00:00+00:00",
+                    },
+                )
+            )
             result = run_weather_paper_execution_job(
                 object(),
                 queue_cfg,
@@ -1851,6 +1895,19 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         self.assertEqual(result.metadata["allowed_order_count"], 2)
         self.assertEqual(result.metadata["reservation_count"], 2)
         self.assertEqual(result.metadata["fill_count"], 0)
+        self.assertTrue(
+            {
+                "surface_refresh_run_id",
+                "ui_replica_ok",
+                "ui_lite_ok",
+                "truth_check_fail_count",
+                "degraded_surface_count",
+                "read_error_surface_count",
+                "surface_refresh_error",
+                "surface_refresh_refreshed_at",
+            }
+            <= set(result.metadata)
+        )
         self.assertEqual(result.metadata["inventory_position_count"], 0)
         self.assertEqual(result.metadata["exposure_snapshot_count"], 2)
         self.assertEqual(result.metadata["reconciliation_count"], 2)
@@ -2035,6 +2092,19 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
             patch("dagster_asterion.handlers.load_resolution_agent_requests", return_value=[object()]) as load_requests,
             patch("dagster_asterion.handlers.run_resolution_agent_review", return_value=artifacts[0]) as run_agent,
             patch("dagster_asterion.handlers.enqueue_agent_artifact_upserts", return_value=["task_agent"]) as enqueue_agent,
+            patch(
+                "dagster_asterion.handlers.run_operator_surface_refresh",
+                return_value={
+                    "surface_refresh_run_id": "resolution_refresh",
+                    "ui_replica_ok": True,
+                    "ui_lite_ok": True,
+                    "truth_check_fail_count": 0,
+                    "degraded_surface_count": 0,
+                    "read_error_surface_count": 0,
+                    "surface_refresh_error": None,
+                    "surface_refresh_refreshed_at": "2026-03-21T00:00:00+00:00",
+                },
+            ),
         ):
             result = run_weather_resolution_review_job(
                 object(),
@@ -2045,6 +2115,19 @@ class ColdPathHandlersSmokeTest(unittest.TestCase):
         run_agent.assert_called_once()
         enqueue_agent.assert_called_once()
         self.assertEqual(result.task_ids, ["task_agent"])
+        self.assertTrue(
+            {
+                "surface_refresh_run_id",
+                "ui_replica_ok",
+                "ui_lite_ok",
+                "truth_check_fail_count",
+                "degraded_surface_count",
+                "read_error_surface_count",
+                "surface_refresh_error",
+                "surface_refresh_refreshed_at",
+            }
+            <= set(result.metadata)
+        )
 
 
 def _agent_artifacts(subject_type: str, subject_id: str) -> AgentExecutionArtifacts:

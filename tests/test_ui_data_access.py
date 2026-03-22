@@ -297,6 +297,156 @@ class UiDataAccessTest(unittest.TestCase):
         self.assertEqual(str(status["latest_calibration_materialized_at"]), "2026-03-18 03:15:00")
         self.assertEqual(status["calibration_hard_gate_market_count"], 2)
 
+    def test_home_markets_and_system_share_p9_delivery_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ui_lite.duckdb"
+            con = duckdb.connect(str(db_path))
+            try:
+                con.execute("CREATE SCHEMA ui")
+                con.execute(
+                    """
+                    CREATE TABLE ui.market_opportunity_summary(
+                        market_id TEXT,
+                        question TEXT,
+                        location_name TEXT,
+                        market_close_time TIMESTAMP,
+                        accepting_orders BOOLEAN,
+                        best_side TEXT,
+                        ranking_score DOUBLE,
+                        actionability_status TEXT,
+                        source_badge TEXT,
+                        source_truth_status TEXT,
+                        surface_delivery_status TEXT,
+                        surface_fallback_origin TEXT,
+                        surface_delivery_reason_codes_json TEXT,
+                        surface_last_refresh_ts TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO ui.market_opportunity_summary VALUES
+                    ('mkt_1', 'Seattle weather', 'Seattle', '2026-03-21 12:00:00', TRUE, 'BUY', 0.55, 'actionable',
+                     'canonical', 'canonical', 'degraded_source', 'runtime_db', '["fallback:runtime_db"]', '2026-03-21 10:00:00')
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE ui.action_queue_summary(
+                        queue_item_id TEXT,
+                        market_id TEXT,
+                        ranking_score DOUBLE,
+                        operator_bucket TEXT,
+                        queue_priority BIGINT,
+                        updated_at TIMESTAMP,
+                        base_ranking_score DOUBLE,
+                        pre_budget_deployable_expected_pnl DOUBLE,
+                        deployable_expected_pnl DOUBLE,
+                        recommended_size DOUBLE,
+                        allocation_status TEXT,
+                        actionability_status TEXT,
+                        surface_delivery_status TEXT,
+                        surface_fallback_origin TEXT,
+                        surface_delivery_reason_codes_json TEXT,
+                        surface_last_refresh_ts TIMESTAMP
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO ui.action_queue_summary VALUES
+                    ('queue:mkt_1', 'mkt_1', 0.55, 'review_required', 3, '2026-03-21 10:00:00', 0.61, 4.2, 3.6, 5.0,
+                     'approved', 'actionable', 'degraded_source', 'runtime_db', '["fallback:runtime_db"]', '2026-03-21 10:00:00')
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE ui.surface_delivery_summary(
+                        surface_id TEXT,
+                        primary_table TEXT,
+                        delivery_status TEXT,
+                        primary_source TEXT,
+                        fallback_origin TEXT,
+                        truth_check_status TEXT,
+                        truth_check_issue_count BIGINT,
+                        row_count BIGINT,
+                        last_refresh_ts TIMESTAMP,
+                        degraded_reason_codes_json TEXT,
+                        primary_score_label TEXT
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO ui.surface_delivery_summary VALUES
+                    ('readiness', 'ui.phase_readiness_summary', 'ok', 'ui_lite', NULL, 'ok', 0, 1, '2026-03-21 10:00:00', '[]', 'surface_delivery_status'),
+                    ('home', 'ui.action_queue_summary', 'degraded_source', 'ui_lite', 'runtime_db', 'warn', 1, 1, '2026-03-21 10:00:00', '["fallback:runtime_db"]', 'surface_delivery_status'),
+                    ('markets', 'ui.market_opportunity_summary', 'degraded_source', 'ui_lite', 'runtime_db', 'warn', 1, 1, '2026-03-21 10:00:00', '["fallback:runtime_db"]', 'surface_delivery_status'),
+                    ('system', 'ui.system_runtime_summary', 'degraded_source', 'ui_lite', 'runtime_db', 'warn', 1, 1, '2026-03-21 10:00:00', '["fallback:runtime_db"]', 'surface_delivery_status')
+                    """
+                )
+                con.execute(
+                    """
+                    CREATE TABLE ui.system_runtime_summary(
+                        generated_at TIMESTAMP,
+                        latest_surface_refresh_run_id TEXT,
+                        latest_surface_refresh_status TEXT,
+                        ui_replica_status TEXT,
+                        ui_lite_status TEXT,
+                        readiness_status TEXT,
+                        weather_chain_status TEXT,
+                        degraded_surface_count BIGINT,
+                        read_error_surface_count BIGINT,
+                        calibration_hard_gate_market_count BIGINT,
+                        pending_operator_review_count BIGINT
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO ui.system_runtime_summary VALUES
+                    ('2026-03-21 10:05:00', 'refresh_1', 'degraded_source', 'ok', 'ok', 'ok', 'degraded_source', 1, 0, 0, 0)
+                    """
+                )
+            finally:
+                con.close()
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(db_path),
+                    "ASTERION_READINESS_REPORT_JSON_PATH": str(Path(tmpdir) / "missing_readiness.json"),
+                    "ASTERION_READINESS_EVIDENCE_JSON_PATH": str(Path(tmpdir) / "missing_evidence.json"),
+                    "ASTERION_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH": str(Path(tmpdir) / "missing_manifest.json"),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(Path(tmpdir) / "missing_smoke_report.json"),
+                    "ASTERION_DB_PATH": str(Path(tmpdir) / "missing_runtime.duckdb"),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_smoke.duckdb"),
+                },
+                clear=False,
+            ):
+                home_snapshot = load_home_decision_snapshot()
+                markets_payload = load_market_chain_analysis_data()
+                system_status = load_system_runtime_status()
+
+        home_row = home_snapshot["action_queue"].iloc[0].to_dict()
+        market_row = markets_payload["market_rows"][0]
+        system_row = (
+            system_status["surface_delivery_summary"]
+            .loc[lambda frame: frame["surface_id"] == "markets"]
+            .iloc[0]
+            .to_dict()
+        )
+        self.assertEqual(home_row["surface_delivery_status"], "degraded_source")
+        self.assertEqual(home_row["surface_fallback_origin"], "runtime_db")
+        self.assertEqual(str(home_row["surface_last_refresh_ts"]), "2026-03-21 10:00:00")
+        self.assertEqual(market_row["surface_delivery_status"], "degraded_source")
+        self.assertEqual(market_row["surface_fallback_origin"], "runtime_db")
+        self.assertEqual(market_row["surface_delivery_reason_codes"], ["fallback:runtime_db"])
+        self.assertEqual(str(market_row["surface_last_refresh_ts"]), "2026-03-21 10:00:00")
+        self.assertEqual(system_row["delivery_status"], "degraded_source")
+        self.assertEqual(system_row["fallback_origin"], "runtime_db")
+        self.assertEqual(str(system_row["last_refresh_ts"]), "2026-03-21 10:00:00")
+
     def test_load_agent_review_data_falls_back_to_smoke_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "real_weather_chain_report.json"
@@ -452,6 +602,7 @@ class UiDataAccessTest(unittest.TestCase):
                 {
                     "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_runtime.duckdb"),
                 },
                 clear=False,
             ):
@@ -658,6 +809,7 @@ class UiDataAccessTest(unittest.TestCase):
                 {
                     "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_runtime.duckdb"),
                 },
                 clear=False,
             ):
@@ -853,7 +1005,7 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(overview["metrics"]["weather_chain_status"], "ok")
             self.assertEqual(overview["metrics"]["weather_market_question"], "Will the highest temperature in Seattle be between 36-37°F on March 13?")
             self.assertEqual(overview["metrics"]["weather_market_count"], 0)
-            self.assertEqual(len(system_rows), 8)
+            self.assertEqual(len(system_rows), 9)
             self.assertTrue(any(row["组件"] == "Calibration Profiles v2" for row in system_rows))
 
     def test_load_home_decision_snapshot_surfaces_largest_blocker_and_recent_agent_summary(self) -> None:

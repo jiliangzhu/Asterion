@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from asterion_core.storage.database import DuckDBConfig, connect_duckdb
 from asterion_core.storage.write_queue import WriteQueueConfig, init_queue
-from dagster_asterion.handlers import run_weather_live_prereq_readiness_job
+from dagster_asterion.handlers import run_weather_operator_surface_refresh_job
 from dagster_asterion.resources import AsterionColdPathSettings, LivePrereqReadinessRuntimeResource
 
 
@@ -46,7 +46,7 @@ def main() -> int:
     try:
         con = connect_duckdb(DuckDBConfig(db_path=str(db_path), ddl_path=None))
         try:
-            result = run_weather_live_prereq_readiness_job(
+            result = run_weather_operator_surface_refresh_job(
                 con,
                 queue_cfg,
                 ui_replica_db_path=ui_runtime.resolve_ui_replica_db_path(),
@@ -54,9 +54,7 @@ def main() -> int:
                 ui_lite_db_path=ui_runtime.resolve_ui_lite_db_path(),
                 ui_lite_meta_path=ui_runtime.resolve_ui_lite_meta_path(),
                 readiness_report_json_path=ui_runtime.resolve_readiness_report_json_path(),
-                readiness_report_markdown_path=ui_runtime.resolve_readiness_report_markdown_path(),
-                controlled_live_smoke_policy_path=settings.controlled_live_smoke_policy_path,
-                controlled_live_capability_manifest_path=ui_runtime.resolve_capability_manifest_path(),
+                readiness_evidence_json_path=ui_runtime.resolve_readiness_evidence_json_path(),
             )
         finally:
             con.close()

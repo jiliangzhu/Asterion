@@ -12,7 +12,7 @@
 
 **核心定位**: 不是 AlphaDesk 的"天气分支"，也不再依赖 AlphaDesk runtime，而是一个 `operator console + constrained execution infra` 形态的独立事件交易平台。
 
-当前唯一 active implementation entry 已切换到 [V2_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md)；它作为 umbrella contract，[P8_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P8_Implementation_Plan.md) 现保留为最近 accepted tranche record，[P8_Closeout_Checklist.md](./docs/10-implementation/versions/v2.0/checklists/P8_Closeout_Checklist.md) 是最近 accepted tranche 的 closeout checklist，而 [P7_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P7_Implementation_Plan.md) 与 [P6_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P6_Implementation_Plan.md) 分别保留为更早的 accepted closeout / baseline records。[P7_Closeout_Checklist.md](./docs/10-implementation/versions/v2.0/checklists/P7_Closeout_Checklist.md) 保留为历史 accepted closeout checklist。`P4` 与 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md) 当前都保留为 historical accepted records。当前系统状态固定表达为 `P4 accepted; post-P4 remediation accepted; v2.0 implementation active`，最近 accepted tranche: `Phase 8`；当前未打开新的 tranche-specific implementation plan，`P9` 继续只保留为 umbrella / roadmap reservation，不表示 unattended live，也不表示 unrestricted live。
+当前唯一 active implementation entry 已切换到 [V2_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md)；它作为 umbrella contract，[P9_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P9_Implementation_Plan.md) 现承担当前 tranche-specific implementation plan，[P8_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P8_Implementation_Plan.md) 保留为最近 accepted tranche record，[P8_Closeout_Checklist.md](./docs/10-implementation/versions/v2.0/checklists/P8_Closeout_Checklist.md) 是最近 accepted tranche 的 closeout checklist，而 [P7_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P7_Implementation_Plan.md) 与 [P6_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P6_Implementation_Plan.md) 分别保留为更早的 accepted closeout / baseline records。[P7_Closeout_Checklist.md](./docs/10-implementation/versions/v2.0/checklists/P7_Closeout_Checklist.md) 保留为历史 accepted closeout checklist。`P4` 与 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md) 当前都保留为 historical accepted records。当前系统状态固定表达为 `P4 accepted; post-P4 remediation accepted; v2.0 implementation active`，最近 accepted tranche: `Phase 8`；当前 current tranche: `Phase 9` in progress，且 `core implemented / closeout pending`，不表示 unattended live，也不表示 unrestricted live。
 当前 execution economics 已进入 feedback-backed 排序阶段：`weather_execution_priors_refresh` 会 nightly materialize market/strategy/wallet cohort priors，并把 feedback suppression 写回统一的 `ranking_score` 主链。
 
 当前 `runtime / UI / paper candidate` 已统一按 penalty-aware `ranking_score` 排序；`edge_bps_executable` 继续保留 raw executable edge 语义。Execution science 读面也已升级到 capture / miss / distortion 视角。
@@ -110,15 +110,17 @@ Asterion/
    - 这是所有实施文档的统一入口，后续阶段文档都从这里找
 7. 阅读 [V2_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md)
    - 这是当前唯一 active implementation entry；作为 umbrella contract，已锁定 `Weather-first` v2.0 workstreams、phases、planned interfaces 与 acceptance 结构
-8. 阅读 [P8_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P8_Implementation_Plan.md)
+8. 阅读 [P9_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P9_Implementation_Plan.md)
+   - 这是当前 tranche-specific implementation plan；当前主题是 `Operator Surface Delivery and Throughput Scaling`
+9. 阅读 [P8_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P8_Implementation_Plan.md)
    - 这是最近 accepted tranche record；保留 `Phase 8 — Calibration Hard Gates and Scaling-Aware Capital Discipline` 的已交付 closeout 基线
-9. 如需回看刚完成的 deployable rerank / allocator v2 / economics closeout，再阅读 [P7_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P7_Implementation_Plan.md)
+10. 如需回看刚完成的 deployable rerank / allocator v2 / economics closeout，再阅读 [P7_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P7_Implementation_Plan.md)
    - 这是 `Phase 7` 的 accepted closeout record
-10. 再回看 deployable baseline 时，阅读 [P6_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P6_Implementation_Plan.md)
+11. 再回看 deployable baseline 时，阅读 [P6_Implementation_Plan.md](./docs/10-implementation/versions/v2.0/phase-plans/P6_Implementation_Plan.md)
    - 这是 `Phase 6` 的 accepted tranche baseline record
-11. 阅读 [Implementation_Index.md](./docs/10-implementation/Implementation_Index.md) 中的 active / historical 分类
+12. 阅读 [Implementation_Index.md](./docs/10-implementation/Implementation_Index.md) 中的 active / historical 分类
    - 先区分当前 `v2.0 implementation active` 入口与 `P4`、post-P4 remediation 的历史 accepted records
-12. 阅读 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
+13. 阅读 [Post_P4_Remediation_Implementation_Plan.md](./docs/10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
    - 这是 `P4` 之后到 `v2.0` 之前的历史 accepted remediation 记录；current reassessment 与 deep audit 的后续工作已在其中完成收口
 13. 阅读 [P4_Implementation_Plan.md](./docs/10-implementation/versions/v1.0/phase-plans/P4_Implementation_Plan.md)
    - 这是 `P4 live prerequisites` 的 historical accepted phase record

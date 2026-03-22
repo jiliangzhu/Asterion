@@ -5,6 +5,16 @@ import json
 import pandas as pd
 import streamlit as st
 
+from ui.components import (
+    render_delivery_badge,
+    render_detail_key_value,
+    render_empty_state,
+    render_kpi_band,
+    render_page_intro,
+    render_reason_chip_row,
+    render_section_header,
+    render_state_card,
+)
 from ui.data_access import load_home_decision_snapshot
 
 
@@ -52,6 +62,7 @@ def _allocation_overlay_summary(row: dict[str, object]) -> list[str]:
         f"pre_budget_pnl={_format_metric_value(row.get('pre_budget_deployable_expected_pnl'))}",
         f"final_score={_format_metric_value(row.get('ranking_score'))}",
         f"calibration_gate={row.get('calibration_gate_status') or 'clear'}",
+        f"delivery={row.get('surface_delivery_status') or 'ok'}",
         f"preview_limit={preview_budget.get('preview_binding_limit_scope') or row.get('preview_binding_limit_scope') or 'none'}",
         f"final_limit={row.get('binding_limit_scope') or budget_impact.get('binding_limit_scope') or 'none'}",
         f"rerank={', '.join(str(item) for item in rerank_reason_codes) or 'none'}",
@@ -77,8 +88,15 @@ def show() -> None:
     degraded_inputs = overview.get("degraded_inputs", [])
     uncaptured_high_edge = overview.get("uncaptured_high_edge_markets", pd.DataFrame())
 
-    st.markdown("### Decision Console")
-    st.caption("首页优先回答 readiness decision、最大 blocker、当前最佳机会，以及 execution-path evidence；agent 产出只作为 exception-review evidence，不作为主排序输入。")
+    render_page_intro(
+        "Decision Console",
+        "首页优先回答 readiness decision、最大 blocker、当前最佳机会，以及 execution-path evidence；agent 产出只作为 exception-review evidence，不作为主排序输入。",
+        kicker="Operator research desk",
+        badges=[
+            ("v2.0 implementation active", "ok"),
+            ("constrained execution boundary", "info"),
+        ],
+    )
 
     degraded_surfaces = [
         f"{name}: {payload['label']}"
@@ -88,44 +106,49 @@ def show() -> None:
     if degraded_surfaces:
         st.warning("当前关键数据面状态: " + " | ".join(degraded_surfaces))
 
-    top1, top2, top3, top4 = st.columns(4)
-    with top1:
-        st.metric("Readiness Decision", metrics.get("go_decision", "UNKNOWN"), delta=readiness.get("target") or "p4_live_prerequisites")
-    with top2:
-        st.metric("Actionable Markets", metrics.get("actionable_market_count", 0), delta=f"open={metrics.get('weather_market_count', 0)}")
-    with top3:
-        st.metric("Ranking Score", _format_metric_value(metrics.get("top_ranking_score", metrics.get("top_opportunity_score"))), delta="primary score")
-    with top4:
-        st.metric("Largest Current Blocker", largest_blocker["source"], delta=largest_blocker["summary"])
+    render_kpi_band(
+        [
+            {"label": "Readiness Decision", "value": metrics.get("go_decision", "UNKNOWN"), "delta": readiness.get("target") or "p4_live_prerequisites"},
+            {"label": "Actionable Markets", "value": metrics.get("actionable_market_count", 0), "delta": f"open={metrics.get('weather_market_count', 0)}"},
+            {"label": "Ranking Score", "value": _format_metric_value(metrics.get("top_ranking_score", metrics.get("top_opportunity_score"))), "delta": "primary score"},
+            {"label": "Largest Current Blocker", "value": largest_blocker["source"], "delta": largest_blocker["summary"]},
+        ]
+    )
 
     row1_left, row1_right = st.columns([1.2, 1.05])
     with row1_left:
-        st.markdown("#### Readiness Decision")
-        st.info(readiness.get("decision_reason") or "尚未生成 P4 readiness 报告。")
+        render_section_header("Readiness Decision", subtitle="先回答当前是否 ready for controlled rollout decision，而不是先下沉到诊断表。")
+        render_state_card(
+            "decision",
+            readiness.get("decision_reason") or "尚未生成 P4 readiness 报告。",
+            tone="info",
+            meta=readiness.get("target") or "p4_live_prerequisites",
+        )
         failed_gate_names = readiness.get("failed_gate_names") or []
         if failed_gate_names:
             st.error("当前 blocker: " + " / ".join(failed_gate_names))
         else:
-            st.success("当前没有 gate-level blocker。")
+            render_state_card("gate status", "当前没有 gate-level blocker。", tone="ok")
         st.caption(
             "当前仓库状态是 `P4 accepted; post-P4 remediation accepted; v2.0 implementation active`，"
             "当前系统定位是 `operator console + constrained execution infra`，这不表示 unattended live。"
         )
 
     with row1_right:
-        st.markdown("#### Largest Current Blocker")
+        render_section_header("Largest Current Blocker", subtitle="把当前最限制 operator 动作的约束放到主视野，而不是埋在 evidence rows 里。")
         if largest_blocker["source"] == "clear":
-            st.success("No material blocker")
+            render_state_card("blocker", "No material blocker", tone="ok")
         else:
-            st.warning(largest_blocker["summary"])
-        st.caption(f"来源: {largest_blocker['source']}")
+            render_state_card("blocker", largest_blocker["summary"], tone="warn", meta=f"来源: {largest_blocker['source']}")
+        if largest_blocker["source"] == "clear":
+            st.caption(f"来源: {largest_blocker['source']}")
         st.metric("Liquidity-Ready", metrics.get("liquidity_ready_count", 0), delta=f"highest_edge={_format_metric_value(metrics.get('highest_edge_bps'))}bps")
 
     row2_left, row2_right = st.columns([1.35, 1])
     with row2_left:
-        st.markdown("#### Top Opportunities")
+        render_section_header("Top opportunities", subtitle="默认先看最值得 review 的机会，而不是完整研究明细。")
         if top_opportunities.empty:
-            st.info("当前还没有进入机会排序的市场。")
+            render_empty_state("No ranked markets", "当前还没有进入机会排序的市场。", tone="muted")
         else:
             columns = [
                 column
@@ -144,6 +167,9 @@ def show() -> None:
                     "capture_probability",
                     "recommended_size",
                     "allocation_status",
+                    "surface_delivery_status",
+                    "surface_fallback_origin",
+                    "surface_last_refresh_ts",
                     "source_badge",
                     "source_truth_status",
                     "mapping_confidence",
@@ -169,12 +195,12 @@ def show() -> None:
             st.caption("deployable: " + " | ".join(_allocation_overlay_summary(top_row)))
 
     with row2_right:
-        st.markdown("#### Predicted vs Realized Snapshot")
+        render_section_header("Predicted vs realized", subtitle="保留 execution-path evidence，但把它放在 top opportunity 旁边作为质量旁证。")
         st.metric("Resolved Trades", metrics.get("resolved_trade_count", 0), delta=f"pending={metrics.get('pending_resolution_count', 0)}")
         st.write(f"avg predicted edge: `{_format_metric_value(metrics.get('avg_predicted_edge_bps'))} bps`")
         st.write(f"avg realized pnl: `{_format_metric_value(metrics.get('avg_realized_pnl'))}`")
         if predicted_vs_realized.empty:
-            st.info("当前还没有 execution-path evidence rows。")
+            render_empty_state("No execution evidence", "当前还没有 execution-path evidence rows。")
         else:
             columns = [
                 column
@@ -192,7 +218,7 @@ def show() -> None:
 
     row3_left, row3_right = st.columns([1.1, 1.1])
     with row3_left:
-        st.markdown("#### Market Coverage")
+        render_section_header("Market coverage", subtitle="用城市和市场覆盖回答研究面是否足够宽，而不是先下沉到链路细节。")
         weather_locations = metrics.get("weather_locations") or []
         st.metric("Cities Covered", len(weather_locations), delta=f"source={(market_data.get('weather_smoke_report') or {}).get('market_discovery', {}).get('market_source') or market_data.get('market_opportunity_source')}")
         if weather_locations:
@@ -201,13 +227,13 @@ def show() -> None:
             st.caption("当前没有命中的开盘近期天气市场。")
 
     with row3_right:
-        st.markdown("#### Edge Capture")
+        render_section_header("Edge capture", subtitle="这里展示的是 capture 现实，而不是对 execution certainty 的承诺。")
         st.write(f"submission: `{_format_metric_value(metrics.get('submission_capture_ratio'))}`")
         st.write(f"fill: `{_format_metric_value(metrics.get('fill_capture_ratio'))}`")
         st.write(f"resolution: `{_format_metric_value(metrics.get('resolution_capture_ratio'))}`")
         st.caption(f"uncaptured={metrics.get('uncaptured_high_edge_count', 0)}")
         if uncaptured_high_edge.empty:
-            st.success("当前没有 uncaptured high-edge markets。")
+            render_state_card("capture", "当前没有 uncaptured high-edge markets。", tone="ok")
         else:
             columns = [
                 column
@@ -227,9 +253,9 @@ def show() -> None:
 
     row3b_left, row3b_right = st.columns([1.2, 1.0])
     with row3b_left:
-        st.markdown("#### Action Queue")
+        render_section_header("Action queue", subtitle="按 deployable value 和 operator bucket 组织默认注意力，而不是只显示 persisted workflow rows。")
         if action_queue.empty:
-            st.info("当前没有进入 operator action queue 的 persisted rows。")
+            render_empty_state("No queued actions", "当前没有进入 operator action queue 的 persisted rows。")
         else:
             bucket_counts = (
                 action_queue["operator_bucket"].value_counts().to_dict()
@@ -257,6 +283,9 @@ def show() -> None:
                     "pre_budget_deployable_expected_pnl",
                     "deployable_expected_pnl",
                     "calibration_gate_status",
+                    "surface_delivery_status",
+                    "surface_fallback_origin",
+                    "surface_last_refresh_ts",
                     "requested_size",
                     "recommended_size",
                     "preview_binding_limit_scope",
@@ -270,24 +299,32 @@ def show() -> None:
             ]
             st.dataframe(action_queue[columns].head(10), width="stretch", hide_index=True)
     with row3b_right:
-        st.markdown("#### Allocation Overlay")
-        st.metric("Queued Actions", metrics.get("action_queue_count", 0), delta="persisted workflow queue")
-        st.write(f"ready_now: `{_format_metric_value(metrics.get('ready_now_count'))}`")
-        st.write(f"high_risk: `{_format_metric_value(metrics.get('high_risk_count'))}`")
-        st.write(f"review_required: `{_format_metric_value(metrics.get('review_required_count'))}`")
-        st.write(f"blocked: `{_format_metric_value(metrics.get('blocked_count'))}`")
-        st.write(f"research_only: `{_format_metric_value(metrics.get('research_only_count'))}`")
+        render_section_header("Allocation overlay", subtitle="这里解释推荐 size、当前 gate 与 capital policy，不替代主排序。")
+        render_detail_key_value(
+            [
+                ("Queued Actions", metrics.get("action_queue_count", 0)),
+                ("ready_now", _format_metric_value(metrics.get("ready_now_count"))),
+                ("high_risk", _format_metric_value(metrics.get("high_risk_count"))),
+                ("review_required", _format_metric_value(metrics.get("review_required_count"))),
+                ("blocked", _format_metric_value(metrics.get("blocked_count"))),
+                ("research_only", _format_metric_value(metrics.get("research_only_count"))),
+            ]
+        )
         if not top_opportunities.empty:
             top_row = top_opportunities.iloc[0].to_dict()
-            st.write(f"recommended_size: `{_format_metric_value(top_row.get('recommended_size'))}`")
-            st.write(f"allocation_status: `{_format_metric_value(top_row.get('allocation_status'))}`")
-            st.write(f"deployable_expected_pnl: `{_format_metric_value(top_row.get('deployable_expected_pnl'))}`")
-            st.write(f"max_deployable_size: `{_format_metric_value(top_row.get('max_deployable_size'))}`")
-            st.write(f"base_ranking_score: `{_format_metric_value(top_row.get('base_ranking_score'))}`")
-            st.write(f"pre_budget_deployable_expected_pnl: `{_format_metric_value(top_row.get('pre_budget_deployable_expected_pnl'))}`")
-            st.write(f"calibration_gate_status: `{_format_metric_value(top_row.get('calibration_gate_status'))}`")
-            st.write(f"capital_policy_id: `{_format_metric_value(top_row.get('capital_policy_id'))}`")
-            st.write(f"requested_size: `{_format_metric_value(top_row.get('requested_size') or _json_dict(_json_dict(top_row.get('budget_impact')).get('preview')).get('requested_size'))}`")
+            render_detail_key_value(
+                [
+                    ("recommended_size", _format_metric_value(top_row.get("recommended_size"))),
+                    ("allocation_status", _format_metric_value(top_row.get("allocation_status"))),
+                    ("deployable_expected_pnl", _format_metric_value(top_row.get("deployable_expected_pnl"))),
+                    ("max_deployable_size", _format_metric_value(top_row.get("max_deployable_size"))),
+                    ("base_ranking_score", _format_metric_value(top_row.get("base_ranking_score"))),
+                    ("pre_budget_deployable_expected_pnl", _format_metric_value(top_row.get("pre_budget_deployable_expected_pnl"))),
+                    ("calibration_gate_status", _format_metric_value(top_row.get("calibration_gate_status"))),
+                    ("capital_policy_id", _format_metric_value(top_row.get("capital_policy_id"))),
+                    ("requested_size", _format_metric_value(top_row.get("requested_size") or _json_dict(_json_dict(top_row.get("budget_impact")).get("preview")).get("requested_size"))),
+                ]
+            )
             budget_impact = _json_dict(top_row.get("budget_impact"))
             if budget_impact:
                 preview_budget = _json_dict(budget_impact.get("preview"))
@@ -304,15 +341,15 @@ def show() -> None:
                         ]
                     )
                 )
-                st.caption(f"rerank_reason={', '.join(str(item) for item in rerank_reason_codes) or 'none'}")
-                st.caption(f"scaling_reason={', '.join(str(item) for item in scaling_reason_codes) or 'none'}")
+                render_reason_chip_row(rerank_reason_codes, empty_label="rerank:none")
+                render_reason_chip_row(scaling_reason_codes, empty_label="scaling:none")
 
     row4_left, row4_right = st.columns([1.1, 1.1])
     with row4_left:
-        st.markdown("#### Wallet & Execution Attention")
+        render_section_header("Wallet & execution attention", subtitle="聚合 wallet 与 live-prereq exceptions，但不制造新的 execution gate。")
         execution_exceptions = execution["exceptions"]
         if wallet_attention.empty and execution_exceptions.empty:
-            st.success("当前没有 wallet / execution attention rows。")
+            render_state_card("attention", "当前没有 wallet / execution attention rows。", tone="ok")
         else:
             frames = []
             if not wallet_attention.empty:
@@ -327,31 +364,33 @@ def show() -> None:
             st.dataframe(combined, width="stretch", hide_index=True)
 
     with row4_right:
-        st.markdown("#### Readiness Evidence")
+        render_section_header("Readiness evidence", subtitle="把 evidence bundle 放在首屏可见区，但不让 file-path 细节抢走主叙事。")
         st.metric("Evidence Bundle", "READY" if evidence.get("exists") else "MISSING", delta=evidence.get("capability_manifest_status") or "missing")
         if evidence.get("blockers"):
             st.error(" / ".join(str(item) for item in evidence.get("blockers")[:4]))
         elif evidence.get("warnings"):
             st.warning(" / ".join(str(item) for item in evidence.get("warnings")[:4]))
         else:
-            st.success(evidence.get("decision_reason") or "当前 evidence bundle 无 blocker。")
+            render_state_card("evidence", evidence.get("decision_reason") or "当前 evidence bundle 无 blocker。", tone="ok")
 
-    st.markdown("#### Degraded Inputs")
+    render_section_header("Degraded inputs", subtitle="这里显式列出降级输入，避免 fallback 被误看成 canonical 正常态。")
     if degraded_inputs:
-        for item in degraded_inputs[:8]:
-            st.write(f"- `{item}`")
+        render_reason_chip_row(degraded_inputs[:8], empty_label="none")
     else:
-        st.success("当前没有 degraded input summary。")
+        render_state_card("inputs", "当前没有 degraded input summary。", tone="ok")
 
-    st.markdown("#### Recent Agent Work")
+    render_section_header("Recent agent work", subtitle="这里展示的是 exception-review evidence，不是 execution driver，也不进入 readiness gate。")
     st.metric("Agent Rows", metrics.get("agent_activity_count", 0), delta=f"review_required={metrics.get('agent_review_required_count', 0)}")
-    st.caption("这里展示的是 exception-review evidence，不是 execution driver，也不进入 readiness gate。")
     if recent_agent.get("agent_type"):
-        st.write(f"最新 agent: `{recent_agent['agent_type']}`")
-        st.write(f"verdict: `{recent_agent.get('verdict') or 'n/a'}`")
-        st.caption(recent_agent.get("summary") or "最近一次 agent 产出暂无摘要。")
+        render_detail_key_value(
+            [
+                ("最新 agent", recent_agent["agent_type"]),
+                ("verdict", recent_agent.get("verdict") or "n/a"),
+                ("summary", recent_agent.get("summary") or "最近一次 agent 产出暂无摘要。"),
+            ]
+        )
     else:
-        st.info("当前没有 agent activity；运行 weather smoke 后会在这里显示最新产出。")
+        render_empty_state("No recent agent work", "当前没有 agent activity；运行 weather smoke 后会在这里显示最新产出。")
     if not agent_data.empty:
         columns = [
             column

@@ -152,6 +152,12 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
                     "capital_scaling_reason_codes": compat._json_list(queue_payload.get("capital_scaling_reason_codes_json"))
                     or payload.get("capital_scaling_reason_codes")
                     or [],
+                    "surface_delivery_status": queue_payload.get("surface_delivery_status") or payload.get("surface_delivery_status") or "ok",
+                    "surface_fallback_origin": queue_payload.get("surface_fallback_origin") or payload.get("surface_fallback_origin"),
+                    "surface_delivery_reason_codes": compat._json_list(queue_payload.get("surface_delivery_reason_codes_json"))
+                    or compat._json_list(payload.get("surface_delivery_reason_codes_json"))
+                    or [],
+                    "surface_last_refresh_ts": queue_payload.get("surface_last_refresh_ts") or payload.get("surface_last_refresh_ts"),
                     "cohort_history": cohort_history_by_market.get(market_id) or [],
                 }
             )
@@ -192,6 +198,17 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
                 "capital_scaling_reason_codes": compat._json_list((queue_by_market.get(str(item.get("market_id"))) or {}).get("capital_scaling_reason_codes_json"))
                 or item.get("capital_scaling_reason_codes")
                 or [],
+                "surface_delivery_status": (queue_by_market.get(str(item.get("market_id"))) or {}).get("surface_delivery_status")
+                or item.get("surface_delivery_status")
+                or "degraded_source",
+                "surface_fallback_origin": (queue_by_market.get(str(item.get("market_id"))) or {}).get("surface_fallback_origin")
+                or item.get("surface_fallback_origin")
+                or opportunity_payload["source"],
+                "surface_delivery_reason_codes": compat._json_list((queue_by_market.get(str(item.get("market_id"))) or {}).get("surface_delivery_reason_codes_json"))
+                or compat._json_list(item.get("surface_delivery_reason_codes_json"))
+                or [f"fallback:{opportunity_payload['source']}"],
+                "surface_last_refresh_ts": (queue_by_market.get(str(item.get("market_id"))) or {}).get("surface_last_refresh_ts")
+                or item.get("surface_last_refresh_ts"),
                 "rule2spec_status": (validation_by_market.get(str(item.get("market_id"))) or {}).get("rule2spec_status") or item.get("rule2spec_status"),
                 "rule2spec_verdict": (validation_by_market.get(str(item.get("market_id"))) or {}).get("rule2spec_verdict") or item.get("rule2spec_verdict"),
                 "rule2spec_summary": (validation_by_market.get(str(item.get("market_id"))) or {}).get("rule2spec_summary") or item.get("rule2spec_summary"),

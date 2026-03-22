@@ -24,6 +24,7 @@ class UiGoldenSurfacesTest(unittest.TestCase):
         self.assertIn("deployable_expected_pnl", record.required_columns)
         self.assertIn("calibration_gate_status", record.required_columns)
         self.assertIn("source_badge", record.required_columns)
+        self.assertIn("surface_delivery_reason_codes_json", record.required_columns)
         self.assertIn("primary_score_label", record.required_columns)
 
         action_queue_record = get_read_model_catalog_record("ui.action_queue_summary")
@@ -34,12 +35,29 @@ class UiGoldenSurfacesTest(unittest.TestCase):
         self.assertIn("deployable_expected_pnl", action_queue_record.required_columns)
         self.assertIn("calibration_gate_status", action_queue_record.required_columns)
         self.assertIn("binding_limit_scope", action_queue_record.required_columns)
+        self.assertIn("surface_delivery_status", action_queue_record.required_columns)
+        self.assertIn("surface_fallback_origin", action_queue_record.required_columns)
+        self.assertIn("surface_delivery_reason_codes_json", action_queue_record.required_columns)
 
         cohort_history_record = get_read_model_catalog_record("ui.cohort_history_summary")
         self.assertIsNotNone(cohort_history_record)
         assert cohort_history_record is not None
         self.assertIsNone(cohort_history_record.primary_score_column)
         self.assertIn("submitted_capture_ratio", cohort_history_record.required_columns)
+
+        delivery_record = get_read_model_catalog_record("ui.surface_delivery_summary")
+        self.assertIsNotNone(delivery_record)
+        assert delivery_record is not None
+        self.assertIn("delivery_status", delivery_record.required_columns)
+        self.assertIn("fallback_origin", delivery_record.required_columns)
+        self.assertIn("truth_check_issue_count", delivery_record.required_columns)
+        self.assertIn("degraded_reason_codes_json", delivery_record.required_columns)
+
+        system_record = get_read_model_catalog_record("ui.system_runtime_summary")
+        self.assertIsNotNone(system_record)
+        assert system_record is not None
+        self.assertIn("latest_surface_refresh_status", system_record.required_columns)
+        self.assertIn("degraded_surface_count", system_record.required_columns)
 
     def test_boundary_copy_baseline_remains_pinned(self) -> None:
         summary = load_boundary_sidebar_summary()

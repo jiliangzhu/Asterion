@@ -94,7 +94,7 @@ class DocsIndexHygieneTest(unittest.TestCase):
             / "versions"
             / "v2.0"
             / "phase-plans"
-            / "P8_Implementation_Plan.md"
+            / "P9_Implementation_Plan.md"
         )
         self.assertTrue(tranche_plan.exists())
         docs = [
@@ -107,7 +107,7 @@ class DocsIndexHygieneTest(unittest.TestCase):
         ]
         for path in docs:
             text = path.read_text(encoding="utf-8")
-            self.assertIn("P8_Implementation_Plan.md", text)
+            self.assertIn("P9_Implementation_Plan.md", text)
 
 
 if __name__ == "__main__":

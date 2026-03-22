@@ -201,6 +201,23 @@ _JOB_SPECS = [
         default_schedule_key="weather_live_prereq_readiness_hourly",
     ),
     ColdPathJobSpec(
+        job_name="weather_operator_surface_refresh",
+        description="Refresh UI replica/lite surfaces, validate truth-source contracts, and persist operator-surface delivery runtime status.",
+        mode="scheduled",
+        upstream_jobs=["weather_live_prereq_readiness"],
+        input_tables=[
+            "ui.phase_readiness_summary",
+            "ui.readiness_evidence_summary",
+        ],
+        output_tables=[
+            "runtime.operator_surface_refresh_runs",
+            "ui.surface_delivery_summary",
+            "ui.system_runtime_summary",
+        ],
+        handler_name="run_weather_operator_surface_refresh_job",
+        default_schedule_key="weather_operator_surface_refresh_hourly",
+    ),
+    ColdPathJobSpec(
         job_name="weather_controlled_live_smoke",
         description="Run the canonical manual controlled-live smoke for allowlisted approve_usdc with explicit env arming and full audit.",
         mode="manual",
@@ -428,6 +445,13 @@ _SCHEDULE_SPECS = [
         schedule_key="weather_live_prereq_readiness_hourly",
         job_name="weather_live_prereq_readiness",
         cron_schedule="55 * * * *",
+        execution_timezone="UTC",
+        enabled_by_default=True,
+    ),
+    ColdPathScheduleSpec(
+        schedule_key="weather_operator_surface_refresh_hourly",
+        job_name="weather_operator_surface_refresh",
+        cron_schedule="58 * * * *",
         execution_timezone="UTC",
         enabled_by_default=True,
     ),
