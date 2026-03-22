@@ -90,8 +90,32 @@ st.markdown(
             color: #ecf1ed !important;
         }
 
+        section[data-testid="stSidebar"] h2,
+        section[data-testid="stSidebar"] h3,
+        section[data-testid="stSidebar"] strong {
+            color: #ffffff !important;
+        }
+
         section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
             line-height: 1.6;
+        }
+
+        section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] li,
+        section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+        section[data-testid="stSidebar"] .stCaption {
+            color: #f4f6f2 !important;
+        }
+
+        section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] ul {
+            padding-left: 1.15rem;
+        }
+
+        section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] code {
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            color: #ffffff !important;
+            padding: 0.12rem 0.35rem;
         }
 
         section[data-testid="stSidebar"] div[role="radiogroup"] > label {
@@ -502,10 +526,6 @@ def _render_shell_header() -> None:
                     {_render_status_badge("research console", "info")}
                 </div>
             </div>
-            <div class="console-subcopy">
-                当前 UI 的定位是 operator console + constrained execution infra：聚焦机会优先的 weather markets、execution science、
-                live-prereq wallet / execution、readiness evidence 与 controlled-live boundary。这里不是 unattended live，也不是 unrestricted live；
-            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -561,20 +581,20 @@ if ui_boundary_status.status != "ok":
 _render_shell_header()
 _render_global_surface_banner()
 
-st.sidebar.markdown("## Navigation")
+st.sidebar.markdown("### 页面导航")
 page_key = st.sidebar.radio(
     "选择控制台页面",
     list(PAGES.keys()),
     index=0,
-    format_func=lambda key: f"{key} · {PAGES[key][0]}",
+    format_func=lambda key: key,
+    label_visibility="collapsed",
 )
 
-st.sidebar.markdown("---")
 st.sidebar.markdown("### 当前边界")
 sidebar_truth = load_boundary_sidebar_truth()
 for item in sidebar_truth["capability_boundary"]:
-    st.sidebar.markdown(f"- `{item}`")
+    st.sidebar.markdown(f"- {item}")
 for item in sidebar_truth["live_negations"]:
-    st.sidebar.markdown(f"- `{item}`")
-    
+    st.sidebar.markdown(f"- {item}")
+
 PAGES[page_key][1]()
