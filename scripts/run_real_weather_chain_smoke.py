@@ -1282,7 +1282,9 @@ def _fetch_observed_value_from_archive(
     values = daily.get(variable)
     if not isinstance(values, list) or not values:
         raise ValueError(f"open-meteo archive variable missing:{variable}")
-    return float(values[0])
+    # Open-Meteo Archive API returns Celsius; convert to Fahrenheit for US weather markets
+    celsius = float(values[0])
+    return celsius * 9.0 / 5.0 + 32.0
 
 
 def _fetch_historical_forecast_value(

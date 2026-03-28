@@ -103,6 +103,17 @@ def build_forecast_calibration_sample(
     created_at: datetime | None = None,
 ) -> ForecastCalibrationSampleRecord:
     mean = forecast_distribution_mean(forecast_run.forecast_payload.get("temperature_distribution") or {})
+    # Prefer precomputed raw_mean from distribution_summary_v2 when available;
+    # computing from temperature_distribution can yield incorrect results for sources
+    # whose distribution was built via build_normal_distribution with tiny probabilities
+    # that cause numerical underflow in the mean calculation.
+    payload = forecast_run.forecast_payload or {}
+    dsv2 = payload.get("distribution_summary_v2")
+    if isinstance(dsv2, dict) and dsv2.get("raw_mean") is not None:
+        try:
+            mean = float(dsv2["raw_mean"])
+        except (TypeError, ValueError):
+            pass
     normalized_created_at = created_at or datetime.now(UTC)
     lookup_key = build_calibration_lookup_key(
         station_id=forecast_run.station_id,
