@@ -355,7 +355,10 @@ def show() -> None:
                     ("Effective Triage Status", top_display_row.get("effective_triage_status")),
                 ]
             )
-            render_reason_chip_row(top_display_row.get("calibration_gate_reason_codes") or [], empty_label="calibration_gate:clear")
+            codes = top_display_row.get("calibration_gate_reason_codes")
+            if codes is None or (hasattr(codes, 'size') and codes.size == 0):
+                codes = []
+            render_reason_chip_row(codes, empty_label="calibration_gate:clear")
             budget_impact = _json_dict(top_display_row.get("budget_impact"))
             preview = _preview_summary(top_display_row)
             if budget_impact:
@@ -519,12 +522,23 @@ def show() -> None:
                     ("Feedback Status", selected_market.get("feedback_status")),
                     ("Capital Policy", selected_market.get("capital_policy_id")),
                     ("Source Badge", selected_market.get("source_badge")),
-                    ("Capital Scaling Reasons", ", ".join(str(item) for item in (selected_market.get("capital_scaling_reason_codes") or [])) or "N/A"),
+                    ("Capital Scaling Reasons", 
+                     (", ".join(str(item) for item in codes) if (codes := selected_market.get('capital_scaling_reason_codes')) is not None 
+                      and not (hasattr(codes, 'size') and codes.size == 0) else "N/A")),
                 ]
             )
-            render_reason_chip_row(selected_market.get("queue_reason_codes") or [], empty_label="queue:none")
-            render_reason_chip_row(preview.get("rerank_reason_codes") or [], empty_label="rerank:none")
-            render_reason_chip_row(selected_market.get("capital_scaling_reason_codes") or [], empty_label="scaling:none")
+            codes = selected_market.get("queue_reason_codes")
+            if codes is None or (hasattr(codes, 'size') and codes.size == 0):
+                codes = []
+            render_reason_chip_row(codes, empty_label="queue:none")
+            codes = preview.get("rerank_reason_codes")
+            if codes is None or (hasattr(codes, 'size') and codes.size == 0):
+                codes = []
+            render_reason_chip_row(codes, empty_label="rerank:none")
+            codes = selected_market.get("capital_scaling_reason_codes")
+            if codes is None or (hasattr(codes, 'size') and codes.size == 0):
+                codes = []
+            render_reason_chip_row(codes, empty_label="scaling:none")
 
         with calibration_tab:
             render_detail_key_value(
@@ -545,7 +559,10 @@ def show() -> None:
                     ("Threshold (bps)", selected_market.get("threshold_bps")),
                 ]
             )
-            render_reason_chip_row(selected_market.get("calibration_gate_reason_codes") or [], empty_label="calibration_gate:clear")
+            codes = selected_market.get("calibration_gate_reason_codes")
+            if codes is None or (hasattr(codes, 'size') and codes.size == 0):
+                codes = []
+            render_reason_chip_row(codes, empty_label="calibration_gate:clear")
 
         with triage_tab:
             render_section_header("Triage", subtitle="P11 triage overlay 只提供 advisory-only 建议；Markets 是允许写 operator 决策的入口之一。")
@@ -676,10 +693,22 @@ def show() -> None:
                         ("Ranking Score", why_ranked.get("ranking_score")),
                     ]
                 )
-                render_reason_chip_row(why_ranked.get("calibration_gate_reason_codes") or [], empty_label="calibration_gate:clear")
-                render_reason_chip_row(why_ranked.get("rerank_reason_codes") or [], empty_label="rerank:none")
-                render_reason_chip_row(why_ranked.get("capital_scaling_reason_codes") or [], empty_label="scaling:none")
-                render_reason_chip_row(why_ranked.get("microstructure_reason_codes") or [], empty_label="microstructure:none")
+                codes = why_ranked.get("calibration_gate_reason_codes")
+                if codes is None or (hasattr(codes, 'size') and codes.size == 0):
+                    codes = []
+                render_reason_chip_row(codes, empty_label="calibration_gate:clear")
+                codes = why_ranked.get("rerank_reason_codes")
+                if codes is None or (hasattr(codes, 'size') and codes.size == 0):
+                    codes = []
+                render_reason_chip_row(codes, empty_label="rerank:none")
+                codes = why_ranked.get("capital_scaling_reason_codes")
+                if codes is None or (hasattr(codes, 'size') and codes.size == 0):
+                    codes = []
+                render_reason_chip_row(codes, empty_label="scaling:none")
+                codes = why_ranked.get("microstructure_reason_codes")
+                if codes is None or (hasattr(codes, 'size') and codes.size == 0):
+                    codes = []
+                render_reason_chip_row(codes, empty_label="microstructure:none")
 
             microstructure = selected_market.get("market_microstructure") or {}
             if microstructure:
@@ -794,7 +823,10 @@ def show() -> None:
                     ("Last Refresh", selected_market.get("surface_last_refresh_ts")),
                 ]
             )
-            render_reason_chip_row(selected_market.get("surface_delivery_reason_codes") or [], empty_label="delivery:ok")
+            codes = selected_market.get("surface_delivery_reason_codes")
+            if codes is None or (hasattr(codes, 'size') and codes.size == 0):
+                codes = []
+            render_reason_chip_row(codes, empty_label="delivery:ok")
             render_section_header("Validation and review", subtitle="Rule2Spec / Data QA 现在来自 deterministic validation；只有 resolution 仍是 agent-assisted review。")
             st.dataframe(_agent_review_frame(selected_market), width="stretch", hide_index=True)
             with st.expander("Diagnostic Details", expanded=False):
