@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -4009,3 +4010,172 @@ def _stable_unique_values(values: list[str]) -> list[str]:
         seen.add(value)
         ordered.append(value)
     return ordered
+
+
+def materialize_agent_invocations_handler(
+    context,
+    db_config,
+) -> int:
+    """Materialize queued agent invocations, outputs, reviews, and evaluations from OS write queue to DuckDB.
+
+    This consumes tasks queued by enqueue_agent_artifact_upserts and enqueue_agent_evaluation_upserts
+    and writes them to the corresponding agent.* tables in DuckDB.
+
+    According to AGENTS.md:
+    - AI agents must remain outside the execution path
+    - agent.* tables only store review/evaluation, do NOT modify canonical execution state
+    - This handler only consumes the queue and persists records, does not execute any agent actions
+    """
+    import json
+    from asterion_core.storage.write_queue import (
+        WriteQueueConfig,
+        WriteTask,
+        _connect,
+        default_write_queue_path,
+    )
+    from agents.common.persistence import (
+        AGENT_INVOCATION_COLUMNS,
+        AGENT_OUTPUT_COLUMNS,
+        AGENT_REVIEW_COLUMNS,
+        AGENT_EVALUATION_COLUMNS,
+        AGENT_OPERATOR_REVIEW_DECISION_COLUMNS,
+    )
+
+    def _row_to_task(row) -> WriteTask:
+        payload = json.loads(str(row["payload_json"]))
+        if not isinstance(payload, dict):
+            raise ValueError("payload_json must decode to an object")
+        return WriteTask(
+            task_id=str(row["task_id"]),
+            task_type=str(row["task_type"]),
+            payload=payload,
+            status=str(row["status"]),
+            attempts=int(row["attempts"]),
+            max_attempts=int(row["max_attempts"]),
+            created_ts_ms=int(row["created_ts_ms"]),
+            run_id=str(row["run_id"]) if row["run_id"] is not None else None,
+        )
+
+    queue_path = default_write_queue_path()
+    if not os.path.exists(queue_path):
+        # No queue file means nothing pending
+        context.log.info("No write queue file found at %s, nothing to do", queue_path)
+        return 0
+
+    queue_cfg = WriteQueueConfig(path=queue_path)
+    total_written = 0
+
+    with _connect(queue_cfg.path) as con:
+        # Get all pending tasks
+        cursor = con.execute(
+            """
+            SELECT * FROM write_queue_tasks
+            WHERE status = 'PENDING'
+            ORDER BY created_ts_ms ASC
+            """
+        )
+        pending_tasks = [_row_to_task(row) for row in cursor.fetchall()]
+
+
+    if not pending_tasks:
+        context.log.info("No pending agent tasks found, nothing to do")
+        return 0
+
+    # Connect to DuckDB and process each task
+    with db_config.connect() as db_con:
+        for task in pending_tasks:
+            try:
+                # Mark as started
+                with _connect(queue_cfg.path) as qcon:
+                    qcon.execute(
+                        """
+                        UPDATE write_queue_tasks
+                        SET status = 'IN_PROGRESS', started_ts_ms = ?
+                        WHERE task_id = ?
+                        """,
+                        [int(time.time() * 1000), task.task_id],
+                    )
+
+                task_type = task.task_type
+                payload = task.payload
+
+                if task_type == "UPSERT_ROWS_V1":
+                    table = payload["table"]
+                    pk_cols = payload["pk_cols"]
+                    columns = payload["columns"]
+                    rows = payload["rows"]
+
+                    # Validate table is in agent schema
+                    if not table.startswith("agent."):
+                        raise ValueError(f"Only agent.* tables can be processed here, got: {table}")
+
+                    # Perform upsert
+                    if table == "agent.invocations":
+                        expected_cols = AGENT_INVOCATION_COLUMNS
+                    elif table == "agent.outputs":
+                        expected_cols = AGENT_OUTPUT_COLUMNS
+                    elif table == "agent.reviews":
+                        expected_cols = AGENT_REVIEW_COLUMNS
+                    elif table == "agent.evaluations":
+                        expected_cols = AGENT_EVALUATION_COLUMNS
+                    elif table == "agent.operator_review_decisions":
+                        expected_cols = AGENT_OPERATOR_REVIEW_DECISION_COLUMNS
+                    else:
+                        raise ValueError(f"Unsupported agent table: {table}")
+
+                    # Sanity check columns match
+                    if columns != expected_cols:
+                        context.log.warning(
+                            "Column list for table %s does not match expected, proceeding anyway",
+                            table,
+                        )
+
+                    # Execute bulk upsert
+                    # DuckDB doesn't support prepared bulk insert directly, so we use execute with values
+                    placeholders = ", ".join(["?"] * len(columns))
+                    for row in rows:
+                        db_con.execute(
+                            f"""
+                            INSERT OR REPLACE INTO {table} ({', '.join(columns)})
+                            VALUES ({placeholders})
+                            """,
+                            row,
+                        )
+                    total_written += len(rows)
+                    context.log.info("Upserted %d rows into %s", len(rows), table)
+                else:
+                    raise ValueError(f"Unsupported task type for agent materialization: {task_type}")
+
+                # Mark as completed
+                with _connect(queue_cfg.path) as qcon:
+                    qcon.execute(
+                        """
+                        UPDATE write_queue_tasks
+                        SET status = 'COMPLETED', ended_ts_ms = ?
+                        WHERE task_id = ?
+                        """,
+                        [int(time.time() * 1000), task.task_id],
+                    )
+
+            except Exception as e:
+                # Mark as failed, increment attempts
+                with _connect(queue_cfg.path) as qcon:
+                    qcon.execute(
+                        """
+                        UPDATE write_queue_tasks
+                        SET status = 'FAILED', attempts = attempts + 1, error_message = ?, ended_ts_ms = ?
+                        WHERE task_id = ?
+                        """,
+                        [str(e), int(time.time() * 1000), task.task_id],
+                    )
+                context.log.error(
+                    "Failed to process task %s (type %s): %s",
+                    task.task_id,
+                    task.task_type,
+                    str(e),
+                )
+                # Continue with next task
+                continue
+
+    context.log.info("Completed materialize_agent_invocations: total_written=%d", total_written)
+    return total_written

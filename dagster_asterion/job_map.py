@@ -400,6 +400,23 @@ _JOB_SPECS = [
         default_schedule_key=None,
     ),
     ColdPathJobSpec(
+        job_name="materialize_agent_invocations",
+        description="Materialize queued agent invocations, outputs, reviews, and evaluations from OS write queue to DuckDB. "
+                    "According to AGENTS.md, agents remain outside the execution path and only write review/evaluation records.",
+        mode="manual",
+        upstream_jobs=[],
+        input_tables=[],
+        output_tables=[
+            "agent.invocations",
+            "agent.outputs",
+            "agent.reviews",
+            "agent.evaluations",
+            "agent.operator_review_decisions",
+        ],
+        handler_name="materialize_agent_invocations_handler",
+        default_schedule_key=None,
+    ),
+    ColdPathJobSpec(
         job_name="weather_forecast_calibration_profiles_v2_refresh",
         description="Materialize calibration profile v2 rows from canonical forecast, calibration sample, and resolution facts.",
         mode="scheduled",
