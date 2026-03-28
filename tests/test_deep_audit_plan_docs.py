@@ -101,6 +101,8 @@ class DeepAuditPlanDocsTest(unittest.TestCase):
         self.assertIn("当前唯一 active implementation entry", plan)
         self.assertIn("P8_Implementation_Plan.md", plan)
         self.assertIn("P9_Implementation_Plan.md", plan)
+        self.assertIn("P10_Implementation_Plan.md", plan)
+        self.assertIn("P11_Implementation_Plan.md", plan)
         self.assertIn("P7_Implementation_Plan.md", plan)
         self.assertIn("P6_Implementation_Plan.md", plan)
         self.assertIn("WS0. Truth-Source and Delivery Baseline", plan)
@@ -109,6 +111,8 @@ class DeepAuditPlanDocsTest(unittest.TestCase):
         self.assertIn("Phase 7. Deployable Rerank, Allocator v2, and Execution Economics Closure", plan)
         self.assertIn("Phase 8. Calibration Hard Gates and Scaling-Aware Capital Discipline", plan)
         self.assertIn("Phase 9. Operator Surface Delivery and Throughput Scaling", plan)
+        self.assertIn("Phase 10. Deterministic ROI Repair and Execution Intelligence Foundation", plan)
+        self.assertIn("Phase 11. Opportunity Triage / Execution Intelligence Agent", plan)
         self.assertIn("ui.daily_review_input.item_id", plan)
         self.assertIn("recommended_size", plan)
         self.assertIn("runtime.capital_allocation_runs", plan)
@@ -204,6 +208,51 @@ class DeepAuditPlanDocsTest(unittest.TestCase):
         self.assertIn("runtime.operator_surface_refresh_runs", plan)
         self.assertIn("ui.surface_delivery_summary", plan)
         self.assertIn("weather_operator_surface_refresh", plan)
+
+    def test_p10_and_p11_are_accepted_records(self) -> None:
+        p10_path = (
+            ROOT
+            / "docs"
+            / "10-implementation"
+            / "versions"
+            / "v2.0"
+            / "phase-plans"
+            / "P10_Implementation_Plan.md"
+        )
+        p11_path = (
+            ROOT
+            / "docs"
+            / "10-implementation"
+            / "versions"
+            / "v2.0"
+            / "phase-plans"
+            / "P11_Implementation_Plan.md"
+        )
+        self.assertTrue(p10_path.exists())
+        self.assertTrue(p11_path.exists())
+        p10 = p10_path.read_text(encoding="utf-8")
+        p11 = p11_path.read_text(encoding="utf-8")
+        self.assertIn("accepted closeout record", p10)
+        self.assertIn("Deterministic ROI Repair and Execution Intelligence Foundation", p10)
+        self.assertIn("00_0322_Asterion_Assessment.md", p10)
+        self.assertIn("runtime.execution_intelligence_runs", p10)
+        self.assertIn("run_operator_surface_refresh", p10)
+        self.assertIn("tests.test_home_action_queue_excludes_blocked_items", p10)
+        p10_checklist = (
+            ROOT
+            / "docs"
+            / "10-implementation"
+            / "versions"
+            / "v2.0"
+            / "checklists"
+            / "P10_Closeout_Checklist.md"
+        )
+        self.assertTrue(p10_checklist.exists())
+        self.assertIn("accepted closeout record", p11)
+        self.assertIn("Opportunity Triage / Execution Intelligence Agent", p11)
+        self.assertIn("Phase 10 accepted", p11)
+        self.assertIn("ui.opportunity_triage_summary", p11)
+        self.assertIn("agent.operator_review_decisions", p11)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ def build_ops_console_overview() -> dict[str, Any]:
     market_watch_data = compat.load_market_watch_data()
     market_analysis = load_market_chain_analysis_data()
     agent_data = compat.load_agent_review_data()
+    triage_data = compat.load_opportunity_triage_data()
     predicted_vs_realized = compat.load_predicted_vs_realized_data()["frame"]
     watch_only_vs_executed = execution["watch_only_vs_executed"]
     execution_science = execution["execution_science"]
@@ -49,8 +50,46 @@ def build_ops_console_overview() -> dict[str, Any]:
         if "actionability_status" in opportunities.columns
         else opportunities.iloc[0:0]
     )
+    triage_frame = triage_data["frame"]
+    triage_overlay = (
+        triage_frame[
+            [
+                column
+                for column in [
+                    "market_id",
+                    "priority_band",
+                    "recommended_operator_action",
+                    "effective_triage_status",
+                    "latest_agent_status",
+                    "advisory_gate_status",
+                ]
+                if column in triage_frame.columns
+            ]
+        ]
+        if (not triage_frame.empty and "market_id" in triage_frame.columns)
+        else triage_frame.iloc[0:0]
+    )
+    home_triage_overlay = triage_overlay
+    if not home_triage_overlay.empty and "advisory_gate_status" in home_triage_overlay.columns:
+        home_triage_overlay = home_triage_overlay[home_triage_overlay["advisory_gate_status"].fillna("experimental") == "enabled"]
+    if not triage_overlay.empty and not opportunities.empty and "market_id" in opportunities.columns:
+        opportunities = opportunities.merge(triage_overlay, on="market_id", how="left")
+        actionable = (
+            opportunities[opportunities["actionability_status"] == "actionable"]
+            if "actionability_status" in opportunities.columns
+            else opportunities.iloc[0:0]
+        )
     top_opportunities = actionable.head(5) if not actionable.empty else opportunities.head(5)
-    action_queue = action_queue_full[action_queue_full["operator_bucket"].isin(["ready_now", "high_risk", "review_required", "blocked"])].head(10) if ("operator_bucket" in action_queue_full.columns and not action_queue_full.empty) else action_queue_full.head(10)
+    blocked_backlog = action_queue_full.iloc[0:0]
+    if "operator_bucket" in action_queue_full.columns and not action_queue_full.empty:
+        if not home_triage_overlay.empty and "market_id" in action_queue_full.columns:
+            action_queue_full = action_queue_full.merge(home_triage_overlay, on="market_id", how="left")
+        action_queue = action_queue_full[
+            action_queue_full["operator_bucket"].isin(["ready_now", "high_risk", "review_required"])
+        ].head(10)
+        blocked_backlog = action_queue_full[action_queue_full["operator_bucket"] == "blocked"].head(10)
+    else:
+        action_queue = action_queue_full.head(10)
     resolved_rows = (
         predicted_vs_realized[predicted_vs_realized["evaluation_status"] == "resolved"]
         if ("evaluation_status" in predicted_vs_realized.columns and not predicted_vs_realized.empty)
@@ -107,6 +146,7 @@ def build_ops_console_overview() -> dict[str, Any]:
         "market_data": market_analysis,
         "market_watch_data": market_watch_data,
         "agent_data": agent_data,
+        "triage_data": triage_data,
         "readiness_evidence": evidence,
         "predicted_vs_realized": predicted_vs_realized,
         "watch_only_vs_executed_summary": watch_only_vs_executed,
@@ -119,6 +159,7 @@ def build_ops_console_overview() -> dict[str, Any]:
         "top_opportunities": top_opportunities,
         "action_queue": action_queue,
         "action_queue_full": action_queue_full,
+        "blocked_backlog": blocked_backlog,
         "degraded_inputs": degraded_inputs,
         "largest_blocker": {"summary": largest_blocker, "source": blocker_source},
         "metrics": {

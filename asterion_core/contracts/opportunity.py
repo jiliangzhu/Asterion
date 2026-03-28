@@ -102,12 +102,65 @@ class ExecutionPriorSummary:
                 raise ValueError(f"{name} must be between 0 and 1")
         if not self.prior_quality_status:
             raise ValueError("prior_quality_status is required")
-        if self.prior_lookup_mode not in {"exact_market", "station_metric_fallback", "heuristic_fallback"}:
-            raise ValueError("prior_lookup_mode must be exact_market/station_metric_fallback/heuristic_fallback")
+        if self.prior_lookup_mode not in {
+            "exact_market",
+            "exact_strategy",
+            "exact_wallet",
+            "station_metric_fallback",
+            "heuristic_fallback",
+        }:
+            raise ValueError(
+                "prior_lookup_mode must be exact_market/exact_strategy/exact_wallet/station_metric_fallback/heuristic_fallback"
+            )
         if self.prior_feature_scope is not None and not isinstance(self.prior_feature_scope, dict):
             raise ValueError("prior_feature_scope must be a dictionary when provided")
         if self.feedback_prior is not None and not isinstance(self.feedback_prior, ExecutionFeedbackPrior):
             raise ValueError("feedback_prior must be an ExecutionFeedbackPrior when provided")
+
+
+@dataclass(frozen=True)
+class ExecutionIntelligenceSummary:
+    summary_id: str
+    run_id: str
+    market_id: str
+    side: str
+    quote_imbalance_score: float
+    top_of_book_stability: float
+    book_update_intensity: float
+    spread_regime: str
+    visible_size_shock_flag: bool
+    book_pressure_side: str
+    expected_capture_regime: str
+    expected_slippage_regime: str
+    execution_intelligence_score: float
+    reason_codes: list[str]
+    source_window_start: Any
+    source_window_end: Any
+    materialized_at: Any
+
+    def __post_init__(self) -> None:
+        for name in ("summary_id", "run_id", "market_id", "side", "spread_regime", "book_pressure_side", "expected_capture_regime", "expected_slippage_regime"):
+            if not str(getattr(self, name) or "").strip():
+                raise ValueError(f"{name} is required")
+        for name in ("quote_imbalance_score", "top_of_book_stability", "book_update_intensity", "execution_intelligence_score"):
+            value = float(getattr(self, name))
+            if name == "quote_imbalance_score":
+                if not (-1.0 <= value <= 1.0):
+                    raise ValueError("quote_imbalance_score must be between -1 and 1")
+            elif not (0.0 <= value <= 1.0):
+                raise ValueError(f"{name} must be between 0 and 1")
+        if self.spread_regime not in {"tight", "normal", "wide", "unknown"}:
+            raise ValueError("spread_regime must be tight/normal/wide/unknown")
+        if self.book_pressure_side not in {"BUY", "SELL", "neutral"}:
+            raise ValueError("book_pressure_side must be BUY/SELL/neutral")
+        if self.expected_capture_regime not in {"high", "medium", "low"}:
+            raise ValueError("expected_capture_regime must be high/medium/low")
+        if self.expected_slippage_regime not in {"low", "medium", "high"}:
+            raise ValueError("expected_slippage_regime must be low/medium/high")
+        if not isinstance(self.visible_size_shock_flag, bool):
+            raise ValueError("visible_size_shock_flag must be bool")
+        if not isinstance(self.reason_codes, list):
+            raise ValueError("reason_codes must be a list")
 
 
 @dataclass(frozen=True)

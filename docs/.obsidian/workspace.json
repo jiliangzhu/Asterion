@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "analysis/00_0322_Asterion_Assessment.md",
+                "file": "10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "00_0322_Asterion_Assessment"
+              "title": "V2_Implementation_Plan"
             }
           }
         ]
@@ -94,7 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "analysis/00_0322_Asterion_Assessment.md",
+                "file": "10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "00_0322_Asterion_Assessment 的反向链接列表"
+              "title": "V2_Implementation_Plan 的反向链接列表"
             }
           },
           {
@@ -113,12 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "analysis/00_0322_Asterion_Assessment.md",
+                "file": "10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "00_0322_Asterion_Assessment 的出链列表"
+              "title": "V2_Implementation_Plan 的出链列表"
             }
           },
           {
@@ -156,13 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "analysis/00_0322_Asterion_Assessment.md",
+                "file": "10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "00_0322_Asterion_Assessment 的大纲"
+              "title": "V2_Implementation_Plan 的大纲"
             }
           }
         ]
@@ -185,14 +185,18 @@
   },
   "active": "051a390bc9b8159d",
   "lastOpenFiles": [
+    "10-implementation/versions/v2.0/checklists/P11_Closeout_Checklist.md",
+    "10-implementation/versions/v2.0/phase-plans/P11_Implementation_Plan.md",
+    "10-implementation/versions/v2.0/checklists/P10_Closeout_Checklist.md",
+    "10-implementation/versions/v2.0/phase-plans/P10_Implementation_Plan.md",
+    "analysis/00_0322_Asterion_Assessment.md",
+    "10-implementation/versions/v2.0/phase-plans/P9_Implementation_Plan.md",
+    "10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md",
     "10-implementation/Implementation_Index.md",
     "20-architecture/UI_Read_Model_Design.md",
     "20-architecture/Hot_Cold_Path_Architecture.md",
     "20-architecture/Event_Sourcing_Design.md",
     "20-architecture/Database_Architecture_Design.md",
-    "10-implementation/versions/v2.0/phase-plans/P9_Implementation_Plan.md",
-    "10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md",
-    "analysis/00_0322_Asterion_Assessment.md",
     "analysis/Asterion_Profitability_Reality_and_Highest_ROI_Agent_Plan.md",
     "analysis/14_previous_Code_Reassessment.md",
     "analysis/15_Previous_Deep_Audit_and_Improvement_Plan.md",

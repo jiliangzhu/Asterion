@@ -141,14 +141,27 @@ class AgentRuntimeContractsTest(unittest.TestCase):
         env = {
             "ASTERION_AGENT_PROVIDER": "openai_compatible",
             "ASTERION_OPENAI_COMPATIBLE_API_KEY": "test-healwrap-key",
-            "ASTERION_OPENAI_COMPATIBLE_MODEL": "glm-5",
-            "ASTERION_OPENAI_COMPATIBLE_BASE_URL": "https://llm-api.healwrap.cn/v1/chat/completions",
+            "ASTERION_OPENAI_COMPATIBLE_MODEL": "GLM-5",
+            "ASTERION_OPENAI_COMPATIBLE_BASE_URL": "https://bobdong.cn/v1/chat/completions",
         }
         with mock.patch.dict(os.environ, env, clear=True):
             client = build_agent_client_from_env()
         self.assertIsInstance(client, OpenAICompatibleAgentClient)
-        self.assertEqual(client._model_name, "glm-5")
-        self.assertEqual(client._base_url, "https://llm-api.healwrap.cn/v1/chat/completions")
+        self.assertEqual(client._model_name, "GLM-5")
+        self.assertEqual(client._base_url, "https://bobdong.cn/v1/chat/completions")
+
+    def test_build_agent_client_from_env_supports_anthropic_aliases(self) -> None:
+        env = {
+            "ANTHROPIC_AUTH_TOKEN": "test-anthropic-token",
+            "ANTHROPIC_MODEL": "claude-3-5-sonnet-latest",
+            "ANTHROPIC_BASE_URL": "https://example-anthropic-proxy.local/v1/messages",
+            "ASTERION_AGENT_PROVIDER": "",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            client = build_agent_client_from_env()
+        self.assertIsInstance(client, AnthropicAgentClient)
+        self.assertEqual(client._model_name, "claude-3-5-sonnet-latest")
+        self.assertEqual(client._base_url, "https://example-anthropic-proxy.local/v1/messages")
 
     def test_load_env_file_sets_defaults_without_overriding_existing_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -219,8 +232,8 @@ class AgentRuntimeContractsTest(unittest.TestCase):
         http_client = Response400Then200HttpClient()
         client = OpenAICompatibleAgentClient(
             api_key="test-key",
-            model_name="glm-5",
-            base_url="https://llm-api.healwrap.cn/v1/chat/completions",
+            model_name="GLM-5",
+            base_url="https://bobdong.cn/v1/chat/completions",
             http_client=http_client,
         )
         response = client.invoke(
@@ -237,8 +250,8 @@ class AgentRuntimeContractsTest(unittest.TestCase):
         env = {
             "ASTERION_AGENT_PROVIDER": "openai_compatible",
             "ASTERION_OPENAI_COMPATIBLE_API_KEY": "test-key",
-            "ASTERION_OPENAI_COMPATIBLE_MODEL": "glm-5",
-            "ASTERION_OPENAI_COMPATIBLE_BASE_URL": "https://llm-api.healwrap.cn/v1/chat/completions",
+            "ASTERION_OPENAI_COMPATIBLE_MODEL": "GLM-5",
+            "ASTERION_OPENAI_COMPATIBLE_BASE_URL": "https://bobdong.cn/v1/chat/completions",
             "ASTERION_OPENAI_COMPATIBLE_DISABLE_RESPONSE_FORMAT": "1",
             "ASTERION_OPENAI_COMPATIBLE_RETRIES": "5",
             "ASTERION_OPENAI_COMPATIBLE_ENABLE_CURL_FALLBACK": "1",
@@ -278,8 +291,8 @@ class AgentRuntimeContractsTest(unittest.TestCase):
         http_client = Response502Then200HttpClient()
         client = OpenAICompatibleAgentClient(
             api_key="test-key",
-            model_name="glm-5",
-            base_url="https://llm-api.healwrap.cn/v1/chat/completions",
+            model_name="GLM-5",
+            base_url="https://bobdong.cn/v1/chat/completions",
             http_client=http_client,
         )
         response = client.invoke(
@@ -290,6 +303,47 @@ class AgentRuntimeContractsTest(unittest.TestCase):
         )
         self.assertEqual(response.structured_output_json["verdict"], "review")
         self.assertEqual(http_client.calls, 2)
+
+    def test_openai_compatible_client_fails_fast_on_429_without_curl_fallback(self) -> None:
+        class Response429HttpClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def post(self, url, *, headers, json, timeout):
+                del url, headers, json, timeout
+                self.calls += 1
+
+                class Response:
+                    status_code = 429
+
+                    def raise_for_status(self):
+                        raise RuntimeError("http 429")
+
+                    def json(self):
+                        return {"error": {"message": "rate limit"}}
+
+                return Response()
+
+        http_client = Response429HttpClient()
+        client = OpenAICompatibleAgentClient(
+            api_key="test-key",
+            model_name="GLM-5",
+            base_url="https://bobdong.cn/v1/chat/completions",
+            retry_count=3,
+            enable_curl_fallback=True,
+            http_client=http_client,
+        )
+        with mock.patch.object(client_module, "_post_json_with_curl") as curl_mock:
+            with self.assertRaises(RuntimeError) as ctx:
+                client.invoke(
+                    system_prompt="system",
+                    user_prompt="user",
+                    input_payload_json={"foo": "bar"},
+                    metadata={"agent_type": "rule2spec"},
+                )
+        self.assertIn("429", str(ctx.exception))
+        self.assertEqual(http_client.calls, 1)
+        curl_mock.assert_not_called()
 
     def test_parse_structured_output_accepts_markdown_fenced_json(self) -> None:
         parsed = client_module._parse_structured_output(
@@ -312,9 +366,9 @@ class AgentRuntimeContractsTest(unittest.TestCase):
         with mock.patch.object(client_module.subprocess, "run", return_value=completed):
             with self.assertRaises(RuntimeError) as ctx:
                 client_module._post_json_with_curl(
-                    "https://llm-api.healwrap.cn/v1/chat/completions",
+                    "https://bobdong.cn/v1/chat/completions",
                     headers={"authorization": "Bearer test"},
-                    payload={"model": "glm-5"},
+                    payload={"model": "GLM-5"},
                     timeout_seconds=5,
                 )
         self.assertIn("HTTP 502", str(ctx.exception))

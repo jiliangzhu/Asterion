@@ -16,6 +16,7 @@ from asterion_core.execution import (
     expand_market_tokens,
     load_wallet_registry,
 )
+from asterion_core.execution.capability_refresh_v1 import _raw_market_capability_is_sufficient
 
 
 def _weather_market(*, outcomes: list[str] | None = None, token_ids: list[str] | None = None) -> WeatherMarket:
@@ -74,6 +75,47 @@ class CapabilityRefreshUnitTest(unittest.TestCase):
         self.assertFalse(capability.tradable)
         self.assertTrue(capability.fees_enabled)
         self.assertEqual(capability.data_sources, ["gamma", "clob_public", "capability_overrides"])
+
+    def test_build_market_capability_falls_back_to_gamma_market_fields_when_clob_data_missing(self) -> None:
+        market = _weather_market()
+        object.__setattr__(
+            market,
+            "raw_market",
+            {
+                "orderPriceMinTickSize": "0.001",
+                "orderMinSize": "5",
+                "negRisk": True,
+                "feesEnabled": False,
+            },
+        )
+        capability = build_market_capability_from_sources(
+            market=market,
+            token_id="tok_yes",
+            outcome="Yes",
+            book_summary={},
+            fee_rate_payload={},
+            override_values=None,
+            observed_at=datetime(2026, 3, 11, 10, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(capability.tick_size, Decimal("0.001"))
+        self.assertEqual(capability.min_order_size, Decimal("5"))
+        self.assertEqual(capability.fee_rate_bps, 0)
+        self.assertTrue(capability.neg_risk)
+        self.assertFalse(capability.fees_enabled)
+        self.assertIn("gamma_market_fallback", capability.data_sources)
+
+    def test_raw_market_capability_sufficiency_detects_fee_free_weather_markets(self) -> None:
+        self.assertTrue(
+            _raw_market_capability_is_sufficient(
+                {
+                    "orderPriceMinTickSize": "0.001",
+                    "orderMinSize": "5",
+                    "negRisk": True,
+                    "feesEnabled": False,
+                },
+                override_values=None,
+            )
+        )
 
     def test_build_market_capability_rejects_unknown_override_field(self) -> None:
         with self.assertRaises(ValueError):

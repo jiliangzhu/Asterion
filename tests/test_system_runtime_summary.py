@@ -39,8 +39,29 @@ class SystemRuntimeSummaryTest(unittest.TestCase):
                     ('ready_for_redeem_review')
                     """
                 )
+                con.execute(
+                    """
+                    CREATE TABLE ui.opportunity_triage_summary (
+                        market_id TEXT,
+                        latest_agent_invocation_id TEXT,
+                        latest_agent_status TEXT,
+                        latest_evaluation_method TEXT,
+                        advisory_gate_status TEXT,
+                        updated_at TIMESTAMP,
+                        effective_triage_status TEXT
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO ui.opportunity_triage_summary VALUES
+                    ('mkt_1', 'triage_1', 'success', 'replay_backtest', 'enabled', TIMESTAMP '2026-03-21 11:59:00', 'accepted'),
+                    ('mkt_2', 'triage_2', 'timeout', 'operator_outcome_proxy', 'experimental', TIMESTAMP '2026-03-21 11:58:00', 'agent_timeout')
+                    """
+                )
                 con.execute("ATTACH ':memory:' AS src")
                 con.execute("CREATE SCHEMA src.runtime")
+                con.execute("CREATE SCHEMA src.agent")
                 con.execute(
                     """
                     CREATE TABLE src.runtime.operator_surface_refresh_runs (
@@ -60,6 +81,25 @@ class SystemRuntimeSummaryTest(unittest.TestCase):
                     ('refresh_1', TRUE, TRUE, 1, 1, NULL, TIMESTAMP '2026-03-21 12:00:00')
                     """
                 )
+                con.execute(
+                    """
+                    CREATE TABLE src.agent.invocations (
+                        invocation_id TEXT,
+                        agent_type TEXT,
+                        subject_type TEXT,
+                        subject_id TEXT,
+                        status TEXT
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO src.agent.invocations VALUES
+                    ('triage_1', 'opportunity_triage', 'weather_market', 'mkt_1', 'success'),
+                    ('triage_2', 'opportunity_triage', 'weather_market', 'mkt_2', 'timeout'),
+                    ('resolution_1', 'resolution', 'uma_proposal', 'prop_1', 'success')
+                    """
+                )
                 table_row_counts = {"ui.surface_delivery_summary": 3}
                 _create_system_runtime_summary(con, table_row_counts=table_row_counts)
                 row = con.execute(
@@ -74,7 +114,12 @@ class SystemRuntimeSummaryTest(unittest.TestCase):
                         degraded_surface_count,
                         read_error_surface_count,
                         calibration_hard_gate_market_count,
-                        pending_operator_review_count
+                        pending_operator_review_count,
+                        triage_latest_run_id,
+                        triage_latest_run_status,
+                        triage_latest_evaluation_method,
+                        triage_advisory_gate_status,
+                        triage_failed_count
                     FROM ui.system_runtime_summary
                     """
                 ).fetchone()
@@ -83,7 +128,7 @@ class SystemRuntimeSummaryTest(unittest.TestCase):
 
         self.assertEqual(
             tuple(row),
-            ("refresh_1", "read_error", "ok", "ok", "GO", "degraded", 1, 1, 2, 1),
+            ("refresh_1", "read_error", "ok", "ok", "GO", "degraded", 1, 1, 2, 1, "triage_1", "success", "replay_backtest", "enabled", 1),
         )
 
 

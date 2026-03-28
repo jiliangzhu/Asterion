@@ -221,6 +221,97 @@ class ExecutionPriorsMaterializationTest(unittest.TestCase):
             con.close()
         self.assertIsNone(loaded)
 
+    def test_sparse_single_sample_still_materializes_prior(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "phase12_sparse.duckdb")
+            self._apply_migrations(db_path)
+            con = duckdb.connect(db_path)
+            try:
+                self._insert_market_spec(con)
+                self._insert_ticket_case(con, ticket_num=1, fill_price=0.43)
+                priors = materialize_execution_priors(con)
+            finally:
+                con.close()
+
+        self.assertEqual(len(priors), 3)
+        self.assertTrue(all(item.feedback_status == "sparse" for item in priors))
+        self.assertTrue(all(item.sample_count == 1 for item in priors))
+
+    def test_loader_can_use_strategy_scope_across_markets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "phase12_strategy_scope.duckdb")
+            self._apply_migrations(db_path)
+            con = duckdb.connect(db_path)
+            try:
+                self._insert_market_spec(con)
+                for index in range(2):
+                    self._insert_ticket_case(con, ticket_num=index + 1, fill_price=0.42)
+                priors = materialize_execution_priors(con)
+                placeholders = ",".join(["?"] * len(WEATHER_EXECUTION_PRIOR_COLUMNS))
+                con.executemany(
+                    f"INSERT INTO weather.weather_execution_priors ({', '.join(WEATHER_EXECUTION_PRIOR_COLUMNS)}) VALUES ({placeholders})",
+                    [execution_prior_row_to_row(item) for item in priors],
+                )
+                loaded = load_execution_prior_summary(
+                    con,
+                    market_id="mkt_other",
+                    side="BUY",
+                    forecast_target_time=datetime(2026, 3, 15, 12, 0, tzinfo=UTC),
+                    observation_date=date(2026, 3, 16),
+                    depth_proxy=0.90,
+                    spread_bps=40,
+                    strategy_id="weather_primary",
+                    wallet_id="wallet_weather_1",
+                    station_id="KSEA",
+                    metric="temperature_max",
+                    market_age_bucket="new",
+                    hours_to_close_bucket="24-72",
+                    calibration_quality_bucket="healthy",
+                    source_freshness_bucket="fresh",
+                )
+            finally:
+                con.close()
+
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual(loaded.prior_lookup_mode, "exact_strategy")
+        self.assertEqual(loaded.feedback_prior.feedback_status, "sparse")
+
+    def test_materializer_uses_forecast_run_target_time_when_provenance_lacks_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "phase12_forecast_run_fallback.duckdb")
+            self._apply_migrations(db_path)
+            con = duckdb.connect(db_path)
+            try:
+                self._insert_market_spec(con)
+                self._insert_ticket_case(con, ticket_num=1, fill_price=0.42)
+                con.execute(
+                    """
+                    INSERT INTO weather.weather_forecast_runs (
+                        run_id, market_id, condition_id, station_id, source, model_run, forecast_target_time, observation_date,
+                        metric, latitude, longitude, timezone, spec_version, cache_key, source_trace_json,
+                        fallback_used, from_cache, confidence, forecast_payload_json, raw_payload_json, created_at
+                    ) VALUES (
+                        'frun_1', 'mkt_exec', 'cond_exec', 'KSEA', 'openmeteo', '2026-03-15T12:00:00Z', '2026-03-15 12:00:00',
+                        '2026-03-16', 'temperature_max', 47.6062, -122.3321, 'America/Los_Angeles', 'spec_v1', 'cache_1', '[]',
+                        FALSE, FALSE, 0.9, '{}', '{}', '2026-03-15 09:00:00'
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    UPDATE runtime.trade_tickets
+                    SET provenance_json = '{"pricing_context":{"depth_proxy":0.90,"spread_bps":40,"edge_bps_executable":900,"reference_price":0.40,"calibration_bias_quality":"healthy","source_freshness_status":"fresh"}}'
+                    WHERE ticket_id = 'tt_1'
+                    """
+                )
+                priors = materialize_execution_priors(con)
+            finally:
+                con.close()
+
+        self.assertEqual(len(priors), 3)
+        self.assertTrue(all(item.horizon_bucket == "0-1" for item in priors))
+
 
 if __name__ == "__main__":
     unittest.main()

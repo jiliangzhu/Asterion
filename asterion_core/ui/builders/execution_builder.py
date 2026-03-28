@@ -17,6 +17,7 @@ TABLES = (
     "ui.watch_only_vs_executed_summary",
     "ui.execution_science_summary",
     "ui.market_research_summary",
+    "ui.market_microstructure_summary",
     "ui.cohort_history_summary",
 )
 
@@ -32,6 +33,7 @@ def build_execution_tables(
     create_watch_only_vs_executed_summary: Callable[[], None],
     create_execution_science_summary: Callable[[], None],
     create_market_research_summary: Callable[[], None],
+    create_market_microstructure_summary: Callable[[], None],
 ) -> None:
     create_execution_ticket_summary()
     create_execution_run_summary()
@@ -40,6 +42,7 @@ def build_execution_tables(
     create_watch_only_vs_executed_summary()
     create_execution_science_summary()
     create_market_research_summary()
+    create_market_microstructure_summary()
     _create_cohort_history_summary(con, table_row_counts=table_row_counts)
 
 

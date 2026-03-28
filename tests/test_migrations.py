@@ -50,6 +50,8 @@ class MigrationFilesTest(unittest.TestCase):
                 "0030_runtime_allocation_decisions_phase7.sql",
                 "0031_trading_capital_budget_policies.sql",
                 "0032_runtime_operator_surface_refresh_runs.sql",
+                "0033_runtime_execution_intelligence.sql",
+                "0034_agent_operator_review_decisions.sql",
             ],
         )
 
@@ -128,6 +130,9 @@ class MigrationFilesTest(unittest.TestCase):
         self.assertIn("ALTER TABLE runtime.allocation_decisions ADD COLUMN IF NOT EXISTS capital_scaling_reason_codes_json", contents["0031_trading_capital_budget_policies.sql"])
         self.assertIn("runtime.operator_surface_refresh_runs", contents["0032_runtime_operator_surface_refresh_runs.sql"])
         self.assertIn("degraded_surface_count BIGINT NOT NULL", contents["0032_runtime_operator_surface_refresh_runs.sql"])
+        self.assertIn("runtime.execution_intelligence_runs", contents["0033_runtime_execution_intelligence.sql"])
+        self.assertIn("runtime.execution_intelligence_summaries", contents["0033_runtime_execution_intelligence.sql"])
+        self.assertIn("agent.operator_review_decisions", contents["0034_agent_operator_review_decisions.sql"])
 
 
 @unittest.skipUnless(HAS_DUCKDB, "duckdb is required for migration application tests")
@@ -146,7 +151,7 @@ class ApplyMigrationsTest(unittest.TestCase):
                 clear=False,
             ):
                 applied = apply_migrations(MigrationConfig(db_path=db_path, migrations_dir=str(root)))
-            self.assertEqual(len(applied), 32)
+            self.assertEqual(len(applied), 34)
 
 
 if __name__ == "__main__":

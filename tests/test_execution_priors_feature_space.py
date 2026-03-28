@@ -231,6 +231,122 @@ class ExecutionPriorsFeatureSpaceTest(unittest.TestCase):
         self.assertEqual(loaded.prior_key.metric, "temperature_max")
         self.assertGreaterEqual(int(loaded.prior_feature_scope.get("matched_market_count") or 0), 1)
 
+    def test_loader_prefers_exact_strategy_prior_before_station_metric_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "phase1_priors_strategy.duckdb")
+            self._apply_migrations(db_path)
+            con = duckdb.connect(db_path)
+            try:
+                self._insert_market(con, market_id="mkt_strategy")
+                for index in range(10):
+                    self._insert_ticket_case(
+                        con,
+                        market_id="mkt_strategy",
+                        ticket_num=index + 1,
+                        ticket_created_at="2026-03-15 09:00:00",
+                        submit_created_at="2026-03-15 09:00:05",
+                        submitted_at="2026-03-15 09:00:06",
+                        fill_at="2026-03-15 09:01:00",
+                    )
+                priors = materialize_execution_priors(con)
+                strategy_rows = [item for item in priors if item.cohort_type == "strategy"]
+                placeholders = ",".join(["?"] * len(WEATHER_EXECUTION_PRIOR_COLUMNS))
+                con.executemany(
+                    f"INSERT INTO weather.weather_execution_priors ({', '.join(WEATHER_EXECUTION_PRIOR_COLUMNS)}) VALUES ({placeholders})",
+                    [execution_prior_row_to_row(item) for item in strategy_rows],
+                )
+                loaded = load_execution_prior_summary(
+                    con,
+                    market_id="mkt_strategy",
+                    station_id="KSEA",
+                    metric="temperature_max",
+                    side="BUY",
+                    strategy_id="weather_primary",
+                    wallet_id="wallet_weather_1",
+                    forecast_target_time=datetime(2026, 3, 15, 12, 0, tzinfo=UTC),
+                    observation_date=date(2026, 3, 16),
+                    depth_proxy=0.90,
+                    spread_bps=40,
+                )
+            finally:
+                con.close()
+
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual(loaded.prior_lookup_mode, "exact_strategy")
+        self.assertEqual(loaded.prior_key.strategy_id, "weather_primary")
+        self.assertEqual(loaded.prior_key.source_freshness_bucket, "fresh")
+
+    def test_loader_discriminates_source_freshness_feature_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "phase1_priors_feature_bucket.duckdb")
+            self._apply_migrations(db_path)
+            con = duckdb.connect(db_path)
+            try:
+                self._insert_market(con, market_id="mkt_bucket")
+                for index in range(10):
+                    self._insert_ticket_case(
+                        con,
+                        market_id="mkt_bucket",
+                        ticket_num=index + 1,
+                        ticket_created_at="2026-03-15 09:00:00",
+                        submit_created_at="2026-03-15 09:00:05",
+                        submitted_at="2026-03-15 09:00:06",
+                        fill_at="2026-03-15 09:01:00",
+                        source_freshness="fresh",
+                    )
+                for index in range(10, 20):
+                    self._insert_ticket_case(
+                        con,
+                        market_id="mkt_bucket",
+                        ticket_num=index + 1,
+                        ticket_created_at="2026-03-15 09:00:00",
+                        submit_created_at="2026-03-15 09:00:05",
+                        submitted_at="2026-03-15 09:00:06",
+                        fill_at="2026-03-15 09:01:00",
+                        source_freshness="stale",
+                    )
+                priors = materialize_execution_priors(con)
+                placeholders = ",".join(["?"] * len(WEATHER_EXECUTION_PRIOR_COLUMNS))
+                con.executemany(
+                    f"INSERT INTO weather.weather_execution_priors ({', '.join(WEATHER_EXECUTION_PRIOR_COLUMNS)}) VALUES ({placeholders})",
+                    [execution_prior_row_to_row(item) for item in priors],
+                )
+                fresh_loaded = load_execution_prior_summary(
+                    con,
+                    market_id="mkt_bucket",
+                    station_id="KSEA",
+                    metric="temperature_max",
+                    side="BUY",
+                    forecast_target_time=datetime(2026, 3, 15, 12, 0, tzinfo=UTC),
+                    observation_date=date(2026, 3, 16),
+                    depth_proxy=0.90,
+                    spread_bps=40,
+                    source_freshness_bucket="fresh",
+                )
+                stale_loaded = load_execution_prior_summary(
+                    con,
+                    market_id="mkt_bucket",
+                    station_id="KSEA",
+                    metric="temperature_max",
+                    side="BUY",
+                    forecast_target_time=datetime(2026, 3, 15, 12, 0, tzinfo=UTC),
+                    observation_date=date(2026, 3, 16),
+                    depth_proxy=0.90,
+                    spread_bps=40,
+                    source_freshness_bucket="stale",
+                )
+            finally:
+                con.close()
+
+        self.assertIsNotNone(fresh_loaded)
+        self.assertIsNotNone(stale_loaded)
+        assert fresh_loaded is not None
+        assert stale_loaded is not None
+        self.assertEqual(fresh_loaded.prior_key.source_freshness_bucket, "fresh")
+        self.assertEqual(stale_loaded.prior_key.source_freshness_bucket, "stale")
+        self.assertNotEqual(fresh_loaded.prior_key.source_freshness_bucket, stale_loaded.prior_key.source_freshness_bucket)
+
 
 if __name__ == "__main__":
     unittest.main()

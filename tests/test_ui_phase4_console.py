@@ -186,7 +186,7 @@ class UiPhase4ConsoleSmokeTest(unittest.TestCase):
                 }
             ]
         )
-        with patch("ui.pages.agents.load_agent_runtime_status", return_value={"provider": "openai_compatible", "model": "glm-5", "configured": True, "key_source": "env", "agents": []}), \
+        with patch("ui.pages.agents.load_agent_runtime_status", return_value={"provider": "openai_compatible", "model": "GLM-5", "configured": True, "key_source": "env", "agents": []}), \
             patch("ui.pages.agents.load_resolution_review_data", return_value={"source": "ui_lite", "frame": review}), \
             patch("ui.pages.agents.write_resolution_operator_review_decision"), \
             patch.object(agents.st, "markdown"), \

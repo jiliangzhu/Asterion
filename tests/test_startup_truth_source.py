@@ -14,16 +14,17 @@ class StartupTruthSourceTest(unittest.TestCase):
         shared = (ROOT / "asterion_core" / "ui" / "surface_truth_shared.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-        self.assertIn("latest accepted tranche: Phase 8", startup)
-        self.assertIn("current tranche: Phase 9 in progress", startup)
+        self.assertIn("latest accepted tranche: Phase 11", startup)
+        self.assertIn("no newer tranche-specific implementation plan currently open", startup)
         self.assertNotIn("remediation in progress", startup)
 
-        self.assertIn("Asterion v2.0 / Phase 9 in progress", app)
+        self.assertIn("Asterion Ops Console", app)
         self.assertNotIn("Asterion v1.2", app)
 
         self.assertIn("P4 accepted; post-P4 remediation accepted; v2.0 implementation active", shared)
         self.assertIn("P9_Implementation_Plan.md", readme)
-        self.assertIn("P8_Implementation_Plan.md", readme)
+        self.assertIn("P10_Implementation_Plan.md", readme)
+        self.assertIn("P11_Closeout_Checklist.md", readme)
 
 
 if __name__ == "__main__":

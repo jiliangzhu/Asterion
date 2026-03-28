@@ -11,3 +11,7 @@ __pycache__/
 data/meta/*.sqlite
 data/dev/
 logs/
+*.duckdb
+*.duckdb 
+.evn.example
+data/*

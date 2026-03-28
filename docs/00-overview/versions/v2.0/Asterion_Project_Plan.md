@@ -6,10 +6,10 @@
 
 **文档版本**: v1.4
 **创建日期**: 2026-03-07
-**更新日期**: 2026-03-21
-**状态**: 详细设计完成，`P0` 到 `P4` 已 accepted，post-P4 remediation 已 accepted；`v2.0` 当前阶段状态为 `v2.0 implementation active`，最近 accepted tranche 为 `Phase 8`，当前 tranche 为 `Phase 9 in progress`，且 `core implemented / closeout pending`
+**更新日期**: 2026-03-22
+**状态**: 详细设计完成，`P0` 到 `P4` 已 accepted，post-P4 remediation 已 accepted；`v2.0` 当前阶段状态为 `v2.0 implementation active`，最近 accepted tranche 为 `Phase 11`，当前还没有更晚 tranche-specific implementation plan 已打开
 
-> 当前系统的统一定位是 `operator console + constrained execution infra`。当前 umbrella active implementation entry 是 [V2_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md)；[P9_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/P9_Implementation_Plan.md) 当前承担 tranche-specific implementation plan；[P8_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/P8_Implementation_Plan.md) 保留为最近 accepted tranche record；[P8_Closeout_Checklist.md](../../../10-implementation/versions/v2.0/checklists/P8_Closeout_Checklist.md) 保留为最近 accepted tranche 的 closeout checklist；[P7_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/P7_Implementation_Plan.md) 与 [P6_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/P6_Implementation_Plan.md) 保留为更早 accepted records；[Post_P4_Remediation_Implementation_Plan.md](../../../10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md) 保留为 historical accepted remediation record。这不表示 unattended live，也不表示 unrestricted live。
+> 当前系统的统一定位是 `operator console + constrained execution infra`。当前 umbrella active implementation entry 是 [V2_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md)；[P11_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/P11_Implementation_Plan.md) 保留为最近 accepted tranche record；[P11_Closeout_Checklist.md](../../../10-implementation/versions/v2.0/checklists/P11_Closeout_Checklist.md) 保留为最近 accepted tranche 的 closeout checklist；[P10_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/P10_Implementation_Plan.md) 与 [P10_Closeout_Checklist.md](../../../10-implementation/versions/v2.0/checklists/P10_Closeout_Checklist.md) 保留为更早 accepted tranche / closeout records；[P9_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/P9_Implementation_Plan.md)、[P8_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/P8_Implementation_Plan.md)、[P7_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/P7_Implementation_Plan.md) 与 [P6_Implementation_Plan.md](../../../10-implementation/versions/v2.0/phase-plans/P6_Implementation_Plan.md) 保留为更早的 tranche / accepted records；当前还没有比 `Phase 11` 更新的 tranche-specific implementation plan 已打开；[Post_P4_Remediation_Implementation_Plan.md](../../../10-implementation/versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md) 保留为 historical accepted remediation record。这不表示 unattended live，也不表示 unrestricted live。
 
 > 深度审计提出的后续优化路线，已作为 `P4` 之后到 `v2.0` 之前的 historical accepted remediation record 保留在 `Post-P4 Phase 10` 到 `Post-P4 Phase 15` 中。
 
@@ -24,11 +24,15 @@
 ✅ **Weather MVP 实施方案** - 第一个业务包的完整设计
 ✅ **数据模型设计** - 完整的数据库表设计
 ✅ **风险管理框架** - 仓位限制、熔断机制
-✅ **开发路线图** - 历史 `P0` 到 `P4`、historical post-P4 remediation、当前 `v2.0 implementation active` umbrella 入口、当前 `Phase 9` tranche，以及最近 accepted `Phase 8`
+✅ **开发路线图** - 历史 `P0` 到 `P4`、historical post-P4 remediation、当前 `v2.0 implementation active` umbrella 入口、最近 accepted 的 `Phase 11`、以及后续 tranche 打开前的 accepted baseline
 
 **详细设计文档**:
 - [V2.0 实施主入口](../../../10-implementation/versions/v2.0/phase-plans/V2_Implementation_Plan.md)
-- [P9 current tranche plan](../../../10-implementation/versions/v2.0/phase-plans/P9_Implementation_Plan.md)
+- [P11 accepted tranche record](../../../10-implementation/versions/v2.0/phase-plans/P11_Implementation_Plan.md)
+- [P11 Closeout Checklist](../../../10-implementation/versions/v2.0/checklists/P11_Closeout_Checklist.md)
+- [P10 accepted tranche record](../../../10-implementation/versions/v2.0/phase-plans/P10_Implementation_Plan.md)
+- [P10 Closeout Checklist](../../../10-implementation/versions/v2.0/checklists/P10_Closeout_Checklist.md)
+- [P9 earlier tranche-specific implementation record](../../../10-implementation/versions/v2.0/phase-plans/P9_Implementation_Plan.md)
 - [P8 accepted tranche record](../../../10-implementation/versions/v2.0/phase-plans/P8_Implementation_Plan.md)
 - [P8 Closeout Checklist](../../../10-implementation/versions/v2.0/checklists/P8_Closeout_Checklist.md)
 - [P7 accepted closeout record](../../../10-implementation/versions/v2.0/phase-plans/P7_Implementation_Plan.md)

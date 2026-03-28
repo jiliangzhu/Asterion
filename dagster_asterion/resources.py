@@ -50,7 +50,8 @@ from domains.weather.forecast import (
     NWSAdapter,
     OpenMeteoAdapter,
 )
-from domains.weather.resolution import BackfillRpcClient, FallbackRpcPool, RpcEndpointConfig
+from domains.weather.resolution import BackfillRpcClient, FallbackRpcPool, PolygonRealtimeWatcherRpcClient, RpcEndpointConfig
+from asterion_core.blockchain.rpc_http import load_polygon_rpc_headers
 
 
 DAGSTER_AVAILABLE = importlib.util.find_spec("dagster") is not None
@@ -399,7 +400,27 @@ class WatcherRpcPoolResource:
         clients: list[tuple[RpcEndpointConfig, BackfillRpcClient]] | None = None,
     ) -> FallbackRpcPool:
         if clients is None:
-            raise ValueError("WatcherRpcPoolResource requires injected RPC clients in the P2 orchestration shell")
+            watcher_rpc_urls = [str(item).strip() for item in list(self.settings.watcher_rpc_urls or []) if str(item).strip()]
+            if not watcher_rpc_urls:
+                raise ValueError("watcher_rpc_urls are required for watcher rpc pool")
+            headers = load_polygon_rpc_headers()
+            clients = [
+                (
+                    RpcEndpointConfig(
+                        name=f"watcher_rpc_{index}",
+                        url=rpc_url,
+                        priority=index - 1,
+                        timeout_seconds=10.0,
+                    ),
+                    PolygonRealtimeWatcherRpcClient(
+                        rpc_url=rpc_url,
+                        timeout_seconds=10.0,
+                        headers=headers,
+                        clob_base_url=self.settings.clob_base_url,
+                    ),
+                )
+                for index, rpc_url in enumerate(watcher_rpc_urls, start=1)
+            ]
         return FallbackRpcPool(list(clients))
 
 

@@ -40,7 +40,7 @@ def main() -> int:
     old_db_read_only = os.environ.get("ASTERION_DB_READ_ONLY")
     old_apply_schema = os.environ.get("ASTERION_APPLY_SCHEMA")
     os.environ["ASTERION_DB_ROLE"] = "reader"
-    os.environ["ASTERION_DB_READ_ONLY"] = "1"
+    os.environ.pop("ASTERION_DB_READ_ONLY", None)
     os.environ.pop("ASTERION_APPLY_SCHEMA", None)
 
     try:

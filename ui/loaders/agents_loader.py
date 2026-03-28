@@ -8,16 +8,17 @@ def load_agents_surface_contract() -> SurfaceLoaderContract:
 
     payload = {
         "agent_review": compat.load_resolution_review_data(),
+        "opportunity_triage": compat.load_opportunity_triage_data(),
         "agent_runtime": compat.load_agent_runtime_status(),
     }
     contract = SurfaceLoaderContract(
         surface_id="agents",
-        primary_dataframe_name="agent_review",
+        primary_dataframe_name="opportunity_triage",
         supporting_payload=payload,
         truth_source_summary=build_truth_source_summary(
             surface_id="agents",
-            primary_table="ui.proposal_resolution_summary",
-            source=payload["agent_review"].get("source") or "missing",
+            primary_table="ui.opportunity_triage_summary",
+            source=payload["opportunity_triage"].get("source") or "missing",
             supports_source_badges=False,
         ),
     )

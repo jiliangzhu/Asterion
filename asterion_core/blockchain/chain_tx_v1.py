@@ -19,6 +19,7 @@ from asterion_core.live_side_effect_guard_v1 import LiveSideEffectGuard, validat
 from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.utils import safe_json_dumps
 from asterion_core.storage.write_queue import WriteQueueConfig
+from asterion_core.blockchain.rpc_http import build_polygon_rpc_request_kwargs
 
 
 RUNTIME_CHAIN_TX_ATTEMPT_COLUMNS = [
@@ -232,7 +233,12 @@ class PolygonChainTxReader:
         last_error: Exception | None = None
         for rpc_url in self._rpc_urls:
             try:
-                web3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+                web3 = Web3(
+                    Web3.HTTPProvider(
+                        rpc_url,
+                        request_kwargs=build_polygon_rpc_request_kwargs(timeout_seconds=10.0),
+                    )
+                )
                 observed_chain_id = int(web3.eth.chain_id)
                 if observed_chain_id != self._chain_id:
                     raise RuntimeError(
@@ -351,7 +357,12 @@ class RealBroadcastBackend(ChainTxBackend):
         last_error: Exception | None = None
         for rpc_url in self._rpc_urls:
             try:
-                web3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+                web3 = Web3(
+                    Web3.HTTPProvider(
+                        rpc_url,
+                        request_kwargs=build_polygon_rpc_request_kwargs(timeout_seconds=10.0),
+                    )
+                )
                 observed_chain_id = int(web3.eth.chain_id)
                 if observed_chain_id != self._chain_id:
                     raise RuntimeError(

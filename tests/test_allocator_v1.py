@@ -156,7 +156,11 @@ class AllocatorV1Test(unittest.TestCase):
         ranking_score: float,
         size: str,
         reference_price: str = "1.0",
+        pricing_context_extra: dict | None = None,
     ) -> StrategyDecision:
+        pricing_context = {"ranking_score": ranking_score}
+        if pricing_context_extra:
+            pricing_context.update(pricing_context_extra)
         return StrategyDecision(
             decision_id=decision_id,
             run_id="run_weather_1",
@@ -176,7 +180,7 @@ class AllocatorV1Test(unittest.TestCase):
             size=Decimal(size),
             forecast_run_id="frun_weather_1",
             watch_snapshot_id=f"snap_{decision_id}",
-            pricing_context_json={"ranking_score": ranking_score},
+            pricing_context_json=pricing_context,
         )
 
     def test_allocator_consumes_run_budget_in_ranking_order(self) -> None:
@@ -321,6 +325,81 @@ class AllocatorV1Test(unittest.TestCase):
         self.assertEqual(decision.binding_limit_key, "KSEA")
         self.assertGreater(decision.concentration_penalty, 0.0)
         self.assertEqual(checks[0].check_status, "fail")
+
+    def test_allocator_applies_p10_sizing_tightening_before_final_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "alloc_p10.duckdb")
+            self._apply_migrations(db_path)
+            con = duckdb.connect(db_path)
+            try:
+                self._insert_market_spec(con, market_id="mkt_stable", station_id="KSEA")
+                self._insert_market_spec(con, market_id="mkt_noisy", station_id="KBOS")
+                self._insert_policy(
+                    con,
+                    policy_id="policy_exact",
+                    wallet_id="wallet_weather_1",
+                    strategy_id="weather_primary",
+                    max_buy_notional_per_run=30.0,
+                    max_buy_notional_per_ticket=20.0,
+                    min_recommended_size=1.0,
+                    size_rounding_increment=1.0,
+                )
+                self._insert_cash_inventory(con, wallet_id="wallet_weather_1", quantity="100")
+                _, decisions, _ = materialize_capital_allocation(
+                    con,
+                    decisions=[
+                        self._decision(
+                            decision_id="dec_noisy",
+                            strategy_id="weather_primary",
+                            market_id="mkt_noisy",
+                            token_id="tok_noisy",
+                            outcome="YES",
+                            side="buy",
+                            rank=1,
+                            ranking_score=1.05,
+                            size="10",
+                            pricing_context_extra={
+                                "expected_dollar_pnl": 1.05,
+                                "quality_confidence_multiplier": 0.45,
+                                "execution_intelligence_score": 0.20,
+                            },
+                        ),
+                        self._decision(
+                            decision_id="dec_stable",
+                            strategy_id="weather_primary",
+                            market_id="mkt_stable",
+                            token_id="tok_stable",
+                            outcome="YES",
+                            side="buy",
+                            rank=2,
+                            ranking_score=1.00,
+                            size="10",
+                            pricing_context_extra={
+                                "expected_dollar_pnl": 1.00,
+                                "quality_confidence_multiplier": 0.95,
+                                "execution_intelligence_score": 0.95,
+                            },
+                        ),
+                    ],
+                    wallet_id="wallet_weather_1",
+                    run_id="run_weather_1",
+                    source_kind="allocation_preview",
+                    created_at=datetime(2026, 3, 19, 9, 0, tzinfo=UTC),
+                )
+            finally:
+                con.close()
+
+        by_id = {item.decision_id: item for item in decisions}
+        noisy = by_id["dec_noisy"]
+        stable = by_id["dec_stable"]
+
+        self.assertLess(noisy.pre_budget_deployable_size, stable.pre_budget_deployable_size)
+        self.assertLess(noisy.recommended_size, stable.recommended_size)
+        self.assertLess(noisy.ranking_score, stable.ranking_score)
+        self.assertIn("uncertainty_sizing_tighten", noisy.capital_scaling_reason_codes)
+        self.assertIn("execution_intelligence_tighten", noisy.capital_scaling_reason_codes)
+        self.assertGreater(noisy.budget_impact["sizing"]["uncertainty_sizing_penalty"], 0.0)
+        self.assertGreater(noisy.budget_impact["sizing"]["execution_intelligence_penalty"], 0.0)
 
 
 if __name__ == "__main__":

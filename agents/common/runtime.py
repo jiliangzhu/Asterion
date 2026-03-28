@@ -13,6 +13,7 @@ class AgentType(str, Enum):
     RULE2SPEC = "rule2spec"
     DATA_QA = "data_qa"
     RESOLUTION = "resolution"
+    OPPORTUNITY_TRIAGE = "opportunity_triage"
 
 
 class AgentInvocationStatus(str, Enum):
@@ -151,6 +152,33 @@ class AgentEvaluationRecord:
 
 
 @dataclass(frozen=True)
+class OperatorReviewDecisionRecord:
+    review_decision_id: str
+    invocation_id: str
+    agent_type: AgentType
+    subject_type: str
+    subject_id: str
+    decision_status: str
+    operator_action: str
+    actor: str
+    created_at: datetime
+    updated_at: datetime
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.review_decision_id or not self.invocation_id:
+            raise ValueError("review_decision_id and invocation_id are required")
+        if not self.subject_type or not self.subject_id:
+            raise ValueError("subject_type and subject_id are required")
+        if self.decision_status not in {"accepted", "ignored", "deferred"}:
+            raise ValueError("decision_status must be accepted/ignored/deferred")
+        if not self.operator_action:
+            raise ValueError("operator_action is required")
+        if not self.actor:
+            raise ValueError("actor is required")
+
+
+@dataclass(frozen=True)
 class AgentExecutionArtifacts:
     invocation: AgentInvocationRecord
     output: AgentOutputRecord | None
@@ -270,24 +298,75 @@ def build_agent_evaluation_record(
     human_review_required: bool,
     created_at: datetime | None = None,
     score_json: dict[str, Any] | None = None,
+    verification_method: str | None = None,
+    is_verified: bool | None = None,
+    notes: str | None = None,
 ) -> AgentEvaluationRecord:
     timestamp = _normalize_datetime(created_at) or datetime.now(UTC)
-    if human_review_required:
-        verification_method = "pending_human_review"
-        is_verified = False
-        notes = "awaiting human review"
-    else:
-        verification_method = "rule_validation"
-        is_verified = True
-        notes = "auto-verified by deterministic rule validation"
+    resolved_method = verification_method
+    resolved_verified = is_verified
+    resolved_notes = notes
+    if resolved_method is None:
+        if human_review_required:
+            resolved_method = "pending_human_review"
+            resolved_verified = False if resolved_verified is None else resolved_verified
+            resolved_notes = resolved_notes or "awaiting human review"
+        else:
+            resolved_method = "rule_validation"
+            resolved_verified = True if resolved_verified is None else resolved_verified
+            resolved_notes = resolved_notes or "auto-verified by deterministic rule validation"
+    if resolved_verified is None:
+        resolved_verified = False
+    if resolved_notes is None:
+        resolved_notes = ""
     return AgentEvaluationRecord(
-        evaluation_id=stable_object_id("ageval", {"invocation_id": invocation_id, "verification_method": verification_method}),
+        evaluation_id=stable_object_id("ageval", {"invocation_id": invocation_id, "verification_method": resolved_method}),
         invocation_id=invocation_id,
-        verification_method=verification_method,
+        verification_method=resolved_method,
         score_json=score_json or {"confidence": float(confidence)},
-        is_verified=is_verified,
-        notes=notes,
+        is_verified=resolved_verified,
+        notes=resolved_notes,
         created_at=timestamp,
+    )
+
+
+def build_operator_review_decision_record(
+    *,
+    invocation_id: str,
+    agent_type: AgentType,
+    subject_type: str,
+    subject_id: str,
+    decision_status: str,
+    operator_action: str,
+    actor: str,
+    reason: str | None = None,
+    created_at: datetime | None = None,
+) -> OperatorReviewDecisionRecord:
+    timestamp = _normalize_datetime(created_at) or datetime.now(UTC)
+    return OperatorReviewDecisionRecord(
+        review_decision_id=stable_object_id(
+            "agreview",
+            {
+                "invocation_id": invocation_id,
+                "agent_type": agent_type.value,
+                "subject_type": subject_type,
+                "subject_id": subject_id,
+                "decision_status": decision_status,
+                "operator_action": operator_action,
+                "actor": actor,
+                "ts": timestamp.isoformat(),
+            },
+        ),
+        invocation_id=invocation_id,
+        agent_type=agent_type,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        decision_status=decision_status,
+        operator_action=operator_action,
+        actor=actor,
+        reason=reason,
+        created_at=timestamp,
+        updated_at=timestamp,
     )
 
 

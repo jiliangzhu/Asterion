@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from agents.common import AgentType, build_operator_review_decision_record
 from asterion_core.contracts import (
     ForecastReplayDiffRecord,
     ForecastReplayRecord,
@@ -64,10 +65,12 @@ UI_TABLES = {
     "phase_readiness_summary": "ui.phase_readiness_summary",
     "readiness_evidence_summary": "ui.readiness_evidence_summary",
     "agent_review_summary": "ui.agent_review_summary",
+    "opportunity_triage_summary": "ui.opportunity_triage_summary",
     "predicted_vs_realized_summary": "ui.predicted_vs_realized_summary",
     "watch_only_vs_executed_summary": "ui.watch_only_vs_executed_summary",
     "execution_science_summary": "ui.execution_science_summary",
     "market_research_summary": "ui.market_research_summary",
+    "market_microstructure_summary": "ui.market_microstructure_summary",
     "calibration_health_summary": "ui.calibration_health_summary",
     "action_queue_summary": "ui.action_queue_summary",
     "cohort_history_summary": "ui.cohort_history_summary",
@@ -104,8 +107,15 @@ def _read_json_result(path: Path) -> dict[str, Any]:
 def _json_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
-    if value in {None, ""}:
+    if value is None:
         return {}
+    if isinstance(value, str) and value == "":
+        return {}
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            value = value.item()
+        except Exception:
+            pass
     try:
         payload = json.loads(str(value))
     except Exception:  # noqa: BLE001
@@ -116,8 +126,24 @@ def _json_dict(value: Any) -> dict[str, Any]:
 def _json_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
-    if value in {None, ""}:
+    if isinstance(value, tuple):
+        return list(value)
+    if value is None:
         return []
+    if isinstance(value, str) and value == "":
+        return []
+    if hasattr(value, "tolist") and not isinstance(value, (str, bytes, dict)):
+        try:
+            converted = value.tolist()
+        except Exception:
+            converted = None
+        if isinstance(converted, list):
+            return converted
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            value = value.item()
+        except Exception:
+            pass
     try:
         payload = json.loads(str(value))
     except Exception:  # noqa: BLE001
@@ -875,9 +901,7 @@ def _derive_market_review_status(rule2spec_verdict: Any, data_qa_verdict: Any) -
 
 def load_market_validation_overlays() -> dict[str, dict[str, Any]]:
     overlays = _load_market_validation_overlays(_resolve_canonical_db_path())
-    if overlays:
-        return overlays
-    return _load_market_validation_overlays(_resolve_real_weather_chain_db_path())
+    return overlays
 
 
 def _read_weather_market_rows_from_runtime(db_path: Path) -> pd.DataFrame:
@@ -1748,15 +1772,15 @@ def load_market_opportunity_data() -> dict[str, Any]:
     )
     if not frame.empty:
         return {"source": "ui_lite", "frame": frame, "read_error": snapshot.get("read_error")}
-    runtime_result = _read_weather_market_rows_from_runtime_result(_resolve_real_weather_chain_db_path())
+    runtime_result = _read_weather_market_rows_from_runtime_result(_resolve_canonical_db_path())
     runtime_frame = annotate_frame_with_source_truth(
         _sort_market_opportunities(runtime_result["frame"]),
-        source_origin="weather_smoke_db",
+        source_origin="runtime_db",
         derived=False,
         freshness_column="source_freshness_status",
     )
     if not runtime_frame.empty:
-        return {"source": "weather_smoke_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
+        return {"source": "runtime_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
     report = load_real_weather_smoke_report()
     report_frame = annotate_frame_with_source_truth(
         _derive_market_opportunities_from_report(report),
@@ -1771,7 +1795,7 @@ def load_market_opportunity_data() -> dict[str, Any]:
         refresh_state = _ensure_text(report.get("refresh_state"))
         if chain_status not in {"initializing", "unknown"} and refresh_state != "initializing":
             return {"source": "smoke_report", "frame": report_frame, "read_error": snapshot.get("read_error")}
-    return {"source": "weather_smoke_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
+    return {"source": "runtime_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
 
 
 def load_surface_delivery_summary() -> pd.DataFrame:
@@ -1984,6 +2008,56 @@ def load_resolution_review_data() -> dict[str, Any]:
     return {"source": "runtime_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
 
 
+def load_opportunity_triage_data() -> dict[str, Any]:
+    snapshot = load_ui_lite_snapshot()
+    triage_frame = _sort_desc(snapshot["tables"].get("opportunity_triage_summary", _empty_df()), "updated_at", "latest_agent_invocation_id")
+    market_frame = _sort_market_opportunities(snapshot["tables"].get("market_opportunity_summary", _empty_df()))
+    queue_frame = _sort_desc(snapshot["tables"].get("action_queue_summary", _empty_df()), "queue_priority", "ranking_score", "updated_at")
+    if triage_frame.empty:
+        replica_path = _resolve_ui_replica_db_path()
+        triage_frame = _sort_desc(_read_ui_table(replica_path, "ui.opportunity_triage_summary"), "updated_at", "latest_agent_invocation_id")
+        market_frame = _sort_market_opportunities(_read_ui_table(replica_path, "ui.market_opportunity_summary"))
+        queue_frame = _sort_desc(_read_ui_table(replica_path, "ui.action_queue_summary"), "queue_priority", "ranking_score", "updated_at")
+        source = "ui_replica"
+    else:
+        source = "ui_lite"
+    if triage_frame.empty:
+        return {"source": source, "frame": _empty_df(), "read_error": snapshot.get("read_error")}
+
+    market_columns = [
+        column
+        for column in [
+            "market_id",
+            "question",
+            "location_name",
+            "best_side",
+            "ranking_score",
+            "allocation_status",
+            "calibration_gate_status",
+            "capital_policy_id",
+            "surface_delivery_status",
+            "surface_fallback_origin",
+            "surface_last_refresh_ts",
+        ]
+        if column in market_frame.columns
+    ]
+    if market_columns:
+        triage_frame = triage_frame.merge(market_frame[market_columns], on="market_id", how="left")
+    queue_columns = [
+        column
+        for column in [
+            "market_id",
+            "operator_bucket",
+            "recommended_size",
+            "queue_reason_codes_json",
+        ]
+        if column in queue_frame.columns
+    ]
+    if queue_columns:
+        triage_frame = triage_frame.merge(queue_frame[queue_columns], on="market_id", how="left")
+    return {"source": source, "frame": triage_frame, "read_error": snapshot.get("read_error")}
+
+
 def write_resolution_operator_review_decision(
     *,
     proposal_id: str,
@@ -2057,6 +2131,66 @@ def write_resolution_operator_review_decision(
     return record
 
 
+def write_opportunity_triage_operator_review_decision(
+    *,
+    market_id: str,
+    invocation_id: str,
+    decision_status: str,
+    operator_action: str,
+    actor: str,
+    reason: str | None = None,
+):
+    record = build_operator_review_decision_record(
+        invocation_id=invocation_id,
+        agent_type=AgentType.OPPORTUNITY_TRIAGE,
+        subject_type="weather_market",
+        subject_id=market_id,
+        decision_status=decision_status,
+        operator_action=operator_action,
+        actor=actor,
+        reason=reason,
+        created_at=_iso_now(),
+    )
+    if duckdb is None:
+        raise RuntimeError("duckdb is not installed")
+    db_path = _resolve_canonical_db_path()
+    con = duckdb.connect(str(db_path), read_only=False)
+    try:
+        con.execute(
+            """
+            INSERT INTO agent.operator_review_decisions (
+                review_decision_id,
+                invocation_id,
+                agent_type,
+                subject_type,
+                subject_id,
+                decision_status,
+                operator_action,
+                reason,
+                actor,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                record.review_decision_id,
+                record.invocation_id,
+                record.agent_type.value,
+                record.subject_type,
+                record.subject_id,
+                record.decision_status,
+                record.operator_action,
+                record.reason,
+                record.actor,
+                _sql_timestamp(record.created_at),
+                _sql_timestamp(record.updated_at),
+            ],
+        )
+    finally:
+        con.close()
+    return record
+
+
 def load_agent_review_data() -> dict[str, Any]:
     snapshot = load_ui_lite_snapshot()
     frame = _sort_desc(snapshot["tables"]["agent_review_summary"], "updated_at")
@@ -2072,22 +2206,11 @@ def load_agent_review_data() -> dict[str, Any]:
     if not runtime_frame.empty:
         return {"source": "runtime_db", "frame": runtime_frame, "read_error": snapshot.get("read_error") or runtime_result["error"]}
 
-    smoke_runtime_result = _read_agent_review_from_runtime_result(_resolve_real_weather_chain_db_path())
-    smoke_runtime_frame = _sort_desc(smoke_runtime_result["frame"], "updated_at")
-    if not smoke_runtime_frame.empty and "agent_type" in smoke_runtime_frame.columns:
-        smoke_runtime_frame = smoke_runtime_frame[smoke_runtime_frame["agent_type"] == "resolution"]
-    if not smoke_runtime_frame.empty:
-        return {
-            "source": "weather_smoke_db",
-            "frame": smoke_runtime_frame,
-            "read_error": snapshot.get("read_error") or runtime_result["error"] or smoke_runtime_result["error"],
-        }
-
     smoke_frame = _sort_desc(_agent_rows_from_smoke_report(load_real_weather_smoke_report()), "updated_at")
     return {
         "source": "smoke_report",
         "frame": smoke_frame,
-        "read_error": snapshot.get("read_error") or runtime_result["error"] or smoke_runtime_result["error"],
+        "read_error": snapshot.get("read_error") or runtime_result["error"],
     }
 
 
@@ -2098,17 +2221,75 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
 
 
 def load_agent_runtime_status() -> dict[str, Any]:
-    provider = os.getenv("ASTERION_AGENT_PROVIDER", "").strip() or "openai_compatible"
-    model = (
-        os.getenv("ASTERION_OPENAI_COMPATIBLE_MODEL", "").strip()
-        or os.getenv("ASTERION_AGENT_MODEL", "").strip()
-        or os.getenv("QWEN_MODEL", "").strip()
-        or "unconfigured"
+    explicit_provider = os.getenv("ASTERION_AGENT_PROVIDER", "").strip().lower()
+    provider = explicit_provider or (
+        "anthropic"
+        if (
+            os.getenv("ASTERION_ANTHROPIC_API_KEY", "").strip()
+            or os.getenv("ANTHROPIC_AUTH_TOKEN", "").strip()
+        )
+        else "openai_compatible"
     )
+    if provider == "anthropic":
+        model = (
+            os.getenv("ASTERION_ANTHROPIC_MODEL", "").strip()
+            or os.getenv("ANTHROPIC_MODEL", "").strip()
+            or os.getenv("ASTERION_AGENT_MODEL", "").strip()
+            or "unconfigured"
+        )
+        configured = bool(
+            (os.getenv("ASTERION_ANTHROPIC_API_KEY", "").strip() or os.getenv("ANTHROPIC_AUTH_TOKEN", "").strip())
+            and model != "unconfigured"
+        )
+        key_source = "anthropic_alias_env" if os.getenv("ANTHROPIC_AUTH_TOKEN", "").strip() else "env"
+        base_url = os.getenv("ASTERION_ANTHROPIC_BASE_URL", "").strip() or os.getenv("ANTHROPIC_BASE_URL", "").strip()
+    else:
+        model = (
+            os.getenv("ASTERION_OPENAI_COMPATIBLE_MODEL", "").strip()
+            or os.getenv("ASTERION_AGENT_MODEL", "").strip()
+            or os.getenv("QWEN_MODEL", "").strip()
+            or "unconfigured"
+        )
+        configured = model != "unconfigured"
+        key_source = (
+            "env"
+            if (
+                os.getenv("ASTERION_OPENAI_COMPATIBLE_API_KEY", "").strip()
+                or os.getenv("ALIBABA_API_KEY", "").strip()
+                or os.getenv("QWEN_API_KEY", "").strip()
+            )
+            else "missing"
+        )
+        base_url = (
+            os.getenv("ASTERION_OPENAI_COMPATIBLE_BASE_URL", "").strip()
+            or os.getenv("ALIBABA_OPENAI_BASE_URL", "").strip()
+        )
+    report = load_real_weather_smoke_report()
+    agent_pipeline = (report or {}).get("agent_pipeline") or {}
+    latest_triage_status = str(agent_pipeline.get("latest_triage_status") or "")
+    if int(agent_pipeline.get("latest_triage_non_fallback_output_count", 0)) > 0:
+        provider_runtime_status = "ok"
+        provider_runtime_detail = "latest triage produced non-fallback output"
+    elif int(agent_pipeline.get("triage_provider_forbidden_count", 0)) > 0:
+        provider_runtime_status = "provider_rejected"
+        provider_runtime_detail = "latest agent attempts hit 401/403 upstream rejection"
+    elif int(agent_pipeline.get("triage_rate_limited_count", 0)) > 0:
+        provider_runtime_status = "rate_limited"
+        provider_runtime_detail = "latest agent attempts hit upstream rate limiting"
+    elif latest_triage_status == "ok" and int(agent_pipeline.get("latest_triage_output_count", 0)) > 0:
+        provider_runtime_status = "fallback_only"
+        provider_runtime_detail = "agent ran, but only deterministic fallback output was produced"
+    else:
+        provider_runtime_status = "idle"
+        provider_runtime_detail = "no recent triage output materialized"
     return {
         "provider": provider,
         "model": model,
-        "configured": model != "unconfigured",
+        "configured": configured,
+        "key_source": key_source,
+        "base_url": base_url or None,
+        "provider_runtime_status": provider_runtime_status,
+        "provider_runtime_detail": provider_runtime_detail,
         "agents": [
             {
                 "agent_name": "Rule2Spec Validation",
@@ -2125,6 +2306,11 @@ def load_agent_runtime_status() -> dict[str, Any]:
                 "file": str(ROOT / "agents" / "weather" / "resolution_agent.py"),
                 "role": "结算监控与争议分析",
             },
+            {
+                "agent_name": "Opportunity Triage Agent",
+                "file": str(ROOT / "agents" / "weather" / "opportunity_triage_agent.py"),
+                "role": "机会优先级、执行风险与 operator triage overlay",
+            },
         ],
     }
 
@@ -2137,10 +2323,19 @@ def load_system_runtime_status() -> dict[str, Any]:
     surface_delivery = _sort_desc(snapshot["tables"]["surface_delivery_summary"], "last_refresh_ts")
     report_result = _read_json_result(_resolve_real_weather_smoke_report_path())
     report = report_result["payload"]
+    truth_source = (report or {}).get("truth_source") or {}
+    runtime_chain = (report or {}).get("runtime_chain") or {}
+    roi_status = (report or {}).get("roi_status") or {}
+    agent_pipeline = (report or {}).get("agent_pipeline") or {}
+    signal_pipeline = (report or {}).get("signal_pipeline") or {}
+    execution_pipeline = (report or {}).get("execution_pipeline") or {}
+    settlement_feedback_pipeline = (report or {}).get("settlement_feedback_pipeline") or {}
     opportunity_payload = load_market_opportunity_data()
     opportunities = opportunity_payload["frame"]
     agent_payload = load_agent_review_data()
     agent_data = agent_payload["frame"]
+    triage_payload = load_opportunity_triage_data()
+    triage_data = triage_payload["frame"]
     resolution_payload = load_resolution_review_data()
     resolution_data = resolution_payload["frame"]
     calibration_health = _sort_desc(snapshot["tables"]["calibration_health_summary"], "materialized_at", "sample_count")
@@ -2184,6 +2379,48 @@ def load_system_runtime_status() -> dict[str, Any]:
         "weather_smoke_report_exists": _resolve_real_weather_smoke_report_path().exists(),
         "weather_smoke_status": (report or {}).get("chain_status"),
         "weather_smoke_report_error": report_result["error"],
+        "canonical_db_path": truth_source.get("canonical_db_path"),
+        "source_split_brain": bool(truth_source.get("source_split_brain")),
+        "profitability_path_closed": bool(roi_status.get("path_closed")),
+        "profitability_execution_closure_status": roi_status.get("execution_closure_status"),
+        "profitability_intelligence_closure_status": roi_status.get("intelligence_closure_status"),
+        "profitability_settlement_feedback_closure_status": roi_status.get("settlement_feedback_closure_status"),
+        "profitability_has_deployable_signals": bool(roi_status.get("has_deployable_signals")),
+        "profitability_has_empirical_feedback": bool(roi_status.get("has_empirical_feedback")),
+        "profitability_agents_have_useful_output": bool(roi_status.get("agents_have_useful_output")),
+        "profitability_agent_running_status": agent_pipeline.get("agent_running_status"),
+        "profitability_agent_value_status": agent_pipeline.get("agent_value_status"),
+        "profitability_active_market_prior_hit_count": int(signal_pipeline.get("active_market_prior_hit_count") or 0),
+        "profitability_deployable_snapshot_count": int(execution_pipeline.get("deployable_snapshot_count") or 0),
+        "profitability_execution_intelligence_covered_snapshot_count": int(
+            execution_pipeline.get("execution_intelligence_covered_snapshot_count") or 0
+        ),
+        "profitability_pending_resolution_ticket_count": int(
+            settlement_feedback_pipeline.get("pending_resolution_ticket_count") or 0
+        ),
+        "profitability_resolved_ticket_count": int(settlement_feedback_pipeline.get("resolved_ticket_count") or 0),
+        "profitability_realized_pnl_row_count": int(settlement_feedback_pipeline.get("realized_pnl_row_count") or 0),
+        "profitability_latest_resolution_market_count": int(
+            settlement_feedback_pipeline.get("latest_resolution_market_count") or 0
+        ),
+        "profitability_latest_feedback_writeback_status": settlement_feedback_pipeline.get(
+            "latest_feedback_writeback_status"
+        ),
+        "profitability_latest_feedback_materialization_count": int(
+            settlement_feedback_pipeline.get("latest_feedback_materialization_count") or 0
+        ),
+        "profitability_latest_triage_non_fallback_output_count": int(
+            agent_pipeline.get("latest_triage_non_fallback_output_count") or 0
+        ),
+        "capability_refresh_status": ((runtime_chain.get("capability_refresh") or {}).get("status")),
+        "resolution_reconciliation_status": ((runtime_chain.get("resolution_reconciliation") or {}).get("status")),
+        "calibration_bootstrap_status": ((runtime_chain.get("calibration_bootstrap") or {}).get("status")),
+        "calibration_refresh_status": ((runtime_chain.get("calibration_refresh") or {}).get("status")),
+        "allocation_preview_status": ((runtime_chain.get("allocation_preview") or {}).get("status")),
+        "paper_execution_status": ((runtime_chain.get("paper_execution") or {}).get("status")),
+        "operator_surface_refresh_status": ((runtime_chain.get("operator_surface_refresh") or {}).get("status")),
+        "triage_runtime_status": ((runtime_chain.get("opportunity_triage") or {}).get("status")),
+        "resolution_runtime_status": ((runtime_chain.get("resolution_review") or {}).get("status")),
         "latest_surface_refresh_run_id": persisted_runtime.get("latest_surface_refresh_run_id"),
         "latest_surface_refresh_status": persisted_runtime.get("latest_surface_refresh_status"),
         "ui_replica_status": persisted_runtime.get("ui_replica_status"),
@@ -2197,27 +2434,56 @@ def load_system_runtime_status() -> dict[str, Any]:
         "opportunity_row_count": int(len(opportunities.index)),
         "actionable_market_count": int((opportunities["actionability_status"] == "actionable").sum()) if "actionability_status" in opportunities.columns else 0,
         "agent_row_count": int(len(agent_data.index)),
+        "triage_row_count": int(len(triage_data.index)),
         "agent_read_error": agent_payload.get("read_error"),
+        "triage_read_error": triage_payload.get("read_error"),
         "resolution_review_read_error": resolution_payload.get("read_error"),
         "opportunity_read_error": opportunity_payload.get("read_error"),
         "pending_operator_review_count": int((resolution_data["effective_redeem_status"] == "pending_operator_review").sum()) if "effective_redeem_status" in resolution_data.columns else 0,
         "blocked_by_operator_review_count": int((resolution_data["effective_redeem_status"] == "blocked_by_operator_review").sum()) if "effective_redeem_status" in resolution_data.columns else 0,
         "ready_for_redeem_review_count": int((resolution_data["effective_redeem_status"] == "ready_for_redeem_review").sum()) if "effective_redeem_status" in resolution_data.columns else 0,
+        "triage_pending_review_count": int(_coerce_float(persisted_runtime.get("triage_pending_review_count")) or ((triage_data["effective_triage_status"] == "review").sum() if "effective_triage_status" in triage_data.columns else 0)),
+        "triage_accepted_count": int(_coerce_float(persisted_runtime.get("triage_accepted_count")) or ((triage_data["effective_triage_status"] == "accepted").sum() if "effective_triage_status" in triage_data.columns else 0)),
+        "triage_deferred_count": int(_coerce_float(persisted_runtime.get("triage_deferred_count")) or ((triage_data["effective_triage_status"] == "deferred").sum() if "effective_triage_status" in triage_data.columns else 0)),
+        "triage_latest_run_id": persisted_runtime.get("triage_latest_run_id"),
+        "triage_latest_run_status": persisted_runtime.get("triage_latest_run_status"),
+        "triage_latest_evaluation_method": persisted_runtime.get("triage_latest_evaluation_method"),
+        "triage_advisory_gate_status": persisted_runtime.get("triage_advisory_gate_status") or "experimental",
+        "triage_last_evaluated_at": persisted_runtime.get("triage_last_evaluated_at"),
+        "triage_subject_count": int(_coerce_float(persisted_runtime.get("triage_subject_count")) or int(len(triage_data.index))),
+        "triage_failed_count": int(_coerce_float(persisted_runtime.get("triage_failed_count")) or ((triage_data["effective_triage_status"].isin(["agent_timeout", "agent_parse_error", "agent_failed"])).sum() if "effective_triage_status" in triage_data.columns else 0)),
+        "resolution_latest_run_status": persisted_runtime.get("resolution_latest_run_status") or ("ok" if not agent_data.empty else "not_run"),
+        "resolution_subject_count": int(_coerce_float(persisted_runtime.get("resolution_subject_count")) or int(len(resolution_data.index))),
         "latest_calibration_materialized_at": latest_calibration.get("materialized_at"),
         "latest_calibration_window_end": latest_calibration.get("window_end"),
         "latest_calibration_freshness_status": latest_calibration.get("calibration_freshness_status"),
         "latest_calibration_profile_age_hours": latest_calibration.get("profile_age_hours"),
+        "calibration_sample_count": int(_coerce_float(persisted_runtime.get("calibration_sample_count")) or 0),
+        "calibration_profile_count": int(_coerce_float(persisted_runtime.get("calibration_profile_count")) or int(len(calibration_health.index))),
+        "calibration_materialization_count": int(_coerce_float(persisted_runtime.get("calibration_materialization_count")) or 0),
         "calibration_impacted_market_count": int(calibration_station_rollup["impacted_market_count"].sum()) if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("impacted_market_count")) or 0),
         "calibration_hard_gate_market_count": int(_coerce_float(persisted_runtime.get("calibration_hard_gate_market_count")) or (calibration_station_rollup["hard_gate_market_count"].sum() if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("hard_gate_market_count")) or 0))),
         "calibration_review_required_market_count": int(calibration_station_rollup["review_required_market_count"].sum()) if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("review_required_market_count")) or 0),
         "calibration_research_only_market_count": int(calibration_station_rollup["research_only_market_count"].sum()) if not calibration_station_rollup.empty else int(_coerce_float(latest_calibration.get("research_only_market_count")) or 0),
+        "strategy_run_count": int(_coerce_float(persisted_runtime.get("strategy_run_count")) or 0),
+        "trade_ticket_count": int(_coerce_float(persisted_runtime.get("trade_ticket_count")) or 0),
+        "allocation_decision_count": int(_coerce_float(persisted_runtime.get("allocation_decision_count")) or 0),
+        "paper_order_count": int(_coerce_float(persisted_runtime.get("paper_order_count")) or 0),
+        "fill_count": int(_coerce_float(persisted_runtime.get("fill_count")) or 0),
         "surface_delivery_summary": surface_delivery,
     }
 
 
 def load_boundary_sidebar_truth() -> dict[str, Any]:
     summary = load_boundary_sidebar_summary()
-    readiness_surface = load_operator_surface_status()["readiness"]
+    surface_status = load_operator_surface_status()
+    readiness_surface = (
+        surface_status.get("readiness")
+        or surface_status.get("home")
+        or surface_status.get("system")
+        or surface_status.get("overall")
+        or _surface_status("no_data", "Readiness 暂无数据", "surface status unavailable.", "missing", None)
+    )
     return {
         **summary.as_dict(),
         "status": readiness_surface["status"],
@@ -2257,7 +2523,7 @@ def load_operator_surface_status() -> dict[str, dict[str, Any]]:
             "markets": "Market 链路",
             "execution": "Execution / Live-Prereq",
             "system": "System Runtime",
-            "agents": "Resolution Review",
+            "agents": "Agent Review",
         }
         for _, row in surface_delivery.iterrows():
             surface_id = str(row.get("surface_id") or "")
@@ -2299,6 +2565,13 @@ def load_operator_surface_status() -> dict[str, dict[str, Any]]:
                 )
             surfaces[surface_id if surface_id != "markets" else "market_chain"] = payload
         if surfaces:
+            if "readiness" not in surfaces:
+                if "home" in surfaces:
+                    surfaces["readiness"] = {**surfaces["home"], "label": "Readiness Surface"}
+                elif "system" in surfaces:
+                    surfaces["readiness"] = {**surfaces["system"], "label": "Readiness Surface"}
+            if "agent_review" not in surfaces and "agents" in surfaces:
+                surfaces["agent_review"] = {**surfaces["agents"], "label": "Agent Review"}
             if "market_chain" not in surfaces and "markets" in surfaces:
                 surfaces["market_chain"] = surfaces.pop("markets")
             worst_name, worst_surface = max(surfaces.items(), key=lambda item: _status_rank(item[1]["status"]))
@@ -2396,7 +2669,7 @@ def load_operator_surface_status() -> dict[str, dict[str, Any]]:
             market_source,
             report.get("timestamp"),
         )
-    elif chain_status in {"transport_error", "degraded"} or (market_source in {"smoke_report", "weather_smoke_db"} and market_rows):
+    elif chain_status in {"transport_error", "degraded"} or (market_source in {"smoke_report", "weather_smoke_db", "runtime_db"} and market_rows):
         market_surface = _surface_status(
             "degraded_source",
             "Market 链路处于降级数据源",
@@ -2439,7 +2712,7 @@ def load_operator_surface_status() -> dict[str, dict[str, Any]]:
             agent_source,
             None,
         )
-    elif agent_source in {"smoke_report", "weather_smoke_db"}:
+    elif agent_source in {"smoke_report", "weather_smoke_db", "runtime_db"}:
         agent_surface = _surface_status(
             "degraded_source",
             "Resolution Review 来自降级数据源",

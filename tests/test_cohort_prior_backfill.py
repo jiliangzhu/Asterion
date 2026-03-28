@@ -8,6 +8,7 @@ from pathlib import Path
 
 import duckdb
 
+from domains.weather.opportunity.execution_priors import WEATHER_EXECUTION_PRIOR_COLUMNS
 from asterion_core.storage.write_queue import WriteQueueConfig
 from dagster_asterion.handlers import run_weather_execution_priors_refresh_job
 from tests import test_predicted_vs_realized_summary as predicted_vs_realized_summary_test
@@ -64,7 +65,8 @@ class CohortPriorBackfillTest(unittest.TestCase):
             priors_payload = json.loads(rows[0][1])
             audit_payload = json.loads(rows[1][1])
             prior_rows = priors_payload["rows"]
-            cohort_types = {row[18] for row in prior_rows}
+            cohort_type_idx = WEATHER_EXECUTION_PRIOR_COLUMNS.index("cohort_type")
+            cohort_types = {row[cohort_type_idx] for row in prior_rows}
             self.assertEqual(cohort_types, {"market", "strategy", "wallet"})
             self.assertEqual(audit_payload["table"], "runtime.execution_feedback_materializations")
             self.assertEqual(audit_payload["rows"][0][0], result.metadata["materialization_id"])

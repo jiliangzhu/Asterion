@@ -34,6 +34,7 @@ from domains.weather.opportunity import (
     build_weather_opportunity_assessment,
     derive_opportunity_side,
 )
+from domains.weather.opportunity.resolved_execution_projection import build_resolved_execution_projection
 from domains.weather.spec import parse_rule2spec_draft, validate_rule2spec_draft
 
 
@@ -1534,6 +1535,10 @@ def _build_ui_lite_contract(
                 con,
                 table_row_counts=table_row_counts,
             ),
+            create_market_microstructure_summary=lambda: _create_market_microstructure_summary(
+                con,
+                table_row_counts=table_row_counts,
+            ),
         )
         _create_table_from_src(
             con,
@@ -1617,6 +1622,7 @@ def _build_ui_lite_contract(
             """,
             table_row_counts=table_row_counts,
         )
+        _create_opportunity_triage_summary(con, table_row_counts=table_row_counts)
         build_catalog_tables(con, table_row_counts=table_row_counts)
         _create_surface_delivery_summary(con, table_row_counts=table_row_counts)
         _create_system_runtime_summary(con, table_row_counts=table_row_counts)
@@ -1876,15 +1882,16 @@ def _build_execution_path_frame(con) -> pd.DataFrame:
         total_fee = _coerce_float(item.get("total_fee")) or 0.0
         ticket_size = _coerce_float(item.get("size")) or 0.0
         fill_ratio = (filled_quantity / ticket_size) if ticket_size > 0 else 0.0
-        resolution_value = _resolution_value(item.get("expected_outcome"))
-        evaluation_status = _evaluation_status_for_ticket(
+        projection = build_resolved_execution_projection(
+            outcome=item.get("outcome"),
+            side=item.get("side"),
+            expected_outcome=item.get("expected_outcome"),
             filled_quantity=filled_quantity,
-            resolution_value=resolution_value,
-        )
-        stage = _execution_lifecycle_stage(
-            evaluation_status=evaluation_status,
-            filled_quantity=filled_quantity,
-            fill_ratio=fill_ratio,
+            ticket_size=ticket_size,
+            expected_fill_price=expected_fill_price,
+            realized_fill_price=realized_fill_price,
+            total_fee=total_fee,
+            predicted_edge_bps=predicted_edge_bps,
             execution_result=item.get("execution_result"),
             order_status=item.get("order_status"),
             latest_submit_status=item.get("latest_submit_status"),
@@ -1893,38 +1900,17 @@ def _build_execution_path_frame(con) -> pd.DataFrame:
             gate_allowed=item.get("gate_allowed"),
             latest_sign_attempt_id=item.get("latest_sign_attempt_id"),
             latest_submit_attempt_id=item.get("latest_submit_attempt_id"),
+            latest_fill_at=item.get("last_fill_at"),
+            latest_resolution_at=item.get("latest_resolution_at"),
         )
-        side = str(item.get("side") or "").strip().upper()
-        adverse_fill_slippage_bps = None
-        if expected_fill_price is not None and realized_fill_price is not None:
-            if side == "SELL":
-                adverse_fill_slippage_bps = max((expected_fill_price - realized_fill_price) * 10000.0, 0.0)
-            else:
-                adverse_fill_slippage_bps = max((realized_fill_price - expected_fill_price) * 10000.0, 0.0)
-        realized_pnl = None
-        post_trade_error = None
-        if resolution_value is not None and realized_fill_price is not None and filled_quantity > 0:
-            contract_value = resolution_value if str(item.get("outcome") or "").upper() == "YES" else 1.0 - resolution_value
-            if side == "SELL":
-                realized_pnl = (realized_fill_price - contract_value) * filled_quantity - total_fee
-            else:
-                realized_pnl = (contract_value - realized_fill_price) * filled_quantity - total_fee
-            implied_pnl = (float(predicted_edge_bps) / 10000.0) * filled_quantity
-            post_trade_error = realized_pnl - implied_pnl
         latest_fill_at = item.get("last_fill_at")
-        latest_resolution_at = item.get("latest_resolution_at")
-        resolution_lag_hours = None
-        if latest_fill_at is not None and latest_resolution_at is not None:
-            fill_ts = pd.to_datetime(latest_fill_at, errors="coerce")
-            resolution_ts = pd.to_datetime(latest_resolution_at, errors="coerce")
-            if pd.notna(fill_ts) and pd.notna(resolution_ts):
-                resolution_lag_hours = float((resolution_ts - fill_ts).total_seconds() / 3600.0)
+        latest_resolution_at = projection.latest_resolution_at
         source_disagreement = _source_disagreement(item.get("diff_summary_json"))
         distortion_reasons = _distortion_reason_codes(
-            stage=stage,
+            stage=projection.execution_lifecycle_stage,
             source_disagreement=source_disagreement,
-            realized_pnl=realized_pnl,
-            adverse_fill_slippage_bps=adverse_fill_slippage_bps,
+            realized_pnl=projection.realized_pnl,
+            adverse_fill_slippage_bps=projection.adverse_fill_slippage_bps,
         )
         rows.append(
             {
@@ -1943,19 +1929,19 @@ def _build_execution_path_frame(con) -> pd.DataFrame:
                 "realized_fill_price": realized_fill_price,
                 "filled_quantity": filled_quantity,
                 "realized_notional": realized_notional,
-                "realized_pnl": realized_pnl,
-                "resolution_value": resolution_value,
+                "realized_pnl": projection.realized_pnl,
+                "resolution_value": projection.resolution_value,
                 "forecast_freshness": str(pricing_context.get("source_freshness_status") or "unavailable"),
                 "source_disagreement": source_disagreement,
-                "post_trade_error": post_trade_error,
-                "evaluation_status": evaluation_status,
+                "post_trade_error": projection.post_trade_error,
+                "evaluation_status": projection.evaluation_status,
                 "latest_fill_at": latest_fill_at,
                 "latest_resolution_at": latest_resolution_at,
-                "execution_lifecycle_stage": stage,
-                "fill_ratio": fill_ratio,
-                "adverse_fill_slippage_bps": adverse_fill_slippage_bps,
-                "resolution_lag_hours": resolution_lag_hours,
-                "miss_reason_bucket": _miss_reason_bucket_for_stage(stage),
+                "execution_lifecycle_stage": projection.execution_lifecycle_stage,
+                "fill_ratio": projection.fill_ratio,
+                "adverse_fill_slippage_bps": projection.adverse_fill_slippage_bps,
+                "resolution_lag_hours": projection.resolution_lag_hours,
+                "miss_reason_bucket": _miss_reason_bucket_for_stage(projection.execution_lifecycle_stage),
                 "distortion_reason_codes_json": _json_array_text(distortion_reasons),
             }
         )
@@ -2517,9 +2503,9 @@ def _create_market_research_summary(con, *, table_row_counts: dict[str, int]) ->
     base = opportunity.merge(watch_only, on="market_id", how="left").merge(executed, on="market_id", how="left")
     rows: list[dict[str, Any]] = []
     for _, item in base.iterrows():
-        resolved_trade_count = int(item.get("resolved_trade_count") or 0)
-        filled_unresolved_count = int(item.get("filled_unresolved_count") or 0)
-        submitted_only_count = int(item.get("submitted_only_count") or 0)
+        resolved_trade_count = _coerce_int(item.get("resolved_trade_count")) or 0
+        filled_unresolved_count = _coerce_int(item.get("filled_unresolved_count")) or 0
+        submitted_only_count = _coerce_int(item.get("submitted_only_count")) or 0
         if resolved_trade_count > 0:
             executed_evidence_status = "resolved"
         elif filled_unresolved_count > 0:
@@ -2576,6 +2562,112 @@ def _create_market_research_summary(con, *, table_row_counts: dict[str, int]) ->
     row = con.execute("SELECT COUNT(*) FROM ui.market_research_summary").fetchone()
     table_row_counts["ui.market_research_summary"] = int(row[0]) if row is not None else 0
     con.unregister("market_research_df")
+
+
+def _create_market_microstructure_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    if not _table_exists(con, "src.runtime.execution_intelligence_summaries"):
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE ui.market_microstructure_summary (
+                summary_id TEXT,
+                run_id TEXT,
+                market_id TEXT,
+                side TEXT,
+                quote_imbalance_score DOUBLE,
+                top_of_book_stability DOUBLE,
+                book_update_intensity DOUBLE,
+                spread_regime TEXT,
+                visible_size_shock_flag BOOLEAN,
+                book_pressure_side TEXT,
+                expected_capture_regime TEXT,
+                expected_slippage_regime TEXT,
+                execution_intelligence_score DOUBLE,
+                reason_codes_json TEXT,
+                source_window_start TIMESTAMP,
+                source_window_end TIMESTAMP,
+                materialized_at TIMESTAMP,
+                source_badge TEXT,
+                source_truth_status TEXT,
+                is_degraded_source BOOLEAN,
+                primary_score_label TEXT
+            )
+            """
+        )
+        table_row_counts["ui.market_microstructure_summary"] = 0
+        return
+
+    frame = con.execute(
+        """
+        SELECT
+            summary_id,
+            run_id,
+            market_id,
+            side,
+            quote_imbalance_score,
+            top_of_book_stability,
+            book_update_intensity,
+            spread_regime,
+            visible_size_shock_flag,
+            book_pressure_side,
+            expected_capture_regime,
+            expected_slippage_regime,
+            execution_intelligence_score,
+            reason_codes_json,
+            source_window_start,
+            source_window_end,
+            materialized_at
+        FROM (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY market_id, side
+                    ORDER BY materialized_at DESC, execution_intelligence_score DESC, summary_id DESC
+                ) AS rn
+            FROM src.runtime.execution_intelligence_summaries
+        )
+        WHERE rn = 1
+        """
+    ).df()
+    if frame.empty:
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE ui.market_microstructure_summary (
+                summary_id TEXT,
+                run_id TEXT,
+                market_id TEXT,
+                side TEXT,
+                quote_imbalance_score DOUBLE,
+                top_of_book_stability DOUBLE,
+                book_update_intensity DOUBLE,
+                spread_regime TEXT,
+                visible_size_shock_flag BOOLEAN,
+                book_pressure_side TEXT,
+                expected_capture_regime TEXT,
+                expected_slippage_regime TEXT,
+                execution_intelligence_score DOUBLE,
+                reason_codes_json TEXT,
+                source_window_start TIMESTAMP,
+                source_window_end TIMESTAMP,
+                materialized_at TIMESTAMP,
+                source_badge TEXT,
+                source_truth_status TEXT,
+                is_degraded_source BOOLEAN,
+                primary_score_label TEXT
+            )
+            """
+        )
+        table_row_counts["ui.market_microstructure_summary"] = 0
+        return
+    frame = annotate_frame_with_source_truth(
+        frame,
+        source_origin="ui_lite",
+        derived=False,
+    )
+    con.register("market_microstructure_summary_df", frame)
+    con.execute("CREATE OR REPLACE TABLE ui.market_microstructure_summary AS SELECT * FROM market_microstructure_summary_df")
+    row = con.execute("SELECT COUNT(*) FROM ui.market_microstructure_summary").fetchone()
+    table_row_counts["ui.market_microstructure_summary"] = int(row[0]) if row is not None else 0
+    con.unregister("market_microstructure_summary_df")
 
 
 def _create_calibration_health_summary(con, *, table_row_counts: dict[str, int]) -> None:
@@ -2860,12 +2952,36 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
             for _, row in allocation_frame.iterrows()
             if row.get("market_id") is not None
         }
+    execution_intelligence_by_market_side: dict[tuple[str, str], dict[str, Any]] = {}
+    if _table_exists(con, "src.runtime.execution_intelligence_summaries"):
+        execution_intelligence_frame = con.execute(
+            """
+            SELECT * FROM (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY market_id, side
+                        ORDER BY materialized_at DESC, execution_intelligence_score DESC, summary_id DESC
+                    ) AS rn
+                FROM src.runtime.execution_intelligence_summaries
+            )
+            WHERE rn = 1
+            """
+        ).df()
+        execution_intelligence_by_market_side = {
+            (str(item["market_id"]), str(item["side"]).upper()): item.to_dict()
+            for _, item in execution_intelligence_frame.iterrows()
+            if item.get("market_id") is not None and item.get("side") is not None
+        }
     rows: list[dict[str, Any]] = []
     for _, row in frame.iterrows():
-        allocation_payload = allocation_by_market.get(str(row.get("market_id")))
+        allocation_payload = _json_object(allocation_by_market.get(str(row.get("market_id"))))
         budget_impact = _json_object(allocation_payload.get("budget_impact_json")) if allocation_payload else {}
         preview_budget = _json_object(budget_impact.get("preview"))
         pricing_context = _json_object(row.get("pricing_context_json"))
+        execution_intelligence_payload = execution_intelligence_by_market_side.get(
+            (str(row.get("market_id")), str(row.get("side") or "").upper())
+        ) or execution_intelligence_by_market_side.get((str(row.get("market_id")), "BUY")) or {}
         model_fair_value = _coerce_float(pricing_context.get("model_fair_value")) or _coerce_float(row.get("fair_value")) or 0.0
         market_price = _coerce_float(row.get("reference_price")) or 0.0
         token_id = str(row.get("token_id") or "")
@@ -2997,6 +3113,17 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                     "capital_policy_id": allocation_payload.get("capital_policy_id") if allocation_payload else None,
                     "capital_policy_version": allocation_payload.get("capital_policy_version") if allocation_payload else None,
                     "capital_scaling_reason_codes": _json_array_of_text(allocation_payload.get("capital_scaling_reason_codes_json")) if allocation_payload and allocation_payload.get("capital_scaling_reason_codes_json") is not None else [],
+                    "execution_intelligence_summary_id": execution_intelligence_payload.get("summary_id"),
+                    "quote_imbalance_score": _coerce_float(execution_intelligence_payload.get("quote_imbalance_score")),
+                    "top_of_book_stability": _coerce_float(execution_intelligence_payload.get("top_of_book_stability")),
+                    "book_update_intensity": _coerce_float(execution_intelligence_payload.get("book_update_intensity")),
+                    "spread_regime": execution_intelligence_payload.get("spread_regime"),
+                    "visible_size_shock_flag": bool(execution_intelligence_payload.get("visible_size_shock_flag")),
+                    "book_pressure_side": execution_intelligence_payload.get("book_pressure_side"),
+                    "expected_capture_regime": execution_intelligence_payload.get("expected_capture_regime"),
+                    "expected_slippage_regime": execution_intelligence_payload.get("expected_slippage_regime"),
+                    "execution_intelligence_score": _coerce_float(execution_intelligence_payload.get("execution_intelligence_score")),
+                    "execution_intelligence_reason_codes": _json_array_of_text(execution_intelligence_payload.get("reason_codes_json")),
                     "regime_bucket": pricing_context.get("regime_bucket"),
                     "allocation_decision_id": allocation_payload.get("allocation_decision_id") if allocation_payload else None,
                     "ranking_score": _coerce_float(allocation_payload.get("ranking_score")) if allocation_payload else 0.0,
@@ -3093,6 +3220,23 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                 "capital_policy_id": allocation_payload.get("capital_policy_id") if allocation_payload else None,
                 "capital_policy_version": allocation_payload.get("capital_policy_version") if allocation_payload else None,
                 "capital_scaling_reason_codes": _json_array_of_text(allocation_payload.get("capital_scaling_reason_codes_json")) if allocation_payload and allocation_payload.get("capital_scaling_reason_codes_json") is not None else [],
+                "execution_intelligence_summary_id": execution_intelligence_payload.get("summary_id"),
+                "execution_intelligence_run_id": execution_intelligence_payload.get("run_id"),
+                "execution_intelligence_market_id": execution_intelligence_payload.get("market_id"),
+                "execution_intelligence_side": execution_intelligence_payload.get("side"),
+                "execution_intelligence_quote_imbalance_score": _coerce_float(execution_intelligence_payload.get("quote_imbalance_score")),
+                "execution_intelligence_top_of_book_stability": _coerce_float(execution_intelligence_payload.get("top_of_book_stability")),
+                "execution_intelligence_book_update_intensity": _coerce_float(execution_intelligence_payload.get("book_update_intensity")),
+                "execution_intelligence_spread_regime": execution_intelligence_payload.get("spread_regime"),
+                "execution_intelligence_visible_size_shock_flag": bool(execution_intelligence_payload.get("visible_size_shock_flag")),
+                "execution_intelligence_book_pressure_side": execution_intelligence_payload.get("book_pressure_side"),
+                "execution_intelligence_expected_capture_regime": execution_intelligence_payload.get("expected_capture_regime"),
+                "execution_intelligence_expected_slippage_regime": execution_intelligence_payload.get("expected_slippage_regime"),
+                "execution_intelligence_score": _coerce_float(execution_intelligence_payload.get("execution_intelligence_score")),
+                "execution_intelligence_reason_codes": _json_array_of_text(execution_intelligence_payload.get("reason_codes_json")),
+                "execution_intelligence_source_window_start": execution_intelligence_payload.get("source_window_start"),
+                "execution_intelligence_source_window_end": execution_intelligence_payload.get("source_window_end"),
+                "execution_intelligence_materialized_at": execution_intelligence_payload.get("materialized_at"),
             },
         )
         best_side = derive_opportunity_side(assessment.edge_bps_executable)
@@ -3173,11 +3317,23 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
                 "capital_policy_id": assessment.capital_policy_id,
                 "capital_policy_version": assessment.capital_policy_version,
                 "capital_scaling_reason_codes": assessment.capital_scaling_reason_codes,
+                "execution_intelligence_summary_id": assessment.assessment_context_json.get("execution_intelligence_summary_id"),
+                "quote_imbalance_score": assessment.assessment_context_json.get("execution_intelligence_quote_imbalance_score"),
+                "top_of_book_stability": assessment.assessment_context_json.get("execution_intelligence_top_of_book_stability"),
+                "book_update_intensity": assessment.assessment_context_json.get("execution_intelligence_book_update_intensity"),
+                "spread_regime": assessment.assessment_context_json.get("execution_intelligence_spread_regime"),
+                "visible_size_shock_flag": assessment.assessment_context_json.get("execution_intelligence_visible_size_shock_flag"),
+                "book_pressure_side": assessment.assessment_context_json.get("execution_intelligence_book_pressure_side"),
+                "expected_capture_regime": assessment.assessment_context_json.get("execution_intelligence_expected_capture_regime"),
+                "expected_slippage_regime": assessment.assessment_context_json.get("execution_intelligence_expected_slippage_regime"),
+                "execution_intelligence_score": assessment.assessment_context_json.get("execution_intelligence_score"),
+                "execution_intelligence_reason_codes": assessment.assessment_context_json.get("execution_intelligence_reason_codes"),
                 "regime_bucket": assessment.regime_bucket,
                 "allocation_decision_id": allocation_payload.get("allocation_decision_id") if allocation_payload else None,
                 "ranking_score": assessment.ranking_score,
                 "execution_prior_key": assessment.execution_prior_key,
-                "why_ranked_json": json.dumps(assessment.why_ranked_json, ensure_ascii=True, sort_keys=True),
+                "pricing_context_json": json.dumps(_json_ready(assessment.assessment_context_json), ensure_ascii=True, sort_keys=True),
+                "why_ranked_json": json.dumps(_json_ready(assessment.why_ranked_json), ensure_ascii=True, sort_keys=True),
                 "agent_review_status": row.get("agent_review_status"),
                 "live_prereq_status": row.get("live_prereq_status"),
                 "opportunity_bucket": _opportunity_bucket(assessment.edge_bps_executable),
@@ -3265,10 +3421,22 @@ def _create_market_opportunity_summary(con, *, table_row_counts: dict[str, int])
         "capital_policy_id",
         "capital_policy_version",
         "capital_scaling_reason_codes",
+        "execution_intelligence_summary_id",
+        "quote_imbalance_score",
+        "top_of_book_stability",
+        "book_update_intensity",
+        "spread_regime",
+        "visible_size_shock_flag",
+        "book_pressure_side",
+        "expected_capture_regime",
+        "expected_slippage_regime",
+        "execution_intelligence_score",
+        "execution_intelligence_reason_codes",
         "regime_bucket",
         "allocation_decision_id",
         "ranking_score",
         "execution_prior_key",
+        "pricing_context_json",
         "why_ranked_json",
         "agent_review_status",
         "live_prereq_status",
@@ -3473,6 +3641,20 @@ def _create_system_runtime_summary(con, *, table_row_counts: dict[str, int]) -> 
         FROM ui.calibration_health_summary
         """
     ).fetchone()
+    calibration_counts = (
+        con.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM src.weather.forecast_calibration_samples) AS calibration_sample_count,
+                (SELECT COUNT(*) FROM src.weather.forecast_calibration_profiles_v2) AS calibration_profile_count,
+                (SELECT COUNT(*) FROM src.runtime.calibration_profile_materializations) AS calibration_materialization_count
+            """
+        ).fetchone()
+        if _table_exists(con, "src.weather.forecast_calibration_samples")
+        and _table_exists(con, "src.weather.forecast_calibration_profiles_v2")
+        and _table_exists(con, "src.runtime.calibration_profile_materializations")
+        else (0, 0, 0)
+    )
     resolution = con.execute(
         """
         SELECT
@@ -3480,6 +3662,62 @@ def _create_system_runtime_summary(con, *, table_row_counts: dict[str, int]) -> 
         FROM ui.proposal_resolution_summary
         """
     ).fetchone()
+    resolution_runtime = (
+        con.execute(
+            """
+            SELECT
+                COALESCE(MAX(status), 'not_run') AS resolution_latest_run_status,
+                COUNT(DISTINCT subject_id) AS resolution_subject_count
+            FROM src.agent.invocations
+            WHERE agent_type = 'resolution'
+              AND subject_type = 'uma_proposal'
+            """
+        ).fetchone()
+        if _table_exists(con, "src.agent.invocations")
+        else ("not_run", 0)
+    )
+    triage = con.execute(
+        """
+        SELECT
+            latest_agent_invocation_id,
+            latest_agent_status,
+            latest_evaluation_method,
+            advisory_gate_status,
+            updated_at
+        FROM ui.opportunity_triage_summary
+        ORDER BY updated_at DESC, latest_agent_invocation_id DESC
+        LIMIT 1
+        """
+    ).fetchone() if _table_exists(con, "ui.opportunity_triage_summary") else None
+    triage_rollup = con.execute(
+        """
+        SELECT
+            COUNT(*) AS triage_subject_count,
+            COALESCE(SUM(CASE WHEN effective_triage_status = 'review' THEN 1 ELSE 0 END), 0) AS pending_review_count,
+            COALESCE(SUM(CASE WHEN effective_triage_status = 'accepted' THEN 1 ELSE 0 END), 0) AS accepted_count,
+            COALESCE(SUM(CASE WHEN effective_triage_status = 'deferred' THEN 1 ELSE 0 END), 0) AS deferred_count,
+            COALESCE(SUM(CASE WHEN effective_triage_status IN ('agent_timeout', 'agent_parse_error', 'agent_failed') THEN 1 ELSE 0 END), 0) AS failed_count
+        FROM ui.opportunity_triage_summary
+        """
+    ).fetchone() if _table_exists(con, "ui.opportunity_triage_summary") else None
+    execution_counts = (
+        con.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM src.runtime.strategy_runs) AS strategy_run_count,
+                (SELECT COUNT(*) FROM src.runtime.trade_tickets) AS trade_ticket_count,
+                (SELECT COUNT(*) FROM src.runtime.allocation_decisions) AS allocation_decision_count,
+                (SELECT COUNT(*) FROM src.trading.orders) AS paper_order_count,
+                (SELECT COUNT(*) FROM src.trading.fills) AS fill_count
+            """
+        ).fetchone()
+        if _table_exists(con, "src.runtime.strategy_runs")
+        and _table_exists(con, "src.runtime.trade_tickets")
+        and _table_exists(con, "src.runtime.allocation_decisions")
+        and _table_exists(con, "src.trading.orders")
+        and _table_exists(con, "src.trading.fills")
+        else (0, 0, 0, 0, 0)
+    )
     row = {
         "generated_at": datetime.now(UTC).replace(tzinfo=None),
         "latest_surface_refresh_run_id": latest_refresh[0] if latest_refresh else None,
@@ -3491,13 +3729,360 @@ def _create_system_runtime_summary(con, *, table_row_counts: dict[str, int]) -> 
         "degraded_surface_count": int(delivery[0] or 0),
         "read_error_surface_count": int(delivery[1] or 0),
         "calibration_hard_gate_market_count": int(calibration[0] or 0),
+        "calibration_sample_count": int(calibration_counts[0] or 0),
+        "calibration_profile_count": int(calibration_counts[1] or 0),
+        "calibration_materialization_count": int(calibration_counts[2] or 0),
         "pending_operator_review_count": int(resolution[0] or 0),
+        "resolution_latest_run_status": resolution_runtime[0] if resolution_runtime else "not_run",
+        "resolution_subject_count": int(resolution_runtime[1] or 0) if resolution_runtime else 0,
+        "triage_latest_run_id": triage[0] if triage else None,
+        "triage_latest_run_status": triage[1] if triage else None,
+        "triage_latest_evaluation_method": triage[2] if triage else None,
+        "triage_advisory_gate_status": triage[3] if triage else "experimental",
+        "triage_last_evaluated_at": triage[4] if triage else None,
+        "triage_subject_count": int(triage_rollup[0] or 0) if triage_rollup else 0,
+        "triage_pending_review_count": int(triage_rollup[1] or 0) if triage_rollup else 0,
+        "triage_accepted_count": int(triage_rollup[2] or 0) if triage_rollup else 0,
+        "triage_deferred_count": int(triage_rollup[3] or 0) if triage_rollup else 0,
+        "triage_failed_count": int(triage_rollup[4] or 0) if triage_rollup else 0,
+        "strategy_run_count": int(execution_counts[0] or 0),
+        "trade_ticket_count": int(execution_counts[1] or 0),
+        "allocation_decision_count": int(execution_counts[2] or 0),
+        "paper_order_count": int(execution_counts[3] or 0),
+        "fill_count": int(execution_counts[4] or 0),
     }
     frame = pd.DataFrame([row])
     con.register("system_runtime_df", frame)
     con.execute("CREATE OR REPLACE TABLE ui.system_runtime_summary AS SELECT * FROM system_runtime_df")
     table_row_counts["ui.system_runtime_summary"] = 1
     con.unregister("system_runtime_df")
+
+
+def _create_opportunity_triage_summary(con, *, table_row_counts: dict[str, int]) -> None:
+    base_frame = (
+        con.execute(
+            """
+            SELECT
+                market_id,
+                source_badge,
+                source_truth_status,
+                primary_score_label
+            FROM ui.market_opportunity_summary
+            """
+        ).df()
+        if _table_exists(con, "ui.market_opportunity_summary")
+        else pd.DataFrame(columns=["market_id", "source_badge", "source_truth_status", "primary_score_label"])
+    )
+    invocations = (
+        con.execute(
+            """
+            SELECT
+                invocation_id,
+                subject_id AS market_id,
+                status AS latest_agent_status,
+                started_at,
+                ended_at
+            FROM src.agent.invocations
+            WHERE agent_type = 'opportunity_triage'
+              AND subject_type = 'weather_market'
+            """
+        ).df()
+        if _table_exists(con, "src.agent.invocations")
+        else pd.DataFrame(columns=["invocation_id", "market_id", "latest_agent_status", "started_at", "ended_at"])
+    )
+    outputs = (
+        con.execute(
+            """
+            SELECT
+                invocation_id,
+                structured_output_json,
+                created_at
+            FROM src.agent.outputs
+            """
+        ).df()
+        if _table_exists(con, "src.agent.outputs")
+        else pd.DataFrame(columns=["invocation_id", "structured_output_json", "created_at"])
+    )
+    reviews = (
+        con.execute(
+            """
+            SELECT
+                invocation_id,
+                review_status,
+                reviewed_at
+            FROM src.agent.reviews
+            """
+        ).df()
+        if _table_exists(con, "src.agent.reviews")
+        else pd.DataFrame(columns=["invocation_id", "review_status", "reviewed_at"])
+    )
+    evaluations = (
+        con.execute(
+            """
+            SELECT
+                evaluation_id,
+                invocation_id,
+                verification_method,
+                score_json,
+                is_verified,
+                created_at
+            FROM src.agent.evaluations
+            """
+        ).df()
+        if _table_exists(con, "src.agent.evaluations")
+        else pd.DataFrame(columns=["evaluation_id", "invocation_id", "verification_method", "score_json", "is_verified", "created_at"])
+    )
+    decisions = (
+        con.execute(
+            """
+            SELECT
+                invocation_id,
+                subject_id AS market_id,
+                decision_status,
+                operator_action,
+                updated_at
+            FROM src.agent.operator_review_decisions
+            WHERE agent_type = 'opportunity_triage'
+              AND subject_type = 'weather_market'
+            """
+        ).df()
+        if _table_exists(con, "src.agent.operator_review_decisions")
+        else pd.DataFrame(columns=["invocation_id", "market_id", "decision_status", "operator_action", "updated_at"])
+    )
+
+    if not invocations.empty:
+        invocations["sort_ts"] = invocations["ended_at"].fillna(invocations["started_at"])
+        invocations = (
+            invocations.sort_values(by=["sort_ts", "invocation_id"], ascending=[False, False], na_position="last")
+            .drop_duplicates(subset=["market_id"], keep="first")
+            .drop(columns=["sort_ts"])
+        )
+    if not outputs.empty:
+        outputs = outputs.sort_values(by=["created_at", "invocation_id"], ascending=[False, False], na_position="last").drop_duplicates(
+            subset=["invocation_id"], keep="first"
+        )
+    if not reviews.empty:
+        reviews = reviews.sort_values(by=["reviewed_at", "invocation_id"], ascending=[False, False], na_position="last").drop_duplicates(
+            subset=["invocation_id"], keep="first"
+        )
+    if not evaluations.empty:
+        evaluations = evaluations.sort_values(by=["created_at", "evaluation_id"], ascending=[False, False], na_position="last")
+    if not decisions.empty:
+        decisions = decisions.sort_values(by=["updated_at", "invocation_id"], ascending=[False, False], na_position="last").drop_duplicates(
+            subset=["market_id"], keep="first"
+        )
+
+    extra_market_ids = []
+    if not invocations.empty:
+        extra_market_ids = [market_id for market_id in invocations["market_id"].astype(str).tolist() if market_id not in set(base_frame.get("market_id", pd.Series(dtype=str)).astype(str).tolist())]
+    if extra_market_ids:
+        base_frame = pd.concat(
+            [
+                base_frame,
+                pd.DataFrame(
+                    [
+                        {
+                            "market_id": market_id,
+                            "source_badge": "ui_replica",
+                            "source_truth_status": "derived",
+                            "primary_score_label": "ranking_score",
+                        }
+                        for market_id in extra_market_ids
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+
+    frame = base_frame.copy()
+    if not invocations.empty:
+        frame = frame.merge(invocations[["market_id", "invocation_id", "latest_agent_status", "started_at", "ended_at"]], on="market_id", how="left")
+    else:
+        frame["invocation_id"] = None
+        frame["latest_agent_status"] = None
+        frame["started_at"] = None
+        frame["ended_at"] = None
+    if not outputs.empty:
+        frame = frame.merge(outputs[["invocation_id", "structured_output_json", "created_at"]], on="invocation_id", how="left")
+    else:
+        frame["structured_output_json"] = None
+        frame["created_at"] = None
+    if not reviews.empty:
+        frame = frame.merge(reviews[["invocation_id", "review_status", "reviewed_at"]], on="invocation_id", how="left")
+    else:
+        frame["review_status"] = None
+        frame["reviewed_at"] = None
+    latest_evaluations = evaluations.drop_duplicates(subset=["invocation_id"], keep="first") if not evaluations.empty else evaluations
+    replay_evaluations = (
+        evaluations[evaluations["verification_method"] == "replay_backtest"].drop_duplicates(subset=["invocation_id"], keep="first")
+        if not evaluations.empty and "verification_method" in evaluations.columns
+        else evaluations.iloc[0:0]
+    )
+    if not latest_evaluations.empty:
+        frame = frame.merge(
+            latest_evaluations[["invocation_id", "verification_method", "score_json", "is_verified", "created_at"]],
+            on="invocation_id",
+            how="left",
+            suffixes=("", "_evaluation"),
+        )
+    else:
+        frame["verification_method"] = None
+        frame["score_json"] = None
+        frame["is_verified"] = None
+        frame["created_at_evaluation"] = None
+    if not replay_evaluations.empty:
+        frame = frame.merge(
+            replay_evaluations[["invocation_id", "verification_method", "score_json", "is_verified", "created_at"]].rename(
+                columns={
+                    "verification_method": "replay_verification_method",
+                    "score_json": "replay_score_json",
+                    "is_verified": "replay_is_verified",
+                    "created_at": "replay_created_at",
+                }
+            ),
+            on="invocation_id",
+            how="left",
+        )
+    else:
+        frame["replay_verification_method"] = None
+        frame["replay_score_json"] = None
+        frame["replay_is_verified"] = None
+        frame["replay_created_at"] = None
+    if not decisions.empty:
+        frame = frame.merge(decisions[["market_id", "decision_status", "operator_action", "updated_at"]], on="market_id", how="left", suffixes=("", "_decision"))
+    else:
+        frame["decision_status"] = None
+        frame["operator_action"] = None
+        frame["updated_at"] = None
+
+    def _output_value(payload: Any, key: str) -> Any:
+        return _json_object(payload).get(key)
+
+    if frame.empty:
+        result = pd.DataFrame(
+            columns=[
+                "market_id",
+                "latest_agent_invocation_id",
+                "latest_agent_status",
+                "latest_triage_status",
+                "priority_band",
+                "recommended_operator_action",
+                "confidence_band",
+                "triage_reason_codes_json",
+                "execution_risk_flags_json",
+                "supporting_evidence_refs_json",
+                "latest_operator_review_status",
+                "latest_operator_action",
+                "effective_triage_status",
+                "advisory_gate_status",
+                "advisory_gate_reason_codes_json",
+                "latest_evaluation_method",
+                "latest_evaluation_verified",
+                "updated_at",
+                "source_badge",
+                "source_truth_status",
+                "primary_score_label",
+            ]
+        )
+    else:
+        triage_status = frame["structured_output_json"].apply(lambda value: _output_value(value, "triage_status"))
+        priority_band = frame["structured_output_json"].apply(lambda value: _output_value(value, "priority_band"))
+        recommended_operator_action = frame["structured_output_json"].apply(lambda value: _output_value(value, "recommended_operator_action"))
+        confidence_band = frame["structured_output_json"].apply(lambda value: _output_value(value, "confidence_band"))
+        triage_reason_codes = frame["structured_output_json"].apply(lambda value: _json_list(_output_value(value, "triage_reason_codes")))
+        execution_risk_flags = frame["structured_output_json"].apply(lambda value: _json_list(_output_value(value, "execution_risk_flags")))
+        supporting_evidence_refs = frame["structured_output_json"].apply(lambda value: _json_list(_output_value(value, "supporting_evidence_refs")))
+
+        def _effective_status(row: pd.Series) -> str:
+            if str(row.get("decision_status") or "").strip():
+                return str(row.get("decision_status"))
+            if str(row.get("latest_triage_status") or "").strip():
+                return str(row.get("latest_triage_status"))
+            latest_agent_status = str(row.get("latest_agent_status") or "")
+            if latest_agent_status == "timeout":
+                return "agent_timeout"
+            if latest_agent_status == "parse_error":
+                return "agent_parse_error"
+            if latest_agent_status == "failure":
+                return "agent_failed"
+            return "no_triage"
+
+        def _advisory_gate_payload(row: pd.Series) -> tuple[str, str, str | None, bool | None]:
+            replay_score = _json_object(row.get("replay_score_json"))
+            gate_reasons: list[str] = []
+            replay_verified = _coerce_bool(row.get("replay_is_verified"))
+            replay_method = str(row.get("replay_verification_method") or "")
+            if replay_method != "replay_backtest":
+                gate_reasons.append("missing_replay_backtest")
+            if replay_verified is not True:
+                gate_reasons.append("replay_not_verified")
+            if float(replay_score.get("queue_cleanliness_delta") or 0.0) < 0.0:
+                gate_reasons.append("queue_cleanliness_below_threshold")
+            if float(replay_score.get("priority_precision_proxy") or 0.0) < 0.5:
+                gate_reasons.append("priority_precision_below_threshold")
+            if float(replay_score.get("false_escalation_rate") or 1.0) > 0.2:
+                gate_reasons.append("false_escalation_above_threshold")
+            if float(replay_score.get("operator_throughput_delta") or 0.0) < 0.05:
+                gate_reasons.append("throughput_delta_below_threshold")
+            gate_status = "enabled" if not gate_reasons else "experimental"
+            latest_method = replay_method or str(row.get("verification_method") or "")
+            latest_verified = replay_verified if replay_method else _coerce_bool(row.get("is_verified"))
+            return (
+                gate_status,
+                json.dumps(gate_reasons, ensure_ascii=True, sort_keys=True),
+                latest_method or None,
+                latest_verified,
+            )
+
+        result = pd.DataFrame(
+            {
+                "market_id": frame["market_id"],
+                "latest_agent_invocation_id": frame["invocation_id"],
+                "latest_agent_status": frame["latest_agent_status"],
+                "latest_triage_status": triage_status,
+                "priority_band": priority_band,
+                "recommended_operator_action": recommended_operator_action,
+                "confidence_band": confidence_band,
+                "triage_reason_codes_json": triage_reason_codes.apply(lambda value: json.dumps(_json_ready(value), ensure_ascii=True, sort_keys=True)),
+                "execution_risk_flags_json": execution_risk_flags.apply(lambda value: json.dumps(_json_ready(value), ensure_ascii=True, sort_keys=True)),
+                "supporting_evidence_refs_json": supporting_evidence_refs.apply(lambda value: json.dumps(_json_ready(value), ensure_ascii=True, sort_keys=True)),
+                "latest_operator_review_status": frame["decision_status"],
+                "latest_operator_action": frame["operator_action"],
+                "source_badge": frame["source_badge"].fillna("ui_lite"),
+                "source_truth_status": frame["source_truth_status"].fillna("ok"),
+                "primary_score_label": frame["primary_score_label"].fillna("ranking_score"),
+            }
+        )
+        result["effective_triage_status"] = result.apply(_effective_status, axis=1)
+        advisory_gate_values = frame.apply(_advisory_gate_payload, axis=1)
+        result["advisory_gate_status"] = advisory_gate_values.apply(lambda value: value[0])
+        result["advisory_gate_reason_codes_json"] = advisory_gate_values.apply(lambda value: value[1])
+        result["latest_evaluation_method"] = advisory_gate_values.apply(lambda value: value[2])
+        result["latest_evaluation_verified"] = advisory_gate_values.apply(lambda value: value[3])
+        result["updated_at"] = frame.apply(
+            lambda row: next(
+                (
+                    value
+                    for value in [
+                        row.get("updated_at"),
+                        row.get("reviewed_at"),
+                        row.get("created_at_evaluation"),
+                        row.get("created_at"),
+                        row.get("ended_at"),
+                        row.get("started_at"),
+                    ]
+                    if not _is_missing_scalar(value)
+                ),
+                None,
+            ),
+            axis=1,
+        )
+
+    con.register("opportunity_triage_summary_df", result)
+    con.execute("CREATE OR REPLACE TABLE ui.opportunity_triage_summary AS SELECT * FROM opportunity_triage_summary_df")
+    row = con.execute("SELECT COUNT(*) FROM ui.opportunity_triage_summary").fetchone()
+    table_row_counts["ui.opportunity_triage_summary"] = int(row[0]) if row is not None else 0
+    con.unregister("opportunity_triage_summary_df")
 
 
 def _create_table_from_src(con, *, target: str, sql_body: str, table_row_counts: dict[str, int]) -> None:
@@ -3558,8 +4143,26 @@ def _connect_duckdb(db_path: str, *, read_only: bool):
     return duckdb.connect(db_path, read_only=read_only)
 
 
-def _coerce_ts(value: Any) -> str | None:
+def _is_missing_scalar(value: Any) -> bool:
     if value is None:
+        return True
+    if isinstance(value, (list, dict, tuple, set)):
+        return False
+    if isinstance(value, str):
+        return value == ""
+    try:
+        missing = pd.isna(value)
+        if isinstance(missing, (list, dict, tuple, set)):
+            return False
+        if hasattr(missing, "shape"):
+            return False
+        return bool(missing)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _coerce_ts(value: Any) -> str | None:
+    if _is_missing_scalar(value):
         return None
     text = str(value).strip()
     if text.endswith("Z"):
@@ -3573,7 +4176,7 @@ def _coerce_ts(value: Any) -> str | None:
 
 
 def _coerce_float(value: Any) -> float | None:
-    if value is None or value == "":
+    if _is_missing_scalar(value):
         return None
     try:
         return float(value)
@@ -3581,10 +4184,33 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _coerce_int(value: Any) -> int | None:
+    coerced = _coerce_float(value)
+    if coerced is None:
+        return None
+    try:
+        return int(coerced)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_bool(value: Any) -> bool | None:
+    if _is_missing_scalar(value):
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no"}:
+        return False
+    return None
+
+
 def _json_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
-    if value in {None, ""}:
+    if _is_missing_scalar(value):
         return {}
     try:
         payload = json.loads(str(value))
@@ -3596,7 +4222,7 @@ def _json_object(value: Any) -> dict[str, Any]:
 def _json_array_of_text(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if item not in {None, ""}]
-    if value in {None, ""}:
+    if _is_missing_scalar(value):
         return []
     try:
         payload = json.loads(str(value))
@@ -3653,6 +4279,22 @@ _MARKET_MISS_PRIORITY = {
 
 def _json_array_text(values: list[str]) -> str:
     return json.dumps(values, ensure_ascii=True, sort_keys=True)
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_ready(item) for item in value]
+    if _is_missing_scalar(value):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime().isoformat()
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
 
 
 def _normalize_submit_mode(value: Any) -> str:
@@ -3811,7 +4453,7 @@ def _table_columns(con, table_name: str) -> set[str]:
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    tmp.write_text(json.dumps(_json_ready(payload), ensure_ascii=True, sort_keys=True), encoding="utf-8")
     os.replace(tmp, path)
 
 

@@ -45,6 +45,13 @@ class UiGoldenSurfacesTest(unittest.TestCase):
         self.assertIsNone(cohort_history_record.primary_score_column)
         self.assertIn("submitted_capture_ratio", cohort_history_record.required_columns)
 
+        microstructure_record = get_read_model_catalog_record("ui.market_microstructure_summary")
+        self.assertIsNotNone(microstructure_record)
+        assert microstructure_record is not None
+        self.assertEqual(microstructure_record.primary_score_column, "execution_intelligence_score")
+        self.assertIn("top_of_book_stability", microstructure_record.required_columns)
+        self.assertIn("expected_capture_regime", microstructure_record.required_columns)
+
         delivery_record = get_read_model_catalog_record("ui.surface_delivery_summary")
         self.assertIsNotNone(delivery_record)
         assert delivery_record is not None

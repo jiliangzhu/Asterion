@@ -71,11 +71,17 @@ def build_backfill_request(
     max_block_span: int | None = None,
 ) -> WatcherBackfillRequest:
     watermark = load_block_watermark(con, chain_id=chain_id)
-    from_block = 0 if watermark is None else watermark.last_finalized_block + 1
     to_block = int(finalized_block)
-    if max_block_span is not None:
-        span = max(1, int(max_block_span))
-        to_block = min(to_block, from_block + span - 1)
+    if watermark is None:
+        from_block = 0
+        if max_block_span is not None:
+            span = max(1, int(max_block_span))
+            from_block = max(0, to_block - span + 1)
+    else:
+        from_block = watermark.last_finalized_block + 1
+        if max_block_span is not None:
+            span = max(1, int(max_block_span))
+            to_block = min(to_block, from_block + span - 1)
     return WatcherBackfillRequest(
         chain_id=int(chain_id),
         from_block=int(from_block),

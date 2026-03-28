@@ -453,15 +453,28 @@ def materialize_forecast_calibration_profiles_v2(
 
     forecast_run_rows = con.execute(
         """
+        WITH sample_keys AS (
+            SELECT DISTINCT
+                market_id,
+                station_id,
+                source,
+                forecast_target_time
+            FROM weather.forecast_calibration_samples
+            WHERE created_at >= ? AND created_at <= ?
+        )
         SELECT
-            market_id,
-            station_id,
-            source,
-            forecast_target_time,
-            forecast_payload_json
-        FROM weather.weather_forecast_runs
-        WHERE forecast_target_time >= ? AND forecast_target_time <= ?
-        ORDER BY forecast_target_time DESC
+            fr.market_id,
+            fr.station_id,
+            fr.source,
+            fr.forecast_target_time,
+            fr.forecast_payload_json
+        FROM weather.weather_forecast_runs fr
+        JOIN sample_keys sk
+          ON fr.market_id = sk.market_id
+         AND fr.station_id = sk.station_id
+         AND fr.source = sk.source
+         AND fr.forecast_target_time = sk.forecast_target_time
+        ORDER BY fr.forecast_target_time DESC
         """,
         [window_start, window_end],
     ).fetchall()

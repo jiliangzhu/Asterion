@@ -65,7 +65,7 @@ class ResolutionReviewUiActionsTest(unittest.TestCase):
                 }
             ]
         )
-        runtime_status = {"provider": "openai_compatible", "model": "glm-5", "configured": True, "agents": []}
+        runtime_status = {"provider": "openai_compatible", "model": "GLM-5", "configured": True, "agents": []}
         button_results = iter([True, False, False])
         with patch("ui.pages.agents.load_agent_runtime_status", return_value=runtime_status), \
             patch("ui.pages.agents.load_resolution_review_data", return_value={"source": "ui_lite", "frame": review}), \

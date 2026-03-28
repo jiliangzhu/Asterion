@@ -15,6 +15,7 @@ from asterion_core.storage.writerd import process_one
 from domains.weather.resolution import (
     BlockWatermarkRecord,
     FallbackRpcPool,
+    PolygonRealtimeWatcherRpcClient,
     RpcEndpointConfig,
     UMAEvent,
     build_backfill_request,
@@ -155,6 +156,69 @@ class UMAWatcherReplayUnitTest(unittest.TestCase):
             )
         self.assertEqual(request.from_block, 111)
         self.assertEqual(request.to_block, 115)
+
+    def test_build_backfill_request_without_watermark_uses_recent_span(self) -> None:
+        with patch("domains.weather.resolution.backfill.load_block_watermark", return_value=None):
+            request = build_backfill_request(
+                object(),
+                chain_id=137,
+                finalized_block=120,
+                replay_reason="realtime_only",
+                max_block_span=5,
+            )
+        self.assertEqual(request.from_block, 116)
+        self.assertEqual(request.to_block, 120)
+
+    def test_realtime_rpc_retries_rate_limited_requests(self) -> None:
+        class _Response:
+            def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+                self.status_code = status_code
+                self._payload = payload
+                self.request = object()
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    import httpx
+
+                    raise httpx.HTTPStatusError("rate limited", request=self.request, response=self)
+
+            def json(self) -> dict[str, object]:
+                return self._payload
+
+        rpc = PolygonRealtimeWatcherRpcClient(rpc_url="https://rpc.example.test", min_request_interval_seconds=0.0)
+        rpc._max_retries = 1
+        calls = {"count": 0}
+
+        def _fake_post(url: str, *, headers=None, timeout=None, json=None) -> _Response:
+            del url, headers, timeout, json
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return _Response(429, {"error": "rate limited"})
+            return _Response(200, {"result": "0x2a"})
+
+        with patch("domains.weather.resolution.realtime_rpc.httpx.post", side_effect=_fake_post):
+            result = rpc._rpc("eth_blockNumber", [])
+        self.assertEqual(result, "0x2a")
+
+    def test_realtime_rpc_uses_seeded_market_refs_without_remote_lookup(self) -> None:
+        rpc = PolygonRealtimeWatcherRpcClient(rpc_url="https://rpc.example.test", allow_remote_market_lookup=False)
+        rpc.seed_market_refs(
+            {
+                "0xquestion": {
+                    "market_id": "1701747",
+                    "condition_id": "0xcondition",
+                }
+            }
+        )
+
+        with patch.object(rpc._client, "get", side_effect=AssertionError("unexpected remote lookup")):
+            ref = rpc._load_market_by_question_id("0xquestion")
+            missing = rpc._load_market_by_question_id("0xmissing")
+
+        self.assertIsNotNone(ref)
+        self.assertEqual(ref.market_id, "1701747")
+        self.assertEqual(ref.condition_id, "0xcondition")
+        self.assertIsNone(missing)
 
     def test_primary_rpc_failure_falls_back_to_secondary(self) -> None:
         pool = _rpc_pool(

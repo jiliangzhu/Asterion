@@ -16,6 +16,7 @@ from asterion_core.contracts import (
 from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.utils import safe_json_dumps
 from asterion_core.storage.write_queue import WriteQueueConfig
+from .resolved_execution_projection import build_resolved_execution_projection
 
 
 RANKING_RETROSPECTIVE_RUN_COLUMNS = [
@@ -179,29 +180,36 @@ def materialize_ranking_retrospective(
         order_id = None
         filled = False
         realized_pnl = None
+        evaluation_status = "watch_only"
         if ticket is not None:
             submit = latest_submit_by_ticket.get(str(ticket["ticket_id"]))
             order_id = _coerce_optional_text(submit.get("order_id") if submit is not None else None)
             fill = fill_by_order.get(order_id or "")
-            if fill is not None and float(fill.get("filled_size") or 0.0) > 0.0:
-                filled = True
-                resolved_outcome = resolution_by_market.get(str(row["market_id"]))
-                avg_fill_price = _coerce_optional_float(fill.get("avg_fill_price"))
-                if resolved_outcome is not None and avg_fill_price is not None:
-                    resolution_value = 1.0 if str(resolved_outcome).upper() == str(row.get("outcome") or "").upper() else 0.0
-                    if ticket_side == "BUY":
-                        realized_pnl = resolution_value - avg_fill_price
-                    else:
-                        realized_pnl = avg_fill_price - resolution_value
-        resolved = filled and resolution_by_market.get(str(row["market_id"])) is not None
-        if resolved:
-            evaluation_status = "resolved"
-        elif filled:
-            evaluation_status = "pending_resolution"
-        elif submitted:
-            evaluation_status = "submitted_only"
-        else:
-            evaluation_status = "watch_only"
+            projection = build_resolved_execution_projection(
+                outcome=row.get("outcome"),
+                side=ticket_side,
+                expected_outcome=resolution_by_market.get(str(row["market_id"])),
+                filled_quantity=float(fill.get("filled_size") or 0.0) if fill is not None else 0.0,
+                ticket_size=float(ticket.get("size") or 0.0),
+                expected_fill_price=_coerce_optional_float(ticket.get("reference_price")),
+                realized_fill_price=_coerce_optional_float(fill.get("avg_fill_price")) if fill is not None else None,
+                total_fee=(_coerce_optional_float(fill.get("total_fee")) or 0.0) if fill is not None else 0.0,
+                predicted_edge_bps=_coerce_optional_float(pricing_context.get("edge_bps_executable") or row.get("edge_bps")),
+                execution_result=None,
+                order_status=None,
+                latest_submit_status=submit.get("status") if submit is not None else None,
+                live_prereq_execution_status=None,
+                external_order_status=None,
+                gate_allowed=None,
+                latest_sign_attempt_id=None,
+                latest_submit_attempt_id=submit.get("attempt_id") if submit is not None else None,
+                latest_fill_at=fill.get("first_fill_at") if fill is not None else None,
+                latest_resolution_at=None,
+            )
+            filled = bool(fill is not None and float(fill.get("filled_size") or 0.0) > 0.0)
+            realized_pnl = projection.realized_pnl
+            evaluation_status = projection.evaluation_status if filled else ("submitted_only" if submitted else "watch_only")
+        resolved = evaluation_status == "resolved"
         expected_dollar_pnl = _coerce_optional_float(pricing_context.get("expected_dollar_pnl"))
         if expected_dollar_pnl is None:
             expected_dollar_pnl = abs(edge_bps_executable) / 10_000.0
@@ -422,7 +430,7 @@ def _load_ticket_frame(con, *, window_start: datetime) -> pd.DataFrame:
         return pd.DataFrame()
     return con.execute(
         """
-        SELECT ticket_id, watch_snapshot_id, strategy_id, side, created_at
+        SELECT ticket_id, watch_snapshot_id, strategy_id, side, outcome, reference_price, size, created_at
         FROM runtime.trade_tickets
         WHERE created_at >= ?
         """,
@@ -435,7 +443,7 @@ def _load_submit_frame(con) -> pd.DataFrame:
         return pd.DataFrame()
     return con.execute(
         """
-        SELECT ticket_id, order_id, created_at
+        SELECT ticket_id, order_id, attempt_id, status, created_at
         FROM runtime.submit_attempts
         WHERE attempt_kind = 'submit_order'
         """
@@ -451,7 +459,8 @@ def _load_fill_frame(con) -> pd.DataFrame:
             order_id,
             SUM(size) AS filled_size,
             SUM(price * size) / NULLIF(SUM(size), 0) AS avg_fill_price,
-            MIN(filled_at) AS first_fill_at
+            MIN(filled_at) AS first_fill_at,
+            SUM(fee) AS total_fee
         FROM trading.fills
         GROUP BY order_id
         """

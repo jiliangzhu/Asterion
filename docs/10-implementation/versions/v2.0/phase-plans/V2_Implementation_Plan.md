@@ -1,7 +1,7 @@
 # Asterion V2.0 Implementation Plan
 
 **版本**: v1.0
-**更新日期**: 2026-03-21
+**更新日期**: 2026-03-22
 **阶段**: `v2.0`
 **状态**: active implementation contract
 **定位**: Weather-first 盈利强化
@@ -11,8 +11,10 @@
 > 当前仓库阶段状态统一表达为：`P4 accepted; post-P4 remediation accepted; v2.0 implementation active`。
 > 本文件现在是当前唯一 active implementation entry。
 > `P4` 与 [Post_P4_Remediation_Implementation_Plan.md](../../v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md) 继续保留为 historical accepted records。
-> 最近 accepted tranche record 是 [P8_Implementation_Plan.md](./P8_Implementation_Plan.md)：`Phase 8 — Calibration Hard Gates and Scaling-Aware Capital Discipline`。
-> 当前 tranche-specific implementation plan 是 [P9_Implementation_Plan.md](./P9_Implementation_Plan.md)：`Phase 9 — Operator Surface Delivery and Throughput Scaling`。
+> 最近 accepted tranche record 是 [P11_Implementation_Plan.md](./P11_Implementation_Plan.md)：`Phase 11 — Opportunity Triage / Execution Intelligence Agent`。
+> 最近 accepted tranche closeout checklist 是 [P11_Closeout_Checklist.md](../checklists/P11_Closeout_Checklist.md)。
+> [P9_Implementation_Plan.md](./P9_Implementation_Plan.md) 保留为更早的 tranche-specific implementation record：`Phase 9 — Operator Surface Delivery and Throughput Scaling`。
+> 当前还没有比 `Phase 11` 更新的 tranche-specific implementation plan 已打开。
 
 ## 1. Summary
 
@@ -25,8 +27,10 @@
 - **主目标**：提升“可稳定、规模化、高置信赚钱”的能力
 - **主输入**：以 [Asterion_Deep_Audit_and_v2_Planning_Blueprint_Revised.md](../../../../analysis/Asterion_Deep_Audit_and_v2_Planning_Blueprint_Revised.md) 为主；[Asterion_Deep_Audit_and_v2_Planning_Blueprint.md](../../../../analysis/Asterion_Deep_Audit_and_v2_Planning_Blueprint.md) 只保留仍成立的高价值判断
 - **范围边界**：不把 live boundary 扩张当成 `v2.0` 主线，不引入新的 `risk.*` schema 作为默认答案
-- **最近 accepted tranche**：`Phase 8 — Calibration Hard Gates and Scaling-Aware Capital Discipline`
-- **当前 tranche 状态**：`Phase 9 — Operator Surface Delivery and Throughput Scaling` in progress，且 `core implemented / closeout pending`
+- **最近 accepted tranche**：`Phase 11 — Opportunity Triage / Execution Intelligence Agent`
+- **当前 tranche 状态**：当前还没有比 `Phase 11` 更新的 tranche-specific implementation plan 已打开
+- **最近 accepted tranche record**：
+  - [P11_Implementation_Plan.md](./P11_Implementation_Plan.md)
 
 ## 2. 当前代码现实与 Why Now
 
@@ -67,17 +71,26 @@
 
 - active implementation contract：
   - [V2_Implementation_Plan.md](./V2_Implementation_Plan.md)
-- current tranche-specific implementation plan：
-  - [P9_Implementation_Plan.md](./P9_Implementation_Plan.md)
 - most recent accepted tranche record：
-  - [P8_Implementation_Plan.md](./P8_Implementation_Plan.md)
+  - [P11_Implementation_Plan.md](./P11_Implementation_Plan.md)
+- most recent accepted tranche closeout checklist：
+  - [P11_Closeout_Checklist.md](../checklists/P11_Closeout_Checklist.md)
+- earlier accepted tranche record：
+  - [P10_Implementation_Plan.md](./P10_Implementation_Plan.md)
+- earlier accepted tranche closeout checklist：
+  - [P10_Closeout_Checklist.md](../checklists/P10_Closeout_Checklist.md)
+- earlier tranche-specific implementation record：
+  - [P9_Implementation_Plan.md](./P9_Implementation_Plan.md)
 - earlier accepted tranche records：
+  - [P8_Implementation_Plan.md](./P8_Implementation_Plan.md)
   - [P7_Implementation_Plan.md](./P7_Implementation_Plan.md)
   - [P6_Implementation_Plan.md](./P6_Implementation_Plan.md)
 - primary analysis input：
   - [Asterion_Deep_Audit_and_v2_Planning_Blueprint_Revised.md](../../../../analysis/Asterion_Deep_Audit_and_v2_Planning_Blueprint_Revised.md)
 - retained high-value historical analysis：
   - [Asterion_Deep_Audit_and_v2_Planning_Blueprint.md](../../../../analysis/Asterion_Deep_Audit_and_v2_Planning_Blueprint.md)
+- current assessment input：
+  - [00_0322_Asterion_Assessment.md](../../../../analysis/00_0322_Asterion_Assessment.md)
 - frozen supporting designs：
   - [Controlled_Live_Boundary_Design.md](../../../../30-trading/Controlled_Live_Boundary_Design.md)
   - [Execution_Economics_Design.md](../../../../30-trading/Execution_Economics_Design.md)
@@ -874,8 +887,8 @@
 
 **状态**
 
-- current tranche in progress
-- core implemented / closeout pending
+- earlier tranche-specific implementation record
+- delivery contract baseline 已进入 `Phase 10` accepted baseline
 
 **主题**
 
@@ -887,6 +900,81 @@
 **实施文档**
 
 - [P9_Implementation_Plan.md](./P9_Implementation_Plan.md)
+
+### Phase 10. Deterministic ROI Repair and Execution Intelligence Foundation
+
+**状态**
+
+- accepted closeout record
+
+**主题**
+
+- execution foundation bug repair
+- home / action queue operator throughput cleanup
+- deterministic microstructure / execution-intelligence layer
+- execution priors serving grain + fallback hardening
+- allocator scheduling uplift
+
+**固定边界**
+
+- assessment 点名的 `PRAGMA` regression 与 `Home` queue `blocked` pollution 直接算入 `Phase 10`
+- 不引入新的 `agent.*` 主线能力
+- 不改写 `trading.*` canonical execution ledger
+
+**accepted closeout 已包含**
+
+- guarded-connection `PRAGMA` regression repair
+- `Home` 主 action queue 的 `blocked_backlog` 分流
+- `runtime.execution_intelligence_runs`
+- `runtime.execution_intelligence_summaries`
+- `ui.market_microstructure_summary`
+- execution priors serving grain / fallback hardening
+- allocator uncertainty / execution-intelligence / concentration sizing tightening
+
+**实施文档**
+
+- [P10_Implementation_Plan.md](./P10_Implementation_Plan.md)
+
+**明确不做**
+
+- 不引入新的 `agent.*` 主线能力
+- 不扩大 live boundary
+- 不新开 `risk.*`
+- 不改写 `trading.*` canonical execution ledger
+
+### Phase 11. Opportunity Triage / Execution Intelligence Agent
+
+**状态**
+
+- accepted closeout record
+- 建立在 `Phase 10 accepted` 基线上
+
+**主题**
+
+- Opportunity Triage / Execution Intelligence Agent
+- structured advisory outputs
+- replay / evaluation closure
+- operator queue integration
+- no hard execution authority
+
+**实施文档**
+
+- [P11_Implementation_Plan.md](./P11_Implementation_Plan.md)
+- [P11_Closeout_Checklist.md](../checklists/P11_Closeout_Checklist.md)
+
+**accepted closeout 已包含**
+
+- triage contract / request assembly / persisted overlay 主干已落地
+- replay / evaluation 已同时 materialize `operator_outcome_proxy` 与 `replay_backtest`
+- advisory gate 已显式化，`Home` gated，`Markets + Agents` always visible
+- timeout / parse_error / failure 已稳定映射为 failed overlay status
+- `System` 已直接显示 triage runtime / advisory gate summary
+
+**明确不做**
+
+- 不让 agent 进入 canonical execution path
+- 不让 agent 改写 `trading.*`
+- 不引入任何 live side-effect shortcut
 
 ## 8. Non-Goals
 
@@ -938,6 +1026,8 @@
 
 当前默认状态：
 
-- `Phase 0` 到 `Phase 8` 已 accepted
-- `Phase 9` 当前已打开 tranche-specific implementation plan
-- 当前默认下一步是继续按 [P9_Implementation_Plan.md](./P9_Implementation_Plan.md) 收口 delivery contract closeout / acceptance
+- `Phase 0` 到 `Phase 11` 已 accepted
+- 最近 accepted tranche record 已切换到 [P11_Implementation_Plan.md](./P11_Implementation_Plan.md)
+- 最近 accepted tranche closeout checklist 已切换到 [P11_Closeout_Checklist.md](../checklists/P11_Closeout_Checklist.md)
+- 当前默认下一步不是回退重做 `P9` / `P10` / `P11`
+- 当前还没有比 `Phase 11` 更新的 tranche-specific implementation plan 已打开

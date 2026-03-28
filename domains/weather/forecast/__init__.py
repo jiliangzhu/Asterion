@@ -1,6 +1,6 @@
 """Weather forecast package."""
 
-from .adapters import NWSAdapter, OpenMeteoAdapter, StdDevResolutionSummary, resolve_std_dev_summary
+from .adapters import NWSAdapter, OpenMeteoAdapter, StdDevResolutionSummary, build_normal_distribution, resolve_std_dev_summary
 from .calibration import (
     CalibrationConfidenceSummary,
     CalibrationProfileMaterializationStatus,
@@ -78,6 +78,7 @@ __all__ = [
     "WEATHER_FORECAST_RUN_COLUMNS",
     "WEATHER_SOURCE_HEALTH_SNAPSHOT_COLUMNS",
     "build_calibration_lookup_key",
+    "build_normal_distribution",
     "calibration_profile_age_hours",
     "calibration_profile_freshness_status",
     "calibration_confidence_from_metrics",

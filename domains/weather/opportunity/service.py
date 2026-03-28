@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from asterion_core.contracts import (
+    ExecutionIntelligenceSummary,
     ExecutionPriorSummary,
     MarketQualityAssessment,
     OpportunityAssessment,
@@ -12,7 +13,15 @@ from asterion_core.contracts import (
     stable_object_id,
 )
 
-from .execution_priors import build_execution_prior_summary_from_context, execution_prior_context_fields
+from .execution_intelligence import (
+    build_execution_intelligence_summary_from_context,
+    execution_intelligence_context_fields,
+)
+from .execution_priors import (
+    build_execution_prior_summary_from_context,
+    execution_prior_context_fields,
+    execution_prior_key_id,
+)
 
 
 _REVIEW_FAILURE_STATUSES = {"agent_failure"}
@@ -52,6 +61,7 @@ def build_weather_opportunity_assessment(
     calibration_multiplier: float | None = None,
     calibration_reason_codes: list[str] | None = None,
     execution_prior_summary: ExecutionPriorSummary | None = None,
+    execution_intelligence_summary: ExecutionIntelligenceSummary | None = None,
     forecast_distribution_summary_v2: dict[str, Any] | None = None,
     source_context: dict[str, Any] | None = None,
     recommended_size: float | None = None,
@@ -226,6 +236,9 @@ def build_weather_opportunity_assessment(
         regime_stability_score=regime_stability_score,
     )
     resolved_execution_prior_summary = execution_prior_summary or build_execution_prior_summary_from_context(source_context)
+    resolved_execution_intelligence_summary = (
+        execution_intelligence_summary or build_execution_intelligence_summary_from_context(source_context)
+    )
     ranking_v2 = _ranking_score_v2_decomposition(
         edge_bps_executable=edge_bps_executable,
         fill_probability=fill_probability,
@@ -235,6 +248,7 @@ def build_weather_opportunity_assessment(
         slippage_bps=slippage_bps,
         ops_tie_breaker=ops_readiness_score,
         execution_prior_summary=resolved_execution_prior_summary,
+        execution_intelligence_summary=resolved_execution_intelligence_summary,
     )
     feedback_prior = (
         resolved_execution_prior_summary.feedback_prior
@@ -492,6 +506,7 @@ def build_weather_opportunity_assessment(
         }
     )
     context.update(execution_prior_context_fields(resolved_execution_prior_summary))
+    context.update(execution_intelligence_context_fields(resolved_execution_intelligence_summary))
 
     assessment_id = stable_object_id(
         "opp",
@@ -794,6 +809,7 @@ def _ranking_score_v2_decomposition(
     slippage_bps: int,
     ops_tie_breaker: float,
     execution_prior_summary: ExecutionPriorSummary | None,
+    execution_intelligence_summary: ExecutionIntelligenceSummary | None,
 ) -> RankingScoreV2Decomposition:
     gross_unit_edge = max(abs(int(edge_bps_executable)) / 10_000.0, 0.0)
     prior_mode = "prior_backed" if execution_prior_summary is not None else "fallback_heuristic"
@@ -878,7 +894,46 @@ def _ranking_score_v2_decomposition(
     latency_penalty = submit_latency_penalty + fill_latency_penalty
     cancel_penalty = max(0.0, float(cancel_rate)) * gross_unit_edge * 0.50
     partial_fill_penalty = max(0.0, float(partial_fill_rate)) * gross_unit_edge * 0.25
-    risk_penalty = slippage_penalty + tail_slippage_penalty + cancel_penalty + partial_fill_penalty + latency_penalty + edge_retention_penalty
+    microstructure_penalty = 0.0
+    microstructure_score = None
+    microstructure_reason_codes: list[str] = []
+    top_of_book_stability = None
+    book_update_intensity = None
+    spread_regime = None
+    visible_size_shock_flag = None
+    book_pressure_side = None
+    expected_capture_regime = None
+    expected_slippage_regime = None
+    if execution_intelligence_summary is not None:
+        microstructure_score = round(float(execution_intelligence_summary.execution_intelligence_score), 6)
+        microstructure_reason_codes = list(execution_intelligence_summary.reason_codes)
+        top_of_book_stability = round(float(execution_intelligence_summary.top_of_book_stability), 6)
+        book_update_intensity = round(float(execution_intelligence_summary.book_update_intensity), 6)
+        spread_regime = str(execution_intelligence_summary.spread_regime)
+        visible_size_shock_flag = bool(execution_intelligence_summary.visible_size_shock_flag)
+        book_pressure_side = str(execution_intelligence_summary.book_pressure_side)
+        expected_capture_regime = str(execution_intelligence_summary.expected_capture_regime)
+        expected_slippage_regime = str(execution_intelligence_summary.expected_slippage_regime)
+        microstructure_penalty = gross_unit_edge * max(0.0, 1.0 - float(execution_intelligence_summary.top_of_book_stability)) * 0.25
+        if execution_intelligence_summary.visible_size_shock_flag:
+            microstructure_penalty += gross_unit_edge * 0.10
+        if expected_slippage_regime == "high":
+            microstructure_penalty += gross_unit_edge * 0.08
+        elif expected_slippage_regime == "medium":
+            microstructure_penalty += gross_unit_edge * 0.03
+        if expected_capture_regime == "low":
+            microstructure_penalty += gross_unit_edge * 0.06
+        elif expected_capture_regime == "medium":
+            microstructure_penalty += gross_unit_edge * 0.02
+    risk_penalty = (
+        slippage_penalty
+        + tail_slippage_penalty
+        + cancel_penalty
+        + partial_fill_penalty
+        + latency_penalty
+        + edge_retention_penalty
+        + microstructure_penalty
+    )
 
     unit_capital_cost = max(reference_price if side == "BUY" else (1.0 - reference_price if side == "SELL" else 0.50), 0.05)
     capital_efficiency = max(0.0, float(depth_proxy)) / unit_capital_cost
@@ -889,17 +944,7 @@ def _ranking_score_v2_decomposition(
         "version": "ranking_v2",
         "mode": prior_mode,
         "execution_prior_key": None if prior_key is None else {
-            "prior_key": stable_object_id(
-                "eprior",
-                {
-                    "market_id": prior_key.market_id,
-                    "strategy_id": prior_key.strategy_id,
-                    "wallet_id": prior_key.wallet_id,
-                    "side": prior_key.side,
-                    "horizon_bucket": prior_key.horizon_bucket,
-                    "liquidity_bucket": prior_key.liquidity_bucket,
-                },
-            ),
+            "prior_key": execution_prior_key_id(prior_key),
             "market_id": prior_key.market_id,
             "strategy_id": prior_key.strategy_id,
             "wallet_id": prior_key.wallet_id,
@@ -930,10 +975,20 @@ def _ranking_score_v2_decomposition(
         "latency_penalty": round(latency_penalty, 6),
         "tail_slippage_penalty": round(tail_slippage_penalty, 6),
         "edge_retention_penalty": round(edge_retention_penalty, 6),
+        "microstructure_penalty": round(microstructure_penalty, 6),
         "risk_penalty": round(risk_penalty, 6),
         "capital_efficiency": round(capital_efficiency, 6),
         "quality_confidence_multiplier": quality_confidence_multiplier,
         "ops_tie_breaker": round(max(0.0, float(ops_tie_breaker)), 6),
+        "execution_intelligence_score": microstructure_score,
+        "microstructure_reason_codes": microstructure_reason_codes,
+        "top_of_book_stability": top_of_book_stability,
+        "book_update_intensity": book_update_intensity,
+        "spread_regime": spread_regime,
+        "visible_size_shock_flag": visible_size_shock_flag,
+        "book_pressure_side": book_pressure_side,
+        "expected_capture_regime": expected_capture_regime,
+        "expected_slippage_regime": expected_slippage_regime,
         "retrospective_baseline_version": "ranking_retro_v1",
         "ranking_score": ranking_score,
     }

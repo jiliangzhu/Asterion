@@ -23,9 +23,8 @@ print_boundary_summary() {
     echo "  - manual-only"
     echo "  - default-off"
     echo "  - approve_usdc only"
-    echo "  - latest accepted tranche: Phase 8"
-    echo "  - current tranche: Phase 9 in progress"
-    echo "  - phase status: core implemented / closeout pending"
+    echo "  - latest accepted tranche: Phase 11"
+    echo "  - no newer tranche-specific implementation plan currently open"
 }
 
 require_path() {
@@ -233,9 +232,12 @@ start_data() {
 
     # 启动 canonical weather ingress loop（后台运行，每10分钟重试一次）
     echo "🔄 启动持续天气链路（events-first，多市场 open-recent 抓取，默认启用 weather agents）..."
+    local canonical_db_path
+    canonical_db_path="${ASTERION_DB_PATH:-data/asterion.duckdb}"
     nohup "$VENV_PATH/bin/python" -u scripts/run_real_weather_chain_loop.py \
         --interval-minutes 10 \
         --recent-within-days 14 \
+        --db-path "$canonical_db_path" \
         --force-rebuild-on-start \
         < /dev/null > "$LOG_DIR/real_weather_chain_loop.log" 2>&1 &
     local loop_pid=$!
@@ -250,6 +252,7 @@ start_data() {
     echo -e "${GREEN}✓ 真实天气数据链已启动（后台运行，pid=$loop_pid）${NC}"
     echo -e "${YELLOW}📋 查看日志: tail -f logs/real_weather_chain_loop.log${NC}"
     echo -e "${YELLOW}📄 结果报告: data/dev/real_weather_chain/real_weather_chain_report.json${NC}"
+    echo -e "${YELLOW}🗄 Canonical DB: ${canonical_db_path}${NC}"
 }
 
 # 只读检查 Paper 交易路径

@@ -158,14 +158,59 @@ def build_market_capability_from_sources(
     overrides = override_values or {}
     _validate_override_fields(overrides, supported_fields=_SUPPORTED_MARKET_OVERRIDE_FIELDS, scope="token_id")
     normalized_outcome = _normalize_binary_outcome(outcome)
-    tick_size = _override_decimal(overrides.get("tick_size")) or parse_tick_size(book_summary)
+    raw_market = market.raw_market if isinstance(market.raw_market, dict) else {}
+    used_gamma_market_fallback = False
+    fees_enabled = _override_bool(overrides.get("fees_enabled"))
+    if fees_enabled is None:
+        fees_enabled = _extract_bool(raw_market, "feesEnabled", "fees_enabled")
+    if fees_enabled is None:
+        fees_enabled = True
+
+    tick_size = _override_decimal(overrides.get("tick_size"))
+    if tick_size is None:
+        try:
+            tick_size = parse_tick_size(book_summary)
+        except Exception:  # noqa: BLE001
+            tick_size = _extract_decimal(raw_market, "orderPriceMinTickSize", "tick_size", "tickSize")
+            if tick_size is not None:
+                used_gamma_market_fallback = True
+    if tick_size is None:
+        raise ValueError("tick_size is required for market capability")
+
     fee_rate_bps = _override_int(overrides.get("fee_rate_bps"))
     if fee_rate_bps is None:
-        fee_rate_bps = parse_fee_rate_bps(fee_rate_payload)
-    min_order_size = _override_decimal(overrides.get("min_order_size")) or parse_min_order_size(book_summary)
+        try:
+            fee_rate_bps = parse_fee_rate_bps(fee_rate_payload)
+        except Exception:  # noqa: BLE001
+            fee_rate_bps = _extract_int(raw_market, "fee_rate_bps", "feeRateBps", "fee_rate")
+            if fee_rate_bps is None and not fees_enabled:
+                fee_rate_bps = 0
+            if fee_rate_bps is not None:
+                used_gamma_market_fallback = True
+    if fee_rate_bps is None:
+        raise ValueError("fee_rate_bps is required for market capability")
+
+    min_order_size = _override_decimal(overrides.get("min_order_size"))
+    if min_order_size is None:
+        try:
+            min_order_size = parse_min_order_size(book_summary)
+        except Exception:  # noqa: BLE001
+            min_order_size = _extract_decimal(raw_market, "orderMinSize", "min_order_size", "minOrderSize")
+            if min_order_size is not None:
+                used_gamma_market_fallback = True
+    if min_order_size is None:
+        raise ValueError("min_order_size is required for market capability")
+
     neg_risk = _override_bool(overrides.get("neg_risk"))
     if neg_risk is None:
-        neg_risk = parse_neg_risk(book_summary)
+        try:
+            neg_risk = parse_neg_risk(book_summary)
+        except Exception:  # noqa: BLE001
+            neg_risk = _extract_bool(raw_market, "negRisk", "neg_risk")
+            if neg_risk is not None:
+                used_gamma_market_fallback = True
+    if neg_risk is None:
+        raise ValueError("neg_risk is required for market capability")
     tradable_override = _override_bool(overrides.get("tradable"))
     tradable = (
         market.active
@@ -176,10 +221,9 @@ def build_market_capability_from_sources(
     )
     if tradable_override is not None:
         tradable = tradable_override
-    fees_enabled = _override_bool(overrides.get("fees_enabled"))
-    if fees_enabled is None:
-        fees_enabled = True
     data_sources = ["gamma", "clob_public"]
+    if used_gamma_market_fallback:
+        data_sources.append("gamma_market_fallback")
     if overrides:
         data_sources.append("capability_overrides")
     return MarketCapability(
@@ -234,8 +278,20 @@ def refresh_market_capabilities(
     for market in load_weather_markets_for_capability_refresh(con):
         pairs = expand_market_tokens(market)
         for token_id, outcome in pairs:
-            book_summary = clob_client.fetch_book_summary(token_id)
-            fee_rate_payload = clob_client.fetch_fee_rate(token_id)
+            raw_market = market.raw_market if isinstance(market.raw_market, dict) else {}
+            override_values = token_overrides.get(token_id)
+            if _raw_market_capability_is_sufficient(raw_market, override_values=override_values):
+                book_summary = {}
+                fee_rate_payload = {}
+            else:
+                try:
+                    book_summary = clob_client.fetch_book_summary(token_id)
+                except Exception:  # noqa: BLE001
+                    book_summary = {}
+                try:
+                    fee_rate_payload = clob_client.fetch_fee_rate(token_id)
+                except Exception:  # noqa: BLE001
+                    fee_rate_payload = {}
             capabilities.append(
                 build_market_capability_from_sources(
                     market=market,
@@ -243,7 +299,7 @@ def refresh_market_capabilities(
                     outcome=outcome,
                     book_summary=book_summary,
                     fee_rate_payload=fee_rate_payload,
-                    override_values=token_overrides.get(token_id),
+                    override_values=override_values,
                     observed_at=now,
                 )
             )
@@ -394,6 +450,75 @@ def _override_bool(value: str | None) -> bool | None:
 def _override_int(value: str | None) -> int | None:
     if value is None:
         return None
+    return int(value.strip())
+
+
+def _extract_decimal(payload: dict[str, Any], *field_names: str) -> Decimal | None:
+    for field_name in field_names:
+        value = payload.get(field_name)
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float, Decimal)):
+            return Decimal(str(value))
+        if isinstance(value, str) and value.strip():
+            return Decimal(value.strip())
+    return None
+
+
+def _extract_int(payload: dict[str, Any], *field_names: str) -> int | None:
+    parsed = _extract_decimal(payload, *field_names)
+    if parsed is None:
+        return None
+    return int(parsed)
+
+
+def _extract_bool(payload: dict[str, Any], *field_names: str) -> bool | None:
+    for field_name in field_names:
+        value = payload.get(field_name)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "off"}:
+                return False
+    return None
+
+
+def _raw_market_capability_is_sufficient(
+    raw_market: dict[str, Any],
+    *,
+    override_values: dict[str, str] | None,
+) -> bool:
+    if not raw_market:
+        return False
+    if _override_decimal((override_values or {}).get("tick_size")) is None and _extract_decimal(
+        raw_market, "orderPriceMinTickSize", "tick_size", "tickSize"
+    ) is None:
+        return False
+    if _override_decimal((override_values or {}).get("min_order_size")) is None and _extract_decimal(
+        raw_market, "orderMinSize", "min_order_size", "minOrderSize"
+    ) is None:
+        return False
+    if _override_bool((override_values or {}).get("neg_risk")) is None and _extract_bool(
+        raw_market, "negRisk", "neg_risk"
+    ) is None:
+        return False
+    if _override_int((override_values or {}).get("fee_rate_bps")) is not None:
+        return True
+    fees_enabled = _override_bool((override_values or {}).get("fees_enabled"))
+    if fees_enabled is None:
+        fees_enabled = _extract_bool(raw_market, "feesEnabled", "fees_enabled")
+    if fees_enabled is False:
+        return True
+    return _extract_int(raw_market, "fee_rate_bps", "feeRateBps", "fee_rate") is not None
+
+
     parsed = int(value)
     if parsed < 0:
         raise ValueError("override integer value must be non-negative")

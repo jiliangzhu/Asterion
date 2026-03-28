@@ -289,6 +289,16 @@ class UiPagesSmokeTest(unittest.TestCase):
             "pending_operator_review_count": 0,
             "blocked_by_operator_review_count": 0,
             "ready_for_redeem_review_count": 0,
+            "triage_latest_run_id": "inv_1",
+            "triage_latest_run_status": "success",
+            "triage_latest_evaluation_method": "replay_backtest",
+            "triage_advisory_gate_status": "experimental",
+            "triage_last_evaluated_at": "2026-03-23T10:04:00+00:00",
+            "triage_failed_count": 1,
+            "triage_pending_review_count": 2,
+            "triage_accepted_count": 3,
+            "triage_deferred_count": 4,
+            "triage_row_count": 6,
             "surface_delivery_summary": pd.DataFrame(
                 [
                     {
@@ -331,7 +341,14 @@ class UiPagesSmokeTest(unittest.TestCase):
         self.assertTrue(
             any(
                 "组件" in getattr(frame, "columns", [])
-                and {"Latest Surface Refresh", "Degraded Surfaces", "Read Error Surfaces"}.issubset(set(frame["组件"].tolist()))
+                and {
+                    "Latest Surface Refresh",
+                    "Degraded Surfaces",
+                    "Read Error Surfaces",
+                    "Latest Triage Run",
+                    "Triage Advisory Gate",
+                    "Triage Failed",
+                }.issubset(set(frame["组件"].tolist()))
                 for frame in rendered_frames
             )
         )

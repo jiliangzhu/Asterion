@@ -12,8 +12,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "dev" / "real_weather_chain"
+DEFAULT_CANONICAL_DB_PATH = ROOT / "data" / "asterion.duckdb"
 DEFAULT_INTERVAL_MINUTES = 10
 DEFAULT_RECENT_WITHIN_DAYS = 14
+DEFAULT_MARKET_LIMIT = 24
+DEFAULT_TRIAGE_LIMIT = 12
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,8 +24,11 @@ def parse_args() -> argparse.Namespace:
         description="Continuously run the real weather ingress chain against open recent Gamma weather markets."
     )
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
+    parser.add_argument("--db-path", default=None)
     parser.add_argument("--interval-minutes", type=int, default=DEFAULT_INTERVAL_MINUTES)
     parser.add_argument("--recent-within-days", type=int, default=DEFAULT_RECENT_WITHIN_DAYS)
+    parser.add_argument("--market-limit", type=int, default=DEFAULT_MARKET_LIMIT)
+    parser.add_argument("--triage-limit", type=int, default=DEFAULT_TRIAGE_LIMIT)
     parser.add_argument("--with-agent", action="store_true", help="Backward-compatible no-op; the loop now enables agents by default.")
     parser.add_argument("--skip-agent", action="store_true", help="显式跳过 weather agent 链路，仅用于 debug/fallback。")
     parser.add_argument("--once", action="store_true")
@@ -38,7 +44,14 @@ def build_smoke_command(args: argparse.Namespace, *, force_rebuild: bool) -> lis
         str(Path(args.output_dir)),
         "--recent-within-days",
         str(int(args.recent_within_days)),
+        "--market-limit",
+        str(int(args.market_limit)),
+        "--triage-limit",
+        str(int(args.triage_limit)),
     ]
+    resolved_db_path = args.db_path or str(DEFAULT_CANONICAL_DB_PATH)
+    if resolved_db_path:
+        cmd.extend(["--db-path", str(Path(resolved_db_path))])
     if args.skip_agent:
         cmd.append("--skip-agent")
     if force_rebuild:

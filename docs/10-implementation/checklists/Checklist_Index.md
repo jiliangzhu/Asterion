@@ -10,12 +10,18 @@
 
 - [V2_Closeout_Checklist.md](../versions/v2.0/checklists/V2_Closeout_Checklist.md)
 
-当前还没有新的 tranche-specific closeout checklist 被打开；最近 accepted closeout checklist 已转入下方 historical accepted 区。
+当前 `v2.0` 仍保留 umbrella closeout placeholder；最近 accepted tranche 的 closeout checklist 已切换到 `Phase 11`。
 
 ## 2. Historical accepted closeout checklists
 
+- [P11_Closeout_Checklist.md](../versions/v2.0/checklists/P11_Closeout_Checklist.md)
+  - 最近 accepted tranche 的 closeout checklist；固定收口 replay/evaluation、advisory gating、failure isolation、system runtime summary 与 `P11` 文档同步
+
+- [P10_Closeout_Checklist.md](../versions/v2.0/checklists/P10_Closeout_Checklist.md)
+  - 更早 accepted tranche 的 closeout checklist；固定收口 execution foundation repair、home queue cleanup、execution-intelligence、priors grain 与 allocator scheduling uplift
+
 - [P8_Closeout_Checklist.md](../versions/v2.0/checklists/P8_Closeout_Checklist.md)
-  - 最近 accepted tranche 的 closeout checklist；固定收口 calibration hard gate / scaling-aware capital discipline / fallback truth-source hardening
+  - accepted closeout checklist；固定收口 calibration hard gate / scaling-aware capital discipline / fallback truth-source hardening
 - [P7_Closeout_Checklist.md](../versions/v2.0/checklists/P7_Closeout_Checklist.md)
   - accepted closeout checklist；固定收口 rerank acceptance、allocator / paper / UI consistency、retrospective uplift integration 与 `P7` / `V2` wording refresh
 - [P0_Closeout_Checklist.md](../versions/v1.0/checklists/P0_Closeout_Checklist.md)

@@ -128,6 +128,89 @@ class CalibrationMaterializationStatusTest(unittest.TestCase):
         self.assertEqual(row[5], 0)
         self.assertEqual(row[6], 0)
 
+    def test_refresh_job_counts_degraded_profiles_by_health_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "phase3_calibration_degraded.duckdb")
+            queue_path = str(Path(tmpdir) / "write_queue.sqlite")
+            self._apply_migrations(db_path)
+            con = duckdb.connect(db_path)
+            try:
+                con.execute(
+                    """
+                    INSERT INTO weather.forecast_calibration_samples (
+                        sample_id,
+                        market_id,
+                        station_id,
+                        source,
+                        forecast_horizon_bucket,
+                        season_bucket,
+                        metric,
+                        forecast_target_time,
+                        forecast_mean,
+                        observed_value,
+                        residual,
+                        created_at
+                    ) VALUES (
+                        's2','mkt_2','KSEA','openmeteo','0-1','spring','temperature_max',
+                        '2026-03-17 12:00:00',55.0,58.0,3.0,'2026-03-17 13:00:00'
+                    )
+                    """
+                )
+                materialized_at = datetime(2026, 3, 18, 3, 15, tzinfo=UTC)
+                profile = CalibrationProfileV2(
+                    profile_key="cpv2_degraded_1",
+                    station_id="KSEA",
+                    source="openmeteo",
+                    metric="temperature_max",
+                    forecast_horizon_bucket="0-1",
+                    season_bucket="spring",
+                    regime_bucket="warm",
+                    sample_count=24,
+                    mean_bias=1.8,
+                    mean_abs_residual=2.1,
+                    p90_abs_residual=3.4,
+                    empirical_coverage_50=0.20,
+                    empirical_coverage_80=0.35,
+                    empirical_coverage_95=0.50,
+                    regime_stability_score=0.35,
+                    residual_quantiles_json={"p50": 1.8, "p90": 3.4},
+                    threshold_probability_profile_json={"60-75": {"quality_status": "healthy", "sample_count": 20}},
+                    calibration_health_status="degraded",
+                    window_start=datetime(2025, 9, 19, 3, 15, tzinfo=UTC),
+                    window_end=datetime(2026, 3, 18, 2, 0, tzinfo=UTC),
+                    materialized_at=materialized_at,
+                )
+                with unittest.mock.patch(
+                    "dagster_asterion.handlers.materialize_forecast_calibration_profiles_v2",
+                    return_value=[profile],
+                ):
+                    run_weather_forecast_calibration_profiles_v2_refresh_job(
+                        con,
+                        WriteQueueConfig(path=queue_path),
+                        lookback_days=180,
+                        as_of=materialized_at,
+                        run_id="run_calibration_degraded",
+                    )
+            finally:
+                con.close()
+
+            self._drain_queue(db_path=db_path, queue_path=queue_path)
+            qcon = duckdb.connect(db_path)
+            try:
+                row = qcon.execute(
+                    """
+                    SELECT fresh_profile_count, stale_profile_count, degraded_profile_count
+                    FROM runtime.calibration_profile_materializations
+                    """
+                ).fetchone()
+            finally:
+                qcon.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], 1)
+        self.assertEqual(row[1], 0)
+        self.assertEqual(row[2], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

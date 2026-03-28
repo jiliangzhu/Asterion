@@ -14,6 +14,8 @@ import ui.data_access as data_access_module
 from ui.data_access import (
     build_ops_console_overview,
     load_agent_review_data,
+    load_agent_runtime_status,
+    load_boundary_sidebar_truth,
     load_market_chain_analysis_data,
     load_market_opportunity_data,
     load_home_decision_snapshot,
@@ -28,6 +30,30 @@ from ui.pages.system import _build_component_rows
 
 
 class UiDataAccessTest(unittest.TestCase):
+    def test_load_agent_runtime_status_surfaces_provider_health_from_report(self) -> None:
+        report = {
+            "agent_pipeline": {
+                "latest_triage_status": "ok",
+                "latest_triage_output_count": 4,
+                "latest_triage_non_fallback_output_count": 0,
+                "triage_provider_forbidden_count": 3,
+                "triage_rate_limited_count": 0,
+            }
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "ASTERION_AGENT_PROVIDER": "openai_compatible",
+                "ASTERION_OPENAI_COMPATIBLE_MODEL": "GLM-5",
+                "ASTERION_OPENAI_COMPATIBLE_API_KEY": "test-key",
+            },
+            clear=False,
+        ), patch("ui.data_access.load_real_weather_smoke_report", return_value=report):
+            status = load_agent_runtime_status()
+        self.assertEqual(status["provider"], "openai_compatible")
+        self.assertEqual(status["provider_runtime_status"], "provider_rejected")
+        self.assertIn("401/403", status["provider_runtime_detail"])
+
     def test_load_readiness_summary_uses_json_when_ui_lite_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "readiness.json"
@@ -296,6 +322,148 @@ class UiDataAccessTest(unittest.TestCase):
         self.assertEqual(status["latest_calibration_freshness_status"], "fresh")
         self.assertEqual(str(status["latest_calibration_materialized_at"]), "2026-03-18 03:15:00")
         self.assertEqual(status["calibration_hard_gate_market_count"], 2)
+
+    def test_load_system_runtime_status_reads_profitability_runtime_chain_fields_from_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ui_lite.duckdb"
+            report_path = Path(tmpdir) / "real_weather_chain_report.json"
+            readiness_path = Path(tmpdir) / "readiness.json"
+            manifest_path = Path(tmpdir) / "manifest.json"
+            readiness_path.write_text(
+                json.dumps({"target": "p4_live_prerequisites", "go_decision": "HOLD", "decision_reason": "waiting"}),
+                encoding="utf-8",
+            )
+            manifest_path.write_text(json.dumps({"manifest_status": "valid"}), encoding="utf-8")
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "chain_status": "degraded",
+                        "truth_source": {
+                            "canonical_db_path": "/tmp/canonical.duckdb",
+                            "ui_replica_db_path": "/tmp/ui.duckdb",
+                            "ui_lite_db_path": "/tmp/ui_lite.duckdb",
+                            "source_split_brain": True,
+                        },
+                        "runtime_chain": {
+                            "capability_refresh": {"status": "ok"},
+                            "resolution_reconciliation": {"status": "idle_no_subjects"},
+                            "calibration_bootstrap": {"status": "idle_no_matured_forecasts"},
+                            "calibration_refresh": {"status": "ok"},
+                            "allocation_preview": {"status": "skipped"},
+                            "paper_execution": {"status": "skipped"},
+                            "operator_surface_refresh": {"status": "ok"},
+                            "opportunity_triage": {"status": "idle_no_subjects"},
+                            "resolution_review": {"status": "idle_no_subjects"},
+                        },
+                        "roi_status": {
+                            "path_closed": False,
+                            "execution_closure_status": "partial",
+                            "intelligence_closure_status": "degraded",
+                            "settlement_feedback_closure_status": "waiting_for_resolution",
+                            "has_deployable_signals": False,
+                            "has_empirical_feedback": False,
+                            "agents_have_useful_output": False,
+                        },
+                        "signal_pipeline": {
+                            "active_market_prior_hit_count": 3,
+                        },
+                        "execution_pipeline": {
+                            "deployable_snapshot_count": 4,
+                            "execution_intelligence_covered_snapshot_count": 2,
+                        },
+                        "settlement_feedback_pipeline": {
+                            "pending_resolution_ticket_count": 3,
+                            "resolved_ticket_count": 0,
+                            "realized_pnl_row_count": 0,
+                            "latest_resolution_market_count": 0,
+                            "latest_feedback_writeback_status": "waiting_for_resolution",
+                            "latest_feedback_materialization_count": 2,
+                        },
+                        "agent_pipeline": {
+                            "latest_triage_non_fallback_output_count": 1,
+                            "agent_running_status": "ok",
+                            "agent_value_status": "fallback_only",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            con = duckdb.connect(str(db_path))
+            try:
+                con.execute("CREATE SCHEMA ui")
+                con.execute("CREATE TABLE ui.system_runtime_summary(generated_at TIMESTAMP)")
+                con.execute("INSERT INTO ui.system_runtime_summary VALUES ('2026-03-23 12:00:00')")
+                con.execute(
+                    """
+                    CREATE TABLE ui.surface_delivery_summary(
+                        surface_id TEXT,
+                        primary_table TEXT,
+                        delivery_status TEXT,
+                        primary_source TEXT,
+                        fallback_origin TEXT,
+                        truth_check_status TEXT,
+                        truth_check_issue_count BIGINT,
+                        row_count BIGINT,
+                        last_refresh_ts TIMESTAMP,
+                        degraded_reason_codes_json TEXT,
+                        primary_score_label TEXT
+                    )
+                    """
+                )
+                con.execute(
+                    "INSERT INTO ui.surface_delivery_summary VALUES ('system','ui.system_runtime_summary','ok','ui_lite',NULL,'ok',0,1,'2026-03-23 12:00:00','[]','surface_delivery_status')"
+                )
+                con.execute("CREATE TABLE ui.market_opportunity_summary(market_id TEXT, actionability_status TEXT)")
+                con.execute("CREATE TABLE ui.agent_review_summary(agent_type TEXT)")
+                con.execute("CREATE TABLE ui.opportunity_triage_summary(market_id TEXT, effective_triage_status TEXT, updated_at TIMESTAMP)")
+                con.execute(
+                    """
+                    CREATE TABLE ui.calibration_health_summary(
+                        station_id TEXT,
+                        materialized_at TIMESTAMP,
+                        impacted_market_count BIGINT,
+                        hard_gate_market_count BIGINT,
+                        review_required_market_count BIGINT,
+                        research_only_market_count BIGINT
+                    )
+                    """
+                )
+            finally:
+                con.close()
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(db_path),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_READINESS_REPORT_JSON_PATH": str(readiness_path),
+                    "ASTERION_CONTROLLED_LIVE_CAPABILITY_MANIFEST_PATH": str(manifest_path),
+                    "ASTERION_DB_PATH": str(Path(tmpdir) / "canonical.duckdb"),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "legacy_smoke.duckdb"),
+                },
+                clear=False,
+            ):
+                status = load_system_runtime_status()
+
+        self.assertEqual(status["canonical_db_path"], "/tmp/canonical.duckdb")
+        self.assertTrue(status["source_split_brain"])
+        self.assertEqual(status["calibration_bootstrap_status"], "idle_no_matured_forecasts")
+        self.assertEqual(status["paper_execution_status"], "skipped")
+        self.assertEqual(status["triage_runtime_status"], "idle_no_subjects")
+        self.assertEqual(status["profitability_execution_closure_status"], "partial")
+        self.assertEqual(status["profitability_intelligence_closure_status"], "degraded")
+        self.assertEqual(status["profitability_settlement_feedback_closure_status"], "waiting_for_resolution")
+        self.assertEqual(status["profitability_agent_running_status"], "ok")
+        self.assertEqual(status["profitability_agent_value_status"], "fallback_only")
+        self.assertEqual(status["profitability_active_market_prior_hit_count"], 3)
+        self.assertEqual(status["profitability_deployable_snapshot_count"], 4)
+        self.assertEqual(status["profitability_execution_intelligence_covered_snapshot_count"], 2)
+        self.assertEqual(status["profitability_pending_resolution_ticket_count"], 3)
+        self.assertEqual(status["profitability_resolved_ticket_count"], 0)
+        self.assertEqual(status["profitability_latest_feedback_writeback_status"], "waiting_for_resolution")
+        self.assertEqual(status["profitability_latest_feedback_materialization_count"], 2)
+        self.assertEqual(status["profitability_latest_triage_non_fallback_output_count"], 1)
+        self.assertFalse(status["profitability_path_closed"])
 
     def test_home_markets_and_system_share_p9_delivery_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -602,6 +770,7 @@ class UiDataAccessTest(unittest.TestCase):
                 {
                     "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_DB_PATH": str(Path(tmpdir) / "missing_canonical.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_runtime.duckdb"),
                 },
                 clear=False,
@@ -809,6 +978,7 @@ class UiDataAccessTest(unittest.TestCase):
                 {
                     "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_DB_PATH": str(Path(tmpdir) / "missing_canonical.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_runtime.duckdb"),
                 },
                 clear=False,
@@ -919,7 +1089,7 @@ class UiDataAccessTest(unittest.TestCase):
                 con.execute(
                     """
                     INSERT INTO agent.invocations VALUES
-                    ('inv_1','rule2spec','v1','p1','weather_market','mkt_sea_1','hash','{}','openai_compatible','glm-5','success',NULL,'2026-03-15 00:01:00','2026-03-15 00:01:05',5000,false,NULL)
+                    ('inv_1','rule2spec','v1','p1','weather_market','mkt_sea_1','hash','{}','openai_compatible','GLM-5','success',NULL,'2026-03-15 00:01:00','2026-03-15 00:01:05',5000,false,NULL)
                     """
                 )
                 con.execute(
@@ -958,13 +1128,14 @@ class UiDataAccessTest(unittest.TestCase):
                 {
                     "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_DB_PATH": str(Path(tmpdir) / "missing_canonical.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(runtime_path),
                 },
                 clear=False,
             ):
                 payload = load_market_chain_analysis_data()
 
-            self.assertEqual(payload["market_opportunity_source"], "weather_smoke_db")
+            self.assertEqual(payload["market_opportunity_source"], "runtime_db")
             self.assertEqual(len(payload["market_rows"]), 1)
             self.assertEqual(payload["market_rows"][0]["location_name"], "Seattle")
             self.assertEqual(payload["market_rows"][0]["rule2spec_status"], "success")
@@ -994,6 +1165,7 @@ class UiDataAccessTest(unittest.TestCase):
                 {
                     "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_DB_PATH": str(Path(tmpdir) / "missing_canonical.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_smoke_runtime.duckdb"),
                     "ASTERION_READINESS_REPORT_JSON_PATH": str(Path(tmpdir) / "missing_readiness.json"),
                 },
@@ -1005,8 +1177,9 @@ class UiDataAccessTest(unittest.TestCase):
             self.assertEqual(overview["metrics"]["weather_chain_status"], "ok")
             self.assertEqual(overview["metrics"]["weather_market_question"], "Will the highest temperature in Seattle be between 36-37°F on March 13?")
             self.assertEqual(overview["metrics"]["weather_market_count"], 0)
-            self.assertEqual(len(system_rows), 9)
+            self.assertEqual(len(system_rows), 13)
             self.assertTrue(any(row["组件"] == "Calibration Profiles v2" for row in system_rows))
+            self.assertTrue(any(row["组件"] == "Settlement Feedback Closure" for row in system_rows))
 
     def test_load_home_decision_snapshot_surfaces_largest_blocker_and_recent_agent_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1246,6 +1419,7 @@ class UiDataAccessTest(unittest.TestCase):
                 {
                     "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(Path(tmpdir) / "missing_weather_report.json"),
+                    "ASTERION_DB_PATH": str(Path(tmpdir) / "missing_canonical.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_weather_runtime.duckdb"),
                     "ASTERION_READINESS_REPORT_JSON_PATH": str(Path(tmpdir) / "missing_readiness.json"),
                 },
@@ -1276,6 +1450,7 @@ class UiDataAccessTest(unittest.TestCase):
                 {
                     "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_DB_PATH": str(Path(tmpdir) / "missing_canonical.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_weather_runtime.duckdb"),
                     "ASTERION_READINESS_REPORT_JSON_PATH": str(Path(tmpdir) / "missing_readiness.json"),
                 },
@@ -1295,6 +1470,7 @@ class UiDataAccessTest(unittest.TestCase):
                 {
                     "ASTERION_UI_LITE_DB_PATH": str(Path(tmpdir) / "missing_ui_lite.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(report_path),
+                    "ASTERION_DB_PATH": str(Path(tmpdir) / "missing_canonical.duckdb"),
                     "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_weather_runtime.duckdb"),
                     "ASTERION_READINESS_REPORT_JSON_PATH": str(Path(tmpdir) / "missing_readiness.json"),
                 },
@@ -1430,7 +1606,7 @@ class UiDataAccessTest(unittest.TestCase):
                 status = load_operator_surface_status()
 
         self.assertEqual(status["market_chain"]["status"], "degraded_source")
-        self.assertEqual(status["agent_review"]["status"], "degraded_source")
+        self.assertEqual(status["agent_review"]["status"], "no_data")
 
     def test_load_operator_surface_status_marks_readiness_degraded_when_manifest_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1463,6 +1639,60 @@ class UiDataAccessTest(unittest.TestCase):
             ):
                 status = load_operator_surface_status()
         self.assertEqual(status["readiness"]["status"], "degraded_source")
+
+    def test_load_operator_surface_status_preserves_readiness_alias_when_surface_delivery_uses_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ui_lite.duckdb"
+            con = duckdb.connect(str(db_path))
+            try:
+                con.execute("CREATE SCHEMA ui")
+                con.execute(
+                    """
+                    CREATE TABLE ui.surface_delivery_summary(
+                        surface_id TEXT,
+                        primary_table TEXT,
+                        delivery_status TEXT,
+                        primary_source TEXT,
+                        fallback_origin TEXT,
+                        truth_check_status TEXT,
+                        truth_check_issue_count BIGINT,
+                        row_count BIGINT,
+                        last_refresh_ts TIMESTAMP,
+                        degraded_reason_codes_json TEXT,
+                        primary_score_label TEXT
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO ui.surface_delivery_summary VALUES
+                    ('home', 'ui.action_queue_summary', 'degraded_source', 'ui_lite', 'runtime_db', 'warn', 1, 5, '2026-03-21 10:00:00', '["fallback:runtime_db"]', 'surface_delivery_status'),
+                    ('markets', 'ui.market_opportunity_summary', 'ok', 'ui_lite', NULL, 'ok', 0, 8, '2026-03-21 10:00:00', '[]', 'surface_delivery_status'),
+                    ('agents', 'ui.opportunity_triage_summary', 'ok', 'ui_lite', NULL, 'ok', 0, 3, '2026-03-21 10:00:00', '[]', 'surface_delivery_status'),
+                    ('system', 'ui.system_runtime_summary', 'ok', 'ui_lite', NULL, 'ok', 0, 1, '2026-03-21 10:00:00', '[]', 'surface_delivery_status')
+                    """
+                )
+            finally:
+                con.close()
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ASTERION_UI_LITE_DB_PATH": str(db_path),
+                    "ASTERION_READINESS_REPORT_JSON_PATH": str(Path(tmpdir) / "missing_readiness.json"),
+                    "ASTERION_REAL_WEATHER_CHAIN_REPORT_PATH": str(Path(tmpdir) / "missing_weather_report.json"),
+                    "ASTERION_REAL_WEATHER_CHAIN_DB_PATH": str(Path(tmpdir) / "missing_weather_runtime.duckdb"),
+                },
+                clear=False,
+            ):
+                status = load_operator_surface_status()
+                sidebar_truth = load_boundary_sidebar_truth()
+
+        self.assertEqual(status["readiness"]["status"], "degraded_source")
+        self.assertEqual(status["readiness"]["source"], "runtime_db")
+        self.assertEqual(status["agent_review"]["status"], "ok")
+        self.assertEqual(status["market_chain"]["status"], "ok")
+        self.assertEqual(sidebar_truth["status"], "degraded_source")
 
 
 if __name__ == "__main__":

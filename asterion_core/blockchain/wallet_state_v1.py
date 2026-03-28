@@ -15,6 +15,7 @@ from asterion_core.contracts import (
     ExternalBalanceObservationKind,
     stable_object_id,
 )
+from asterion_core.blockchain.rpc_http import build_polygon_rpc_request_kwargs
 
 
 ERC20_ABI = [
@@ -168,7 +169,12 @@ class PolygonWalletStateReader:
         last_error: Exception | None = None
         for rpc_url in self._rpc_urls:
             try:
-                web3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+                web3 = Web3(
+                    Web3.HTTPProvider(
+                        rpc_url,
+                        request_kwargs=build_polygon_rpc_request_kwargs(timeout_seconds=10.0),
+                    )
+                )
                 observed_chain_id = int(web3.eth.chain_id)
                 if observed_chain_id != self._chain_id:
                     raise RuntimeError(

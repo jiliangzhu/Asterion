@@ -1,7 +1,7 @@
 # Asterion Implementation Index
 
 **版本**: v1.6
-**更新日期**: 2026-03-21
+**更新日期**: 2026-03-22
 **目标**: 作为 `docs/10-implementation/` 的统一入口，按“版本桶 -> 阶段计划 / 检查清单 / runbook / 迁移台账 / module notes”分类组织实施文档，便于快速定位 active version 与 historical versions 的 canonical materials。
 
 > 当前仓库阶段状态：`P4 accepted; post-P4 remediation accepted; v2.0 implementation active`
@@ -53,10 +53,16 @@ docs/10-implementation/
 
 - [V2_Implementation_Plan.md](./versions/v2.0/phase-plans/V2_Implementation_Plan.md)
   - 当前唯一 active implementation entry；作为 umbrella contract，已锁定 `Weather-first` v2.0 的 workstreams、phases、planned interfaces 与 acceptance 结构
+- [P10_Implementation_Plan.md](./versions/v2.0/phase-plans/P10_Implementation_Plan.md)
+  - 最近 accepted tranche record；固定收口 assessment 点名的 pre-agent deterministic ROI fixes 与 execution-intelligence foundation
+- [P10_Closeout_Checklist.md](./versions/v2.0/checklists/P10_Closeout_Checklist.md)
+  - 更早 accepted tranche 的 closeout checklist；固定收口 `PRAGMA` regression repair、execution-intelligence、priors grain 与 allocator scheduling uplift
+- [P11_Implementation_Plan.md](./versions/v2.0/phase-plans/P11_Implementation_Plan.md)
+  - 最近 accepted tranche record；`Opportunity Triage / Execution Intelligence Agent` 的 accepted closeout 基线已固定到这里
 - [P9_Implementation_Plan.md](./versions/v2.0/phase-plans/P9_Implementation_Plan.md)
-  - 当前 tranche-specific implementation plan；`Phase 9 — Operator Surface Delivery and Throughput Scaling` 已进入 `core implemented / closeout pending`
+  - 更早的 tranche-specific implementation record；`Phase 9 — Operator Surface Delivery and Throughput Scaling` 的 delivery baseline 已带入 `P10`
 - [P8_Implementation_Plan.md](./versions/v2.0/phase-plans/P8_Implementation_Plan.md)
-  - 最近 accepted tranche record；保留 `Phase 8 — Calibration Hard Gates and Scaling-Aware Capital Discipline` 的 accepted closeout 基线
+  - 更早 accepted tranche record；保留 `Phase 8 — Calibration Hard Gates and Scaling-Aware Capital Discipline` 的 accepted closeout 基线
 - [P7_Implementation_Plan.md](./versions/v2.0/phase-plans/P7_Implementation_Plan.md)
   - accepted closeout record；保留 `Phase 7 — Deployable Rerank, Allocator v2, and Execution Economics Closure` 的已交付 closeout 基线
 - [P6_Implementation_Plan.md](./versions/v2.0/phase-plans/P6_Implementation_Plan.md)
@@ -74,8 +80,12 @@ docs/10-implementation/
 
 - [Checklist_Index.md](./checklists/Checklist_Index.md)
 - [V2_Closeout_Checklist.md](./versions/v2.0/checklists/V2_Closeout_Checklist.md)
+- [P10_Closeout_Checklist.md](./versions/v2.0/checklists/P10_Closeout_Checklist.md)
+  - 更早 accepted tranche 的 closeout checklist；固定收口 execution foundation repair、home queue cleanup、execution-intelligence、priors grain 与 allocator scheduling uplift
+- [P11_Closeout_Checklist.md](./versions/v2.0/checklists/P11_Closeout_Checklist.md)
+  - 最近 accepted tranche 的 closeout checklist；固定收口 replay/evaluation、advisory gating、failure isolation、system runtime summary 与 `P11` 文档同步
 - [P8_Closeout_Checklist.md](./versions/v2.0/checklists/P8_Closeout_Checklist.md)
-  - 最近 accepted tranche 的 closeout checklist；固定收口 calibration hard gate、scaling-aware capital discipline 与 fallback truth-source hardening
+  - historical accepted closeout checklist；固定收口 calibration hard gate、scaling-aware capital discipline 与 fallback truth-source hardening
 - [P7_Closeout_Checklist.md](./versions/v2.0/checklists/P7_Closeout_Checklist.md)
   - historical accepted closeout checklist；固定收口 rerank / paper / UI consistency、retrospective uplift integration 与 `P7` / `V2` wording drift
 - [P0_Closeout_Checklist.md](./versions/v1.0/checklists/P0_Closeout_Checklist.md)
@@ -214,22 +224,28 @@ docs/10-implementation/
 1. [Implementation_Index.md](./Implementation_Index.md)
 2. [V2_Implementation_Plan.md](./versions/v2.0/phase-plans/V2_Implementation_Plan.md)
    - 当前唯一 active implementation entry；作为 umbrella contract
-3. [P9_Implementation_Plan.md](./versions/v2.0/phase-plans/P9_Implementation_Plan.md)
-   - 当前 tranche-specific implementation plan；当前 `v2.0` 直接按这个 tranche 收口 operator surface delivery / throughput
-4. [P8_Implementation_Plan.md](./versions/v2.0/phase-plans/P8_Implementation_Plan.md)
-   - 最近 accepted tranche record；如需回看 calibration hard gate / scaling-aware capital discipline closeout，从这里进入
-5. [P7_Implementation_Plan.md](./versions/v2.0/phase-plans/P7_Implementation_Plan.md)
+3. [P10_Implementation_Plan.md](./versions/v2.0/phase-plans/P10_Implementation_Plan.md)
+   - 更早 accepted tranche record；当前 `v2.0` 已将 deterministic ROI repair / execution-intelligence foundation 收口到这里
+4. [P11_Implementation_Plan.md](./versions/v2.0/phase-plans/P11_Implementation_Plan.md)
+   - 最近 accepted tranche record；当前 advisory-only triage agent 的 accepted closeout 基线从这里进入
+5. [P11_Closeout_Checklist.md](./versions/v2.0/checklists/P11_Closeout_Checklist.md)
+   - 最近 accepted tranche 的 closeout checklist；用于锁住 `P11` 的最小验收面
+6. [P9_Implementation_Plan.md](./versions/v2.0/phase-plans/P9_Implementation_Plan.md)
+   - 更早的 tranche-specific implementation record；如需回看 operator surface delivery / throughput scaling baseline，从这里进入
+7. [P8_Implementation_Plan.md](./versions/v2.0/phase-plans/P8_Implementation_Plan.md)
+   - 更早 accepted tranche record；如需回看 calibration hard gate / scaling-aware capital discipline closeout，从这里进入
+8. [P7_Implementation_Plan.md](./versions/v2.0/phase-plans/P7_Implementation_Plan.md)
    - accepted closeout record；如需回看 deployable rerank / allocator v2 / economics closeout，从这里进入
-6. [P8_Closeout_Checklist.md](./versions/v2.0/checklists/P8_Closeout_Checklist.md)
-   - 最近 accepted tranche 的 closeout checklist；用于锁住 hard gate / scaling-aware policy / fallback truth-source acceptance
-6. [P6_Implementation_Plan.md](./versions/v2.0/phase-plans/P6_Implementation_Plan.md)
+9. [P8_Closeout_Checklist.md](./versions/v2.0/checklists/P8_Closeout_Checklist.md)
+   - historical accepted closeout checklist；用于回看 hard gate / scaling-aware policy / fallback truth-source acceptance
+10. [P6_Implementation_Plan.md](./versions/v2.0/phase-plans/P6_Implementation_Plan.md)
    - accepted tranche baseline record；如需回看 deployable baseline 的首轮收口，从这里进入
-7. [Post_P4_Remediation_Implementation_Plan.md](./versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
+11. [Post_P4_Remediation_Implementation_Plan.md](./versions/v1.0-remediation/phase-plans/Post_P4_Remediation_Implementation_Plan.md)
    - historical accepted remediation record，同时保留 `Post-P4 Phase 10` 到 `Post-P4 Phase 15`
-8. [Controlled_Live_Boundary_Design.md](../30-trading/Controlled_Live_Boundary_Design.md)
-9. [Operator_Console_Truth_Source_Design.md](../50-operations/Operator_Console_Truth_Source_Design.md)
-10. [Execution_Economics_Design.md](../30-trading/Execution_Economics_Design.md)
-11. [Forecast_Calibration_v2_Design.md](../40-weather/Forecast_Calibration_v2_Design.md)
+12. [Controlled_Live_Boundary_Design.md](../30-trading/Controlled_Live_Boundary_Design.md)
+13. [Operator_Console_Truth_Source_Design.md](../50-operations/Operator_Console_Truth_Source_Design.md)
+14. [Execution_Economics_Design.md](../30-trading/Execution_Economics_Design.md)
+15. [Forecast_Calibration_v2_Design.md](../40-weather/Forecast_Calibration_v2_Design.md)
 12. [UI_Read_Model_Design.md](../20-architecture/UI_Read_Model_Design.md)
 12. [V2_Closeout_Checklist.md](./versions/v2.0/checklists/V2_Closeout_Checklist.md)
 12. [Post_P4_P10_Closeout_Checklist.md](./versions/v1.0-remediation/checklists/Post_P4_P10_Closeout_Checklist.md)

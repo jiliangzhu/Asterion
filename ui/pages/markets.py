@@ -15,7 +15,12 @@ from ui.components import (
     render_section_header,
     render_state_card,
 )
-from ui.data_access import load_market_chain_analysis_data, load_operator_surface_status
+from ui.data_access import (
+    load_market_chain_analysis_data,
+    load_operator_surface_status,
+    write_opportunity_triage_operator_review_decision,
+)
+from ui.triage_localization import localize_reason_codes, localize_triage_frame, localize_triage_value
 
 
 def _format_value(value: object) -> str:
@@ -41,8 +46,15 @@ def _detail_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
 def _json_dict(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return value
-    if value in {None, ""}:
+    if value is None:
         return {}
+    if isinstance(value, str) and value == "":
+        return {}
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            value = value.item()
+        except Exception:
+            pass
     try:
         payload = json.loads(str(value))
     except Exception:  # noqa: BLE001
@@ -53,8 +65,24 @@ def _json_dict(value: object) -> dict[str, object]:
 def _json_list(value: object) -> list[object]:
     if isinstance(value, list):
         return value
-    if value in {None, ""}:
+    if isinstance(value, tuple):
+        return list(value)
+    if value is None:
         return []
+    if isinstance(value, str) and value == "":
+        return []
+    if hasattr(value, "tolist") and not isinstance(value, (str, bytes, dict)):
+        try:
+            converted = value.tolist()
+        except Exception:
+            converted = None
+        if isinstance(converted, list):
+            return converted
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            value = value.item()
+        except Exception:
+            pass
     try:
         payload = json.loads(str(value))
     except Exception:  # noqa: BLE001
@@ -72,6 +100,28 @@ def _preview_summary(selected_market: dict[str, object]) -> dict[str, object]:
         "preview_binding_limit_key": selected_market.get("preview_binding_limit_key") or preview_budget.get("preview_binding_limit_key"),
         "rerank_reason_codes": selected_market.get("rerank_reason_codes") or _json_list(selected_market.get("rerank_reason_codes_json")) or _json_list(budget_impact.get("rerank_reason_codes")),
     }
+
+
+def _submit_triage_action(
+    selected_market: dict[str, object],
+    *,
+    decision_status: str,
+    actor: str,
+    reason: str | None,
+) -> None:
+    invocation_id = str(selected_market.get("triage_latest_agent_invocation_id") or "")
+    market_id = str(selected_market.get("market_id") or "")
+    operator_action = str(selected_market.get("triage_recommended_operator_action") or "manual_review")
+    if not invocation_id or not market_id:
+        raise RuntimeError("missing triage invocation_id or market_id")
+    write_opportunity_triage_operator_review_decision(
+        market_id=market_id,
+        invocation_id=invocation_id,
+        decision_status=decision_status,
+        operator_action=operator_action,
+        actor=actor,
+        reason=reason,
+    )
 
 
 def _opportunity_thesis(selected_market: dict[str, object]) -> str:
@@ -152,7 +202,9 @@ def show() -> None:
     report = payload["weather_smoke_report"] or {}
     opportunities = payload["market_opportunities"]
     market_rows = payload["market_rows"]
+    localized_opportunities = localize_triage_frame(opportunities) if not opportunities.empty else opportunities
     display_rows = _build_market_table_rows(opportunities, market_rows)
+    localized_display_rows = localize_triage_frame(display_rows) if not display_rows.empty else display_rows
     discovery = report.get("market_discovery") or {}
     chain_status = report.get("chain_status") or ("initializing" if not report else "unknown")
     refresh_state = report.get("refresh_state")
@@ -208,7 +260,7 @@ def show() -> None:
                 [
                     f"source={discovery.get('market_source') or payload.get('market_opportunity_source')}",
                     f"horizon={discovery.get('selected_horizon_days') or 'n/a'}",
-                    f"selected={discovery.get('selected_market_count') or len(opportunities.index)}",
+                    f"selected={discovery.get('selected_market_count') or len(localized_opportunities.index)}",
                 ]
             )
         )
@@ -230,6 +282,8 @@ def show() -> None:
                     "recommended_size",
                     "allocation_status",
                     "source_badge",
+                    "triage_priority_band",
+                    "effective_triage_status",
                     "liquidity_proxy",
                     "mapping_confidence",
                     "source_freshness_status",
@@ -241,14 +295,27 @@ def show() -> None:
                 ]
                 if column in display_rows.columns
             ]
-            st.dataframe(display_rows[coverage_columns], width="stretch", hide_index=True)
+            st.dataframe(
+                localized_display_rows[coverage_columns].rename(
+                    columns={
+                        "triage_priority_band": "分诊优先级",
+                        "effective_triage_status": "分诊状态",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
 
     with overview_right:
         render_section_header("Top opportunity", subtitle="把最佳市场的机会结论、gate 和 deployable ladder 放到首屏右侧。")
         if display_rows.empty:
             render_empty_state("No ranked opportunity", "当前没有市场进入机会排序。")
         else:
-            top_display_row = dict(top_row.to_dict()) if not opportunities.empty else dict(display_rows.iloc[0].to_dict())
+            top_display_row = (
+                dict(localized_opportunities.iloc[0].to_dict())
+                if not localized_opportunities.empty
+                else dict(localized_display_rows.iloc[0].to_dict())
+            )
             render_state_card("opportunity thesis", _opportunity_thesis(top_display_row), tone="info")
             render_detail_key_value(
                 [
@@ -284,6 +351,8 @@ def show() -> None:
                     ("Surface Delivery", top_display_row.get("surface_delivery_status")),
                     ("Fallback Origin", top_display_row.get("surface_fallback_origin")),
                     ("Last Refresh", top_display_row.get("surface_last_refresh_ts")),
+                    ("Triage Priority", top_display_row.get("triage_priority_band")),
+                    ("Effective Triage Status", top_display_row.get("effective_triage_status")),
                 ]
             )
             render_reason_chip_row(top_display_row.get("calibration_gate_reason_codes") or [], empty_label="calibration_gate:clear")
@@ -357,6 +426,7 @@ def show() -> None:
                 "source_badge",
                 "surface_delivery_status",
                 "surface_fallback_origin",
+                "effective_triage_status",
                 "liquidity_proxy",
                 "mapping_confidence",
                 "source_freshness_status",
@@ -397,8 +467,8 @@ def show() -> None:
         render_state_card("opportunity thesis", _opportunity_thesis(selected_market), tone="info")
         render_delivery_badge(selected_market.get("surface_delivery_status"), origin=selected_market.get("surface_fallback_origin"))
 
-        overview_tab, deployment_tab, calibration_tab, evidence_tab, diagnostics_tab = st.tabs(
-            ["Overview", "Deployment", "Calibration", "Evidence", "Diagnostics"]
+        overview_tab, deployment_tab, calibration_tab, triage_tab, evidence_tab, diagnostics_tab = st.tabs(
+            ["Overview", "Deployment", "Calibration", "Triage", "Evidence", "Diagnostics"]
         )
 
         with overview_tab:
@@ -477,6 +547,62 @@ def show() -> None:
             )
             render_reason_chip_row(selected_market.get("calibration_gate_reason_codes") or [], empty_label="calibration_gate:clear")
 
+        with triage_tab:
+            render_section_header("Triage", subtitle="P11 triage overlay 只提供 advisory-only 建议；Markets 是允许写 operator 决策的入口之一。")
+            localized_selected_market = {
+                key: localize_triage_value(key, value)
+                for key, value in selected_market.items()
+            }
+            render_detail_key_value(
+                [
+                    ("分诊状态", localized_selected_market.get("effective_triage_status")),
+                    ("建议门控", localized_selected_market.get("triage_advisory_gate_status")),
+                    ("优先级", localized_selected_market.get("triage_priority_band")),
+                    ("建议动作", localized_selected_market.get("triage_recommended_operator_action")),
+                    ("最近一次 agent 状态", localized_selected_market.get("triage_latest_agent_status")),
+                    ("最近一次评估方法", localized_selected_market.get("triage_latest_evaluation_method")),
+                    ("最近一次评估结果", localized_selected_market.get("triage_latest_evaluation_verified")),
+                    ("最近一次人工复核", localized_selected_market.get("triage_latest_operator_review_status")),
+                    ("最近一次人工动作", localized_selected_market.get("triage_latest_operator_action")),
+                    ("Latest Invocation", selected_market.get("triage_latest_agent_invocation_id")),
+                ]
+            )
+            render_reason_chip_row(
+                localize_reason_codes(selected_market.get("triage_reason_codes") or [], empty_label="triage:none"),
+                empty_label="暂无分诊原因",
+            )
+            render_reason_chip_row(
+                localize_reason_codes(selected_market.get("triage_execution_risk_flags") or [], empty_label="execution_risk:none"),
+                empty_label="暂无执行风险",
+            )
+            render_reason_chip_row(
+                localize_reason_codes(selected_market.get("triage_advisory_gate_reason_codes") or [], empty_label="triage_gate:enabled"),
+                empty_label="分诊建议已启用",
+            )
+            triage_reason = st.text_input("处理说明", key=f"triage_reason_{selected_market_id}")
+            triage_actor = st.text_input("处理人", value="operator", key=f"triage_actor_{selected_market_id}")
+            triage_cols = st.columns(3)
+            triage_actions = [
+                ("接受", "accepted"),
+                ("忽略", "ignored"),
+                ("延后", "deferred"),
+            ]
+            for col, (label, decision_status) in zip(triage_cols, triage_actions, strict=True):
+                with col:
+                    if st.button(label, key=f"triage_{decision_status}_{selected_market_id}", use_container_width=True):
+                        try:
+                            _submit_triage_action(
+                                selected_market,
+                                decision_status=decision_status,
+                                actor=triage_actor or "operator",
+                                reason=triage_reason or None,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            st.error(str(exc))
+                        else:
+                            st.success(f"{selected_market_id} -> {localize_triage_value('latest_operator_review_status', decision_status)}")
+                            st.rerun()
+
         with evidence_tab:
             render_section_header("Deployable ladder", subtitle="让 operator 直接看到 base -> pre-budget -> final 的层级关系。")
             st.caption(
@@ -553,6 +679,29 @@ def show() -> None:
                 render_reason_chip_row(why_ranked.get("calibration_gate_reason_codes") or [], empty_label="calibration_gate:clear")
                 render_reason_chip_row(why_ranked.get("rerank_reason_codes") or [], empty_label="rerank:none")
                 render_reason_chip_row(why_ranked.get("capital_scaling_reason_codes") or [], empty_label="scaling:none")
+                render_reason_chip_row(why_ranked.get("microstructure_reason_codes") or [], empty_label="microstructure:none")
+
+            microstructure = selected_market.get("market_microstructure") or {}
+            if microstructure:
+                render_section_header("Execution intelligence", subtitle="deterministic microstructure summary，给 operator 和后续 P11 request assembly 提供 persisted facts。")
+                render_detail_key_value(
+                    [
+                        ("Execution Intelligence Score", microstructure.get("execution_intelligence_score") or selected_market.get("execution_intelligence_score")),
+                        ("Quote Imbalance Score", microstructure.get("quote_imbalance_score") or selected_market.get("quote_imbalance_score")),
+                        ("Top of Book Stability", microstructure.get("top_of_book_stability") or selected_market.get("top_of_book_stability")),
+                        ("Book Update Intensity", microstructure.get("book_update_intensity") or selected_market.get("book_update_intensity")),
+                        ("Spread Regime", microstructure.get("spread_regime") or selected_market.get("spread_regime")),
+                        ("Visible Size Shock", microstructure.get("visible_size_shock_flag") if microstructure.get("visible_size_shock_flag") is not None else selected_market.get("visible_size_shock_flag")),
+                        ("Book Pressure Side", microstructure.get("book_pressure_side") or selected_market.get("book_pressure_side")),
+                        ("Expected Capture Regime", microstructure.get("expected_capture_regime") or selected_market.get("expected_capture_regime")),
+                        ("Expected Slippage Regime", microstructure.get("expected_slippage_regime") or selected_market.get("expected_slippage_regime")),
+                        ("Materialized At", microstructure.get("materialized_at")),
+                    ]
+                )
+                render_reason_chip_row(
+                    _json_list(microstructure.get("reason_codes_json")) or selected_market.get("execution_intelligence_reason_codes") or [],
+                    empty_label="microstructure:none",
+                )
 
             render_section_header("Execution reality", subtitle="这里展示的是 executed evidence 与 research decomposition，不代表 execution certainty。")
             executed_evidence = selected_market.get("executed_evidence") or {}

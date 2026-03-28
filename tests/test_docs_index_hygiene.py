@@ -94,7 +94,7 @@ class DocsIndexHygieneTest(unittest.TestCase):
             / "versions"
             / "v2.0"
             / "phase-plans"
-            / "P9_Implementation_Plan.md"
+            / "P11_Implementation_Plan.md"
         )
         self.assertTrue(tranche_plan.exists())
         docs = [
@@ -107,6 +107,27 @@ class DocsIndexHygieneTest(unittest.TestCase):
         ]
         for path in docs:
             text = path.read_text(encoding="utf-8")
+            self.assertIn("P11_Implementation_Plan.md", text)
+
+    def test_recent_and_historical_tranche_plans_are_indexed(self) -> None:
+        follow_on_plans = [
+            ROOT / "docs" / "10-implementation" / "versions" / "v2.0" / "phase-plans" / "P10_Implementation_Plan.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v2.0" / "phase-plans" / "P9_Implementation_Plan.md",
+        ]
+        for path in follow_on_plans:
+            self.assertTrue(path.exists())
+        docs = [
+            ROOT / "README.md",
+            ROOT / "docs" / "00-overview" / "Documentation_Index.md",
+            ROOT / "docs" / "10-implementation" / "Implementation_Index.md",
+            ROOT / "docs" / "00-overview" / "versions" / "v2.0" / "Asterion_Project_Plan.md",
+            ROOT / "docs" / "00-overview" / "versions" / "v2.0" / "DEVELOPMENT_ROADMAP.md",
+            ROOT / "docs" / "10-implementation" / "versions" / "v2.0" / "phase-plans" / "V2_Implementation_Plan.md",
+        ]
+        for path in docs:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("P10_Implementation_Plan.md", text)
+            self.assertIn("P11_Implementation_Plan.md", text)
             self.assertIn("P9_Implementation_Plan.md", text)
 
 

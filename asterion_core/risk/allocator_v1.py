@@ -419,6 +419,14 @@ def materialize_capital_allocation(
                 capital_scaling_reason_codes.append("calibration_gate_review_required")
             else:
                 capital_scaling_reason_codes.append("calibration_gate_research_only")
+        sizing_adjustment = _apply_allocator_sizing_tightening(
+            decision=decision,
+            candidate_size=candidate_size,
+            rounding_increment=rounding_increment,
+            concentration_penalty=concentration_penalty,
+        )
+        candidate_size = sizing_adjustment["candidate_size"]
+        capital_scaling_reason_codes.extend(sizing_adjustment["sizing_reason_codes"])
 
         if str(decision.side).lower() == "buy":
             run_budget_size = (
@@ -446,7 +454,15 @@ def materialize_capital_allocation(
 
         recommended_notional = candidate_size * reference_price
         deployable_expected_pnl = unit_expected_dollar_pnl * candidate_size
-        deployable_ranking_score = deployable_expected_pnl
+        deployable_score_multiplier = max(
+            Decimal("0"),
+            Decimal("1")
+            - (capital_scarcity_penalty * Decimal("0.40"))
+            - (_decimal(sizing_adjustment["uncertainty_sizing_penalty"]) * Decimal("0.20"))
+            - (_decimal(sizing_adjustment["execution_intelligence_penalty"]) * Decimal("0.20"))
+            - (concentration_penalty * Decimal("0.15")),
+        )
+        deployable_ranking_score = deployable_expected_pnl * deployable_score_multiplier
         if str(decision.side).lower() == "buy" and candidate_size > Decimal("0"):
             if capital_policy_id is not None:
                 capital_remaining_budget[capital_policy_id] = max(Decimal("0"), remaining_run_budget - recommended_notional)
@@ -530,6 +546,11 @@ def materialize_capital_allocation(
                     "max_deployable_size": float(max_deployable_size),
                     "capital_scarcity_penalty": float(capital_scarcity_penalty),
                     "concentration_penalty": float(concentration_penalty),
+                    "sizing": {
+                        "uncertainty_sizing_penalty": float(sizing_adjustment["uncertainty_sizing_penalty"]),
+                        "execution_intelligence_penalty": float(sizing_adjustment["execution_intelligence_penalty"]),
+                        "sizing_reason_codes": list(sizing_adjustment["sizing_reason_codes"]),
+                    },
                     "capital_policy_id": capital_policy_id,
                     "capital_policy_version": capital_policy_version,
                     "regime_bucket": preview.get("regime_bucket"),
@@ -670,6 +691,14 @@ def _build_structural_preview(
             if calibration_gate_status == "review_required"
             else "calibration_gate_research_only"
         )
+    sizing_adjustment = _apply_allocator_sizing_tightening(
+        decision=decision,
+        candidate_size=candidate_size,
+        rounding_increment=rounding_increment,
+        concentration_penalty=concentration_penalty,
+    )
+    candidate_size = sizing_adjustment["candidate_size"]
+    capital_scaling_reason_codes.extend(sizing_adjustment["sizing_reason_codes"])
     preview_notional = candidate_size * reference_price
     preview_expected_pnl = unit_expected_dollar_pnl * candidate_size
     return {
@@ -692,6 +721,9 @@ def _build_structural_preview(
         "preview_binding_limit_scope": binding_limit_scope,
         "preview_binding_limit_key": binding_limit_key,
         "preview_concentration_penalty": float(concentration_penalty),
+        "preview_uncertainty_sizing_penalty": float(sizing_adjustment["uncertainty_sizing_penalty"]),
+        "preview_execution_intelligence_penalty": float(sizing_adjustment["execution_intelligence_penalty"]),
+        "preview_sizing_reason_codes": tuple(sizing_adjustment["sizing_reason_codes"]),
         "capital_scaling_reason_codes": tuple(capital_scaling_reason_codes),
         "reason_codes": reason_codes,
     }
@@ -846,6 +878,9 @@ def _preview_budget_impact(preview: dict[str, Any]) -> dict[str, Any]:
         "preview_binding_limit_scope": preview["preview_binding_limit_scope"],
         "preview_binding_limit_key": preview["preview_binding_limit_key"],
         "preview_concentration_penalty": float(preview["preview_concentration_penalty"]),
+        "preview_uncertainty_sizing_penalty": float(preview.get("preview_uncertainty_sizing_penalty") or 0.0),
+        "preview_execution_intelligence_penalty": float(preview.get("preview_execution_intelligence_penalty") or 0.0),
+        "preview_sizing_reason_codes": list(preview.get("preview_sizing_reason_codes") or ()),
     }
 
 
@@ -1458,6 +1493,60 @@ def _round_down_size(size: Decimal, increment: Decimal) -> Decimal:
         return size
     steps = (size / increment).to_integral_value(rounding=ROUND_DOWN)
     return steps * increment
+
+
+def _apply_allocator_sizing_tightening(
+    *,
+    decision: StrategyDecision,
+    candidate_size: Decimal,
+    rounding_increment: Decimal,
+    concentration_penalty: Decimal,
+) -> dict[str, Any]:
+    if candidate_size <= Decimal("0"):
+        return {
+            "candidate_size": Decimal("0"),
+            "uncertainty_sizing_penalty": Decimal("0"),
+            "execution_intelligence_penalty": Decimal("0"),
+            "sizing_reason_codes": (),
+        }
+    pricing_context = dict(decision.pricing_context_json or {})
+    quality_confidence = min(
+        Decimal("1"),
+        max(Decimal("0"), _decimal(pricing_context.get("quality_confidence_multiplier") or 1.0)),
+    )
+    uncertainty_penalty = min(max(Decimal("1") - quality_confidence, Decimal("0")), Decimal("1"))
+    execution_intelligence_score = min(
+        Decimal("1"),
+        max(
+            Decimal("0"),
+            _decimal(
+                pricing_context.get("execution_intelligence_score")
+                or pricing_context.get("top_of_book_stability")
+                or 1.0
+            ),
+        ),
+    )
+    execution_intelligence_penalty = min(max(Decimal("1") - execution_intelligence_score, Decimal("0")), Decimal("1"))
+    combined_penalty = min(
+        Decimal("0.85"),
+        (uncertainty_penalty * Decimal("0.35"))
+        + (execution_intelligence_penalty * Decimal("0.45"))
+        + (concentration_penalty * Decimal("0.35")),
+    )
+    adjusted_size = _round_down_size(candidate_size * (Decimal("1") - combined_penalty), rounding_increment)
+    reason_codes: list[str] = []
+    if uncertainty_penalty >= Decimal("0.15"):
+        reason_codes.append("uncertainty_sizing_tighten")
+    if execution_intelligence_penalty >= Decimal("0.15"):
+        reason_codes.append("execution_intelligence_tighten")
+    if concentration_penalty >= Decimal("0.10"):
+        reason_codes.append("concentration_sizing_tighten")
+    return {
+        "candidate_size": adjusted_size,
+        "uncertainty_sizing_penalty": uncertainty_penalty,
+        "execution_intelligence_penalty": execution_intelligence_penalty,
+        "sizing_reason_codes": tuple(reason_codes),
+    }
 
 
 def _coerce_optional_text(value: Any) -> str | None:

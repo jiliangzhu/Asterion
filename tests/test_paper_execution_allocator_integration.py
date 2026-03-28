@@ -42,17 +42,26 @@ class PaperExecutionAllocatorIntegrationTest(unittest.TestCase):
                 )
             )
 
-    def _seed_common(self, con, *, include_policy: bool, max_buy_notional_per_run: float | None = None) -> None:
+    def _seed_common(
+        self,
+        con,
+        *,
+        include_policy: bool,
+        max_buy_notional_per_run: float | None = None,
+        reference_price: float = 0.40,
+        min_order_size: float = 1.0,
+    ) -> None:
         con.execute(
             """
             INSERT INTO capability.market_capabilities (
                 token_id, market_id, condition_id, outcome, tick_size, fee_rate_bps, neg_risk,
                 min_order_size, tradable, fees_enabled, data_sources, updated_at
             ) VALUES (
-                'tok_yes', 'mkt_weather_1', 'cond_weather_1', 'YES', 0.01, 30, FALSE, 1.0, TRUE, TRUE,
+                'tok_yes', 'mkt_weather_1', 'cond_weather_1', 'YES', 0.01, 30, FALSE, ?, TRUE, TRUE,
                 '["gamma","clob_public"]', '2026-03-10 10:00:00'
             )
-            """
+            """,
+            [min_order_size],
         )
         con.execute(
             """
@@ -69,9 +78,10 @@ class PaperExecutionAllocatorIntegrationTest(unittest.TestCase):
                 pricing_context_json, created_at
             ) VALUES (
                 'snap_yes', 'fv_yes', 'frun_weather_1', 'mkt_weather_1', 'cond_weather_1', 'tok_yes', 'YES',
-                0.40, 0.60, 800, 500, 'TAKE', 'BUY', 'allocator test', '{"ranking_score": 0.9}', '2026-03-10 10:00:00'
+                ?, 0.60, 800, 500, 'TAKE', 'BUY', 'allocator test', '{"ranking_score": 0.9}', '2026-03-10 10:00:00'
             )
-            """
+            """,
+            [reference_price],
         )
         con.execute(
             """
@@ -211,6 +221,76 @@ class PaperExecutionAllocatorIntegrationTest(unittest.TestCase):
         self.assertIn("regime_bucket", provenance)
         self.assertIn("calibration_gate_status", provenance)
 
+    def test_paper_execution_floors_ticket_size_to_market_min_order_size(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "paper_alloc_floor.duckdb")
+            queue_path = str(Path(tmpdir) / "write_queue.sqlite")
+            self._setup_db(db_path)
+            seed_con = duckdb.connect(db_path)
+            try:
+                self._seed_common(
+                    seed_con,
+                    include_policy=True,
+                    max_buy_notional_per_run=1.6,
+                    reference_price=0.40,
+                    min_order_size=5.0,
+                )
+            finally:
+                seed_con.close()
+            reader_env = {
+                "ASTERION_STRICT_SINGLE_WRITER": "1",
+                "ASTERION_DB_ROLE": "reader",
+                "WRITERD": "0",
+            }
+            with patch.dict("os.environ", reader_env, clear=False):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    result = run_weather_paper_execution_job(
+                        con,
+                        WriteQueueConfig(path=queue_path),
+                        params_json={
+                            "wallet_id": "wallet_weather_1",
+                            "strategy_registrations": [
+                                {
+                                    "strategy_id": "weather_primary",
+                                    "strategy_version": "v1",
+                                    "priority": 1,
+                                    "route_action": "FAK",
+                                    "size": "10",
+                                    "min_edge_bps": 500,
+                                }
+                            ],
+                            "snapshot_ids": ["snap_yes"],
+                        },
+                        observed_at=datetime(2026, 3, 10, 10, 6, tzinfo=UTC),
+                    )
+                finally:
+                    con.close()
+
+            self._drain_queue(db_path=db_path, queue_path=queue_path)
+            with patch.dict("os.environ", reader_env, clear=False):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    ticket_size, provenance_json = con.execute(
+                        "SELECT size, provenance_json FROM runtime.trade_tickets"
+                    ).fetchone()
+                    order_size = con.execute("SELECT size FROM trading.orders").fetchone()[0]
+                    allocation_status, recommended_size = con.execute(
+                        "SELECT allocation_status, recommended_size FROM runtime.allocation_decisions"
+                    ).fetchone()
+                finally:
+                    con.close()
+
+        provenance = json.loads(provenance_json)
+        self.assertEqual(result.metadata["resized_allocation_count"], 1)
+        self.assertEqual(allocation_status, "resized")
+        self.assertEqual(float(recommended_size), 4.0)
+        self.assertEqual(float(ticket_size), 5.0)
+        self.assertEqual(float(order_size), 5.0)
+        self.assertTrue(provenance["min_order_size_floor_applied"])
+        self.assertEqual(provenance["recommended_size"], "4.0")
+        self.assertEqual(provenance["min_order_size"], "5.00000000")
+
     def test_policy_missing_blocks_order_creation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "paper_alloc.duckdb")
@@ -268,6 +348,69 @@ class PaperExecutionAllocatorIntegrationTest(unittest.TestCase):
         self.assertIn("allocation_blocked", reason_codes)
         self.assertEqual(allocation, "policy_missing")
         self.assertEqual(metrics["allocation_status"], "policy_missing")
+
+    def test_paper_execution_aligns_reference_price_to_tick_size(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "paper_align.duckdb")
+            queue_path = str(Path(tmpdir) / "write_queue.sqlite")
+            self._setup_db(db_path)
+            seed_con = duckdb.connect(db_path)
+            try:
+                self._seed_common(
+                    seed_con,
+                    include_policy=True,
+                    max_buy_notional_per_run=10.0,
+                    reference_price=0.655,
+                )
+            finally:
+                seed_con.close()
+            reader_env = {
+                "ASTERION_STRICT_SINGLE_WRITER": "1",
+                "ASTERION_DB_ROLE": "reader",
+                "WRITERD": "0",
+            }
+            with patch.dict("os.environ", reader_env, clear=False):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    result = run_weather_paper_execution_job(
+                        con,
+                        WriteQueueConfig(path=queue_path),
+                        params_json={
+                            "wallet_id": "wallet_weather_1",
+                            "strategy_registrations": [
+                                {
+                                    "strategy_id": "weather_primary",
+                                    "strategy_version": "v1",
+                                    "priority": 1,
+                                    "route_action": "FAK",
+                                    "size": "10",
+                                    "min_edge_bps": 500,
+                                }
+                            ],
+                            "snapshot_ids": ["snap_yes"],
+                        },
+                        observed_at=datetime(2026, 3, 10, 10, 6, tzinfo=UTC),
+                    )
+                finally:
+                    con.close()
+
+            self._drain_queue(db_path=db_path, queue_path=queue_path)
+            with patch.dict("os.environ", reader_env, clear=False):
+                con = connect_duckdb(DuckDBConfig(db_path=db_path, ddl_path=None))
+                try:
+                    ticket_price, provenance_json = con.execute(
+                        "SELECT reference_price, provenance_json FROM runtime.trade_tickets"
+                    ).fetchone()
+                    order_price = con.execute("SELECT price FROM trading.orders").fetchone()[0]
+                finally:
+                    con.close()
+
+        provenance = json.loads(provenance_json)
+        self.assertEqual(result.metadata["allowed_order_count"], 1)
+        self.assertEqual(float(ticket_price), 0.65)
+        self.assertEqual(float(order_price), 0.65)
+        self.assertEqual(Decimal(provenance["reference_price_unaligned"]), Decimal("0.655"))
+        self.assertEqual(Decimal(provenance["reference_price_aligned"]), Decimal("0.65"))
 
 
 if __name__ == "__main__":

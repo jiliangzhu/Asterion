@@ -8,4 +8,5 @@ TABLES = (
     "ui.daily_ops_summary",
     "ui.daily_review_input",
     "ui.agent_review_summary",
+    "ui.opportunity_triage_summary",
 )

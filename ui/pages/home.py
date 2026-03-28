@@ -16,6 +16,7 @@ from ui.components import (
     render_state_card,
 )
 from ui.data_access import load_home_decision_snapshot
+from ui.triage_localization import localize_reason_codes, localize_triage_frame, localize_triage_value
 
 
 def _format_metric_value(value: object) -> str:
@@ -29,8 +30,15 @@ def _format_metric_value(value: object) -> str:
 def _json_dict(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return value
-    if value in {None, ""}:
+    if value is None:
         return {}
+    if isinstance(value, str) and value == "":
+        return {}
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            value = value.item()
+        except Exception:
+            pass
     try:
         parsed = json.loads(str(value))
     except Exception:  # noqa: BLE001
@@ -41,8 +49,24 @@ def _json_dict(value: object) -> dict[str, object]:
 def _json_list(value: object) -> list[object]:
     if isinstance(value, list):
         return value
-    if value in {None, ""}:
+    if isinstance(value, tuple):
+        return list(value)
+    if value is None:
         return []
+    if isinstance(value, str) and value == "":
+        return []
+    if hasattr(value, "tolist") and not isinstance(value, (str, bytes, dict)):
+        try:
+            converted = value.tolist()
+        except Exception:
+            converted = None
+        if isinstance(converted, list):
+            return converted
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            value = value.item()
+        except Exception:
+            pass
     try:
         parsed = json.loads(str(value))
     except Exception:  # noqa: BLE001
@@ -80,13 +104,18 @@ def show() -> None:
     wallet_attention = overview.get("wallet_attention", pd.DataFrame())
     top_opportunities = overview.get("top_opportunities", pd.DataFrame())
     action_queue = overview.get("action_queue", pd.DataFrame())
+    blocked_backlog = overview.get("blocked_backlog", pd.DataFrame())
     largest_blocker = overview.get("largest_blocker", {"source": "unknown", "summary": "unknown"})
     recent_agent = overview.get("recent_agent_summary", {})
     agent_data = overview.get("agent_data", {}).get("frame", pd.DataFrame())
+    triage_data = overview.get("triage_data", {}).get("frame", pd.DataFrame())
     evidence = overview.get("readiness_evidence", {})
     predicted_vs_realized = overview.get("predicted_vs_realized_snapshot", pd.DataFrame())
     degraded_inputs = overview.get("degraded_inputs", [])
     uncaptured_high_edge = overview.get("uncaptured_high_edge_markets", pd.DataFrame())
+    localized_action_queue = localize_triage_frame(action_queue) if not action_queue.empty else action_queue
+    localized_top_opportunities = localize_triage_frame(top_opportunities) if not top_opportunities.empty else top_opportunities
+    localized_triage_data = localize_triage_frame(triage_data) if not triage_data.empty else triage_data
 
     render_page_intro(
         "Decision Console",
@@ -165,6 +194,9 @@ def show() -> None:
                     "deployable_notional",
                     "max_deployable_size",
                     "capture_probability",
+                    "execution_intelligence_score",
+                    "spread_regime",
+                    "expected_capture_regime",
                     "recommended_size",
                     "allocation_status",
                     "surface_delivery_status",
@@ -190,6 +222,7 @@ def show() -> None:
                     f"capture={_format_metric_value(why_ranked.get('capture_probability'))}, "
                     f"ev={_format_metric_value(why_ranked.get('expected_dollar_pnl'))}, "
                     f"risk={_format_metric_value(why_ranked.get('risk_penalty'))}, "
+                    f"micro={_format_metric_value(why_ranked.get('execution_intelligence_score'))}, "
                     f"feedback={_format_metric_value(why_ranked.get('feedback_penalty'))}"
                 )
             st.caption("deployable: " + " | ".join(_allocation_overlay_summary(top_row)))
@@ -286,6 +319,9 @@ def show() -> None:
                     "surface_delivery_status",
                     "surface_fallback_origin",
                     "surface_last_refresh_ts",
+                    "priority_band",
+                    "recommended_operator_action",
+                    "effective_triage_status",
                     "requested_size",
                     "recommended_size",
                     "preview_binding_limit_scope",
@@ -297,7 +333,20 @@ def show() -> None:
                 ]
                 if column in action_queue.columns
             ]
-            st.dataframe(action_queue[columns].head(10), width="stretch", hide_index=True)
+            st.dataframe(
+                localized_action_queue[columns]
+                .head(10)
+                .rename(
+                    columns={
+                        "priority_band": "分诊优先级",
+                        "recommended_operator_action": "分诊建议动作",
+                        "effective_triage_status": "分诊状态",
+                        "advisory_gate_status": "分诊门控",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
     with row3b_right:
         render_section_header("Allocation overlay", subtitle="这里解释推荐 size、当前 gate 与 capital policy，不替代主排序。")
         render_detail_key_value(
@@ -308,10 +357,13 @@ def show() -> None:
                 ("review_required", _format_metric_value(metrics.get("review_required_count"))),
                 ("blocked", _format_metric_value(metrics.get("blocked_count"))),
                 ("research_only", _format_metric_value(metrics.get("research_only_count"))),
+                ("triage_rows", _format_metric_value(len(localized_triage_data.index))),
+                ("triage_enabled", _format_metric_value((triage_data["advisory_gate_status"] == "enabled").sum() if ("advisory_gate_status" in triage_data.columns and not triage_data.empty) else 0)),
+                ("triage_experimental", _format_metric_value((triage_data["advisory_gate_status"] == "experimental").sum() if ("advisory_gate_status" in triage_data.columns and not triage_data.empty) else 0)),
             ]
         )
         if not top_opportunities.empty:
-            top_row = top_opportunities.iloc[0].to_dict()
+            top_row = localized_top_opportunities.iloc[0].to_dict()
             render_detail_key_value(
                 [
                     ("recommended_size", _format_metric_value(top_row.get("recommended_size"))),
@@ -322,6 +374,10 @@ def show() -> None:
                     ("pre_budget_deployable_expected_pnl", _format_metric_value(top_row.get("pre_budget_deployable_expected_pnl"))),
                     ("calibration_gate_status", _format_metric_value(top_row.get("calibration_gate_status"))),
                     ("capital_policy_id", _format_metric_value(top_row.get("capital_policy_id"))),
+                    ("execution_intelligence_score", _format_metric_value(top_row.get("execution_intelligence_score"))),
+                    ("triage_advisory_gate_status", _format_metric_value(top_row.get("advisory_gate_status"))),
+                    ("spread_regime", _format_metric_value(top_row.get("spread_regime"))),
+                    ("expected_capture_regime", _format_metric_value(top_row.get("expected_capture_regime"))),
                     ("requested_size", _format_metric_value(top_row.get("requested_size") or _json_dict(_json_dict(top_row.get("budget_impact")).get("preview")).get("requested_size"))),
                 ]
             )
@@ -343,6 +399,28 @@ def show() -> None:
                 )
                 render_reason_chip_row(rerank_reason_codes, empty_label="rerank:none")
                 render_reason_chip_row(scaling_reason_codes, empty_label="scaling:none")
+
+    render_section_header("Blocked backlog", subtitle="阻断项保留在首页，但下沉成次级 backlog，不污染主 action queue。")
+    if blocked_backlog.empty:
+        render_state_card("blocked backlog", "当前没有 blocked rows。", tone="ok")
+    else:
+        columns = [
+            column
+            for column in [
+                "location_name",
+                "question",
+                "best_side",
+                "ranking_score",
+                "allocation_status",
+                "calibration_gate_status",
+                "surface_delivery_status",
+                "binding_limit_scope",
+                "queue_reason_codes_json",
+                "updated_at",
+            ]
+            if column in blocked_backlog.columns
+        ]
+        st.dataframe(blocked_backlog[columns].head(10), width="stretch", hide_index=True)
 
     row4_left, row4_right = st.columns([1.1, 1.1])
     with row4_left:

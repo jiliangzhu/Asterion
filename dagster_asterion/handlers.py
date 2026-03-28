@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import json
 import os
 from pathlib import Path
@@ -10,11 +10,16 @@ from typing import Any
 
 from web3 import Web3
 
-from agents.common import build_agent_client_from_env, enqueue_agent_artifact_upserts
+from agents.common import build_agent_client_from_env, enqueue_agent_artifact_upserts, enqueue_agent_evaluation_upserts
 from agents.weather import (
+    build_failed_opportunity_triage_artifacts,
+    build_replay_backtest_evaluation_record,
+    load_opportunity_triage_agent_requests,
     load_resolution_agent_requests,
+    run_opportunity_triage_agent_review,
     run_resolution_agent_review,
 )
+from agents.weather.opportunity_triage_agent import parse_opportunity_triage_output
 from asterion_core.blockchain import (
     ChainTxKind,
     ChainTxMode,
@@ -200,6 +205,7 @@ from domains.weather.opportunity import (
     enqueue_ranking_retrospective_run_upserts,
     materialize_execution_priors,
     materialize_ranking_retrospective,
+    persist_execution_intelligence_materialization,
 )
 from domains.weather.pricing import (
     enqueue_fair_value_upserts,
@@ -1526,6 +1532,18 @@ def run_operator_surface_refresh(
 ) -> dict[str, Any]:
     refresh_run_id = run_id or new_request_id()
     db_path = _resolve_connection_db_path(con)
+    if getattr(con, "_guard_mode", None) == "reader":
+        execution_intelligence_run, execution_intelligence_summaries = persist_execution_intelligence_materialization(
+            con._con,
+            job_name=job_name,
+            run_id=f"{refresh_run_id}:execution_intelligence",
+        )
+    else:
+        execution_intelligence_run, execution_intelligence_summaries = persist_execution_intelligence_materialization(
+            con,
+            job_name=job_name,
+            run_id=f"{refresh_run_id}:execution_intelligence",
+        )
     replica_result = refresh_ui_db_replica_once(
         src_db_path=db_path,
         dst_db_path=ui_replica_db_path,
@@ -1575,7 +1593,7 @@ def run_operator_surface_refresh(
             lite_con.close()
 
     persist_operator_surface_refresh_run(
-        db_path,
+        con,
         OperatorSurfaceRefreshRunRecord(
             refresh_run_id=refresh_run_id,
             job_name=job_name,
@@ -1592,6 +1610,9 @@ def run_operator_surface_refresh(
     )
     return {
         "surface_refresh_run_id": refresh_run_id,
+        "source_db_path": db_path,
+        "execution_intelligence_run_id": execution_intelligence_run["run_id"],
+        "execution_intelligence_summary_count": len(execution_intelligence_summaries),
         "ui_replica_ok": replica_result.ok,
         "ui_lite_ok": lite_result.ok,
         "truth_check_fail_count": truth_check_fail_count,
@@ -1786,6 +1807,7 @@ def run_weather_watcher_backfill_job(
     max_block_span: int | None = None,
     observed_at: datetime | None = None,
 ) -> ColdPathHandlerResult:
+    _seed_watcher_market_refs_from_canonical_db(con, rpc_pool)
     result = run_watcher_backfill(
         con,
         rpc_pool,
@@ -1909,6 +1931,60 @@ def run_weather_execution_priors_refresh_job(
             or [0]
         )[0]
     )
+    filled_ticket_count = 0
+    resolved_ticket_count = 0
+    if _duckdb_table_exists(con, "runtime.trade_tickets") and _duckdb_table_exists(con, "runtime.submit_attempts") and _duckdb_table_exists(con, "trading.fills"):
+        filled_ticket_count = int(
+            (
+                con.execute(
+                    """
+                    SELECT COUNT(DISTINCT tickets.ticket_id)
+                    FROM runtime.trade_tickets AS tickets
+                    INNER JOIN runtime.submit_attempts AS submit_attempts
+                        ON submit_attempts.ticket_id = tickets.ticket_id
+                       AND submit_attempts.attempt_kind = 'submit_order'
+                       AND submit_attempts.order_id IS NOT NULL
+                    INNER JOIN trading.fills AS fills
+                        ON fills.order_id = submit_attempts.order_id
+                    WHERE tickets.created_at >= ?
+                    """,
+                    [source_window_start],
+                ).fetchone()
+                or [0]
+            )[0]
+        )
+    if (
+        filled_ticket_count > 0
+        and _duckdb_table_exists(con, "resolution.settlement_verifications")
+    ):
+        resolved_ticket_count = int(
+            (
+                con.execute(
+                    """
+                    SELECT COUNT(DISTINCT tickets.ticket_id)
+                    FROM runtime.trade_tickets AS tickets
+                    INNER JOIN runtime.submit_attempts AS submit_attempts
+                        ON submit_attempts.ticket_id = tickets.ticket_id
+                       AND submit_attempts.attempt_kind = 'submit_order'
+                       AND submit_attempts.order_id IS NOT NULL
+                    INNER JOIN trading.fills AS fills
+                        ON fills.order_id = submit_attempts.order_id
+                    INNER JOIN resolution.settlement_verifications AS verifications
+                        ON verifications.market_id = tickets.market_id
+                    WHERE tickets.created_at >= ?
+                    """,
+                    [source_window_start],
+                ).fetchone()
+                or [0]
+            )[0]
+        )
+    feedback_writeback_status = (
+        "idle_no_subjects"
+        if filled_ticket_count <= 0
+        else "waiting_for_resolution"
+        if resolved_ticket_count <= 0
+        else "ok"
+    )
     task_ids: list[str] = []
     try:
         materialized = materialize_execution_priors(
@@ -1938,7 +2014,7 @@ def run_weather_execution_priors_refresh_job(
                             run_id=request_id,
                             job_name="weather_execution_priors_refresh",
                             prior_version=prior_version,
-                            status="ok",
+                            status=feedback_writeback_status,
                             lookback_days=lookback_days,
                             source_window_start=source_window_start,
                             source_window_end=source_window_end,
@@ -1989,6 +2065,9 @@ def run_weather_execution_priors_refresh_job(
             "prior_count": len(materialized),
             "degraded_prior_count": degraded_prior_count,
             "materialization_id": materialization_id,
+            "filled_ticket_count": filled_ticket_count,
+            "resolved_ticket_count": resolved_ticket_count,
+            "feedback_writeback_status": feedback_writeback_status,
         },
     )
 
@@ -2042,6 +2121,38 @@ def run_weather_ranking_retrospective_refresh_job(
     )
 
 
+def _seed_watcher_market_refs_from_canonical_db(con, rpc_pool) -> None:
+    endpoints = list(getattr(rpc_pool, "_endpoints", []) or [])
+    if not endpoints:
+        return
+    rows = con.execute(
+        """
+        select market_id, condition_id, raw_market_json
+        from weather.weather_markets
+        where raw_market_json is not null
+        """
+    ).fetchall()
+    refs: dict[str, dict[str, str]] = {}
+    for market_id, condition_id, raw_market_json in rows:
+        try:
+            payload = json.loads(str(raw_market_json))
+        except Exception:  # noqa: BLE001
+            continue
+        question_id = str(payload.get("questionID") or "").strip().lower()
+        if not question_id:
+            continue
+        refs[question_id] = {
+            "market_id": str(market_id),
+            "condition_id": str(condition_id),
+        }
+    if not refs:
+        return
+    for _, client in endpoints:
+        seed_market_refs = getattr(client, "seed_market_refs", None)
+        if callable(seed_market_refs):
+            seed_market_refs(refs)
+
+
 def run_weather_forecast_calibration_profiles_v2_refresh_job(
     con,
     queue_cfg: WriteQueueConfig,
@@ -2076,9 +2187,12 @@ def run_weather_forecast_calibration_profiles_v2_refresh_job(
         "stale": 0,
         "degraded_or_missing": 0,
     }
+    health_degraded_count = 0
     latest_window_end = None
     for profile in materialized:
         freshness_counts[calibration_profile_freshness_status(profile.materialized_at, as_of=materialized_at)] += 1
+        if profile.calibration_health_status not in {"healthy", "watch"}:
+            health_degraded_count += 1
         if latest_window_end is None or profile.window_end > latest_window_end:
             latest_window_end = profile.window_end
     materialization_status = CalibrationProfileMaterializationStatus(
@@ -2101,7 +2215,7 @@ def run_weather_forecast_calibration_profiles_v2_refresh_job(
         output_profile_count=len(materialized),
         fresh_profile_count=freshness_counts["fresh"],
         stale_profile_count=freshness_counts["stale"],
-        degraded_profile_count=freshness_counts["degraded_or_missing"],
+        degraded_profile_count=health_degraded_count,
         materialized_at=materialized_at,
         error=None,
     )
@@ -2133,7 +2247,7 @@ def run_weather_forecast_calibration_profiles_v2_refresh_job(
             "latest_window_end": None if latest_window_end is None else latest_window_end.isoformat(),
             "fresh_profile_count": freshness_counts["fresh"],
             "stale_profile_count": freshness_counts["stale"],
-            "degraded_profile_count": freshness_counts["degraded_or_missing"],
+            "degraded_profile_count": health_degraded_count,
         },
     )
 
@@ -2375,12 +2489,42 @@ def run_weather_paper_execution_job(
     ticket_execution_context_ids: dict[str, str] = {}
     enriched_tickets = []
     for ticket in tickets:
+        market_capability = market_capabilities[ticket.token_id]
+        if ticket.size < market_capability.min_order_size:
+            provenance = dict(ticket.provenance_json)
+            provenance["recommended_size"] = str(ticket.size)
+            provenance["min_order_size_floor_applied"] = True
+            provenance["min_order_size"] = str(market_capability.min_order_size)
+            ticket = replace(
+                ticket,
+                size=market_capability.min_order_size,
+                provenance_json=provenance,
+            )
         execution_context = build_execution_context(
-            market_capability=market_capabilities[ticket.token_id],
+            market_capability=market_capability,
             account_capability=account_capability,
             route_action=ticket.route_action,
             risk_gate_result="pending_gate",
         )
+        execution_context_tick_size = getattr(execution_context, "tick_size", None)
+        aligned_reference_price = (
+            _align_reference_price_to_tick(
+                ticket.reference_price,
+                execution_context_tick_size,
+                side=str(ticket.side),
+            )
+            if execution_context_tick_size is not None
+            else ticket.reference_price
+        )
+        if execution_context_tick_size is not None and aligned_reference_price != ticket.reference_price:
+            provenance = dict(ticket.provenance_json)
+            provenance["reference_price_unaligned"] = str(ticket.reference_price)
+            provenance["reference_price_aligned"] = str(aligned_reference_price)
+            ticket = replace(
+                ticket,
+                reference_price=aligned_reference_price,
+                provenance_json=provenance,
+            )
         record = build_execution_context_record(
             wallet_id=batch_request.wallet_id,
             execution_context=execution_context,
@@ -2998,6 +3142,18 @@ def run_weather_paper_execution_job(
     )
 
 
+def _align_reference_price_to_tick(price: Decimal, tick_size: Decimal, *, side: str) -> Decimal:
+    if tick_size <= 0:
+        return price
+    normalized_side = str(side).strip().lower()
+    rounding = ROUND_FLOOR if normalized_side == "buy" else ROUND_CEILING
+    steps = (price / tick_size).to_integral_value(rounding=rounding)
+    aligned = steps * tick_size
+    if aligned <= 0:
+        return tick_size
+    return aligned
+
+
 def run_weather_operator_surface_refresh_job(
     con,
     queue_cfg: WriteQueueConfig,
@@ -3056,18 +3212,7 @@ def run_weather_resolution_review_job(
         for request in requests
     ]
     task_ids = enqueue_agent_artifact_upserts(queue_cfg, artifacts=artifacts, run_id=request_id)
-    refresh_metadata = run_operator_surface_refresh(
-        con,
-        job_name="weather_resolution_review",
-        trigger_mode="manual",
-        ui_replica_db_path=default_ui_db_replica_path(),
-        ui_replica_meta_path=default_ui_replica_meta_path(replica_db_path=default_ui_db_replica_path()),
-        ui_lite_db_path=default_ui_lite_db_path(),
-        ui_lite_meta_path=default_ui_lite_meta_path(lite_db_path=default_ui_lite_db_path()),
-        readiness_report_json_path=os.getenv("ASTERION_READINESS_REPORT_JSON_PATH", "data/ui/asterion_readiness_p4.json"),
-        readiness_evidence_json_path=os.getenv("ASTERION_READINESS_EVIDENCE_JSON_PATH", DEFAULT_READINESS_EVIDENCE_JSON_PATH),
-        run_id=request_id,
-    )
+    refresh_metadata = _agent_surface_refresh_metadata(con, job_name="weather_resolution_review", run_id=request_id, trigger_mode="manual")
     return ColdPathHandlerResult(
         job_name="weather_resolution_review",
         run_id=request_id,
@@ -3079,6 +3224,116 @@ def run_weather_resolution_review_job(
             **refresh_metadata,
         },
     )
+
+
+def run_weather_opportunity_triage_review_job(
+    con,
+    queue_cfg: WriteQueueConfig,
+    *,
+    client=None,
+    market_ids: list[str] | None = None,
+    limit: int | None = None,
+    force_rerun: bool = False,
+    now: datetime | None = None,
+    run_id: str | None = None,
+) -> ColdPathHandlerResult:
+    request_id = run_id or new_request_id()
+    triage_db_path = default_ui_lite_db_path()
+    requests = load_opportunity_triage_agent_requests(
+        triage_db_path,
+        market_ids=market_ids,
+        limit=limit,
+        primary_source="ui_lite",
+    )
+    triage_error: str | None = None
+    try:
+        active_client = client or build_agent_client_from_env()
+    except Exception as exc:  # noqa: BLE001
+        active_client = None
+        triage_error = str(exc)
+    artifacts = []
+    replay_evaluations = []
+    for request in requests:
+        if active_client is None:
+            artifacts.append(
+                build_failed_opportunity_triage_artifacts(
+                    request,
+                    error_message=triage_error or "agent client unavailable",
+                    force_rerun=force_rerun,
+                    now=now,
+                )
+            )
+            continue
+        artifacts.append(
+            run_opportunity_triage_agent_review(
+                active_client,
+                request,
+                force_rerun=force_rerun,
+                now=now,
+            )
+        )
+        latest_artifact = artifacts[-1]
+        if latest_artifact.output is not None:
+            replay_evaluations.append(
+                build_replay_backtest_evaluation_record(
+                    invocation_id=latest_artifact.invocation.invocation_id,
+                    request=request,
+                    output=parse_opportunity_triage_output(
+                        latest_artifact.output.structured_output_json,
+                        request=request,
+                    ),
+                    created_at=latest_artifact.output.created_at,
+                )
+            )
+    task_ids = enqueue_agent_artifact_upserts(queue_cfg, artifacts=artifacts, run_id=request_id)
+    replay_task_id = enqueue_agent_evaluation_upserts(queue_cfg, evaluations=replay_evaluations, run_id=request_id)
+    if replay_task_id is not None:
+        task_ids.append(replay_task_id)
+    refresh_metadata = _agent_surface_refresh_metadata(
+        con,
+        job_name="weather_opportunity_triage_review",
+        run_id=request_id,
+        trigger_mode="manual" if (market_ids or force_rerun) else "scheduled",
+    )
+    return ColdPathHandlerResult(
+        job_name="weather_opportunity_triage_review",
+        run_id=request_id,
+        task_ids=task_ids,
+        item_count=len(artifacts),
+        metadata={
+            "output_count": sum(1 for item in artifacts if item.output is not None),
+            "subject_ids": [item.invocation.subject_id for item in artifacts],
+            "triage_error": triage_error,
+            **refresh_metadata,
+        },
+    )
+
+
+def _agent_surface_refresh_metadata(con, *, job_name: str, run_id: str, trigger_mode: str) -> dict[str, Any]:
+    try:
+        return run_operator_surface_refresh(
+            con,
+            job_name=job_name,
+            trigger_mode=trigger_mode,
+            ui_replica_db_path=default_ui_db_replica_path(),
+            ui_replica_meta_path=default_ui_replica_meta_path(replica_db_path=default_ui_db_replica_path()),
+            ui_lite_db_path=default_ui_lite_db_path(),
+            ui_lite_meta_path=default_ui_lite_meta_path(lite_db_path=default_ui_lite_db_path()),
+            readiness_report_json_path=os.getenv("ASTERION_READINESS_REPORT_JSON_PATH", "data/ui/asterion_readiness_p4.json"),
+            readiness_evidence_json_path=os.getenv("ASTERION_READINESS_EVIDENCE_JSON_PATH", DEFAULT_READINESS_EVIDENCE_JSON_PATH),
+            run_id=run_id,
+        )
+    except Exception:  # noqa: BLE001
+        return {
+            "surface_refresh_run_id": None,
+            "ui_replica_ok": False,
+            "ui_lite_ok": False,
+            "truth_check_fail_count": 0,
+            "degraded_surface_count": 0,
+            "read_error_surface_count": 0,
+            "surface_refresh_error": "skipped:no_connection",
+            "surface_refresh_refreshed_at": None,
+        }
 
 
 def _load_weather_market_specs(con, *, market_ids: list[str] | None = None) -> list:
@@ -3726,6 +3981,18 @@ def _coerce_optional_non_empty_string(value: Any) -> str | None:
 
 
 def _resolve_connection_db_path(con) -> str:
+    db_path = str(getattr(con, "db_path", "") or "").strip()
+    if db_path:
+        return db_path
+    raw_con = getattr(con, "_con", None)
+    raw_db_path = str(getattr(raw_con, "db_path", "") or "").strip() if raw_con is not None else ""
+    if raw_db_path:
+        return raw_db_path
+    if not hasattr(con, "execute"):
+        fallback = os.getenv("ASTERION_DB_PATH", "data/asterion.duckdb").strip()
+        if fallback:
+            return fallback
+        raise ValueError("unable to resolve active DuckDB main database path from connection")
     rows = con.execute("PRAGMA database_list").fetchall()
     for row in rows:
         if len(row) >= 3 and str(row[1]) == "main" and str(row[2]):

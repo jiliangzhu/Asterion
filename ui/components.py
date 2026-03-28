@@ -2,11 +2,26 @@ from __future__ import annotations
 
 from typing import Iterable
 
+import pandas as pd
 import streamlit as st
 
 
+def _is_missing(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value == ""
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    try:
+        missing = pd.isna(value)
+    except Exception:
+        return False
+    return bool(missing) if isinstance(missing, (bool,)) else False
+
+
 def _safe_text(value: object) -> str:
-    if value is None or value == "":
+    if _is_missing(value):
         return "N/A"
     if isinstance(value, float):
         return f"{value:.2f}".rstrip("0").rstrip(".")
@@ -63,7 +78,7 @@ def render_kpi_band(items: Iterable[dict[str, object]]) -> None:
             st.metric(
                 str(item.get("label") or "Metric"),
                 _safe_text(item.get("value")),
-                delta=_safe_text(item.get("delta")) if item.get("delta") not in {None, ""} else None,
+                delta=_safe_text(item.get("delta")) if not _is_missing(item.get("delta")) else None,
             )
 
 
@@ -71,7 +86,7 @@ def render_state_card(title: str, body: str, *, tone: str = "info", meta: str | 
     with st.container(border=True):
         st.caption(f"{_tone_prefix(tone)} · {title}")
         st.write(body)
-        if meta:
+        if not _is_missing(meta):
             st.caption(meta)
 
 
@@ -107,8 +122,8 @@ def render_empty_state(title: str, body: str, *, tone: str = "muted") -> None:
 
 
 def render_delivery_badge(status: object, *, origin: object | None = None) -> None:
-    label = _safe_text(status or "ok")
-    suffix = f" · { _safe_text(origin) }" if origin not in {None, ""} else ""
+    label = _safe_text("ok" if _is_missing(status) else status)
+    suffix = f" · {_safe_text(origin)}" if not _is_missing(origin) else ""
     st.caption(f"Delivery: {label}{suffix}")
 
 

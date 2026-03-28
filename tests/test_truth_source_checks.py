@@ -151,6 +151,38 @@ class TruthSourceChecksTest(unittest.TestCase):
         self.assertTrue(any("degraded_reason_codes_json" in str(row[2]) for row in rows))
         self.assertTrue(any("degraded_surface_count" in str(row[2]) for row in rows))
 
+    def test_truth_source_checks_lock_p11_triage_closeout_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ui_truth_p11.duckdb"
+            build_minimal_ui_read_model_db(
+                db_path,
+                skip_columns={
+                    "ui.opportunity_triage_summary": {"advisory_gate_reason_codes_json", "latest_evaluation_verified"},
+                    "ui.system_runtime_summary": {"triage_advisory_gate_status", "triage_failed_count"},
+                },
+            )
+            con = duckdb.connect(str(db_path), read_only=True)
+            try:
+                rows = con.execute(
+                    """
+                    SELECT table_name, check_status, issues_json
+                    FROM ui.truth_source_checks
+                    WHERE table_name IN (
+                        'ui.opportunity_triage_summary',
+                        'ui.system_runtime_summary'
+                    )
+                    ORDER BY table_name
+                    """
+                ).fetchall()
+            finally:
+                con.close()
+        self.assertTrue(rows)
+        self.assertTrue(all(str(row[1]) == "fail" for row in rows))
+        self.assertTrue(any("advisory_gate_reason_codes_json" in str(row[2]) for row in rows))
+        self.assertTrue(any("latest_evaluation_verified" in str(row[2]) for row in rows))
+        self.assertTrue(any("triage_advisory_gate_status" in str(row[2]) for row in rows))
+        self.assertTrue(any("triage_failed_count" in str(row[2]) for row in rows))
+
 
 if __name__ == "__main__":
     unittest.main()

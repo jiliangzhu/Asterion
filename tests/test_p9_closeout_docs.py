@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class P9CloseoutDocsTest(unittest.TestCase):
-    def test_p9_docs_mark_current_tranche_as_closeout_pending(self) -> None:
+    def test_p9_plan_remains_historical_record_after_p10_closeout(self) -> None:
         p9_plan = (
             ROOT
             / "docs"
@@ -33,10 +33,12 @@ class P9CloseoutDocsTest(unittest.TestCase):
         self.assertIn("core implemented / closeout pending", p9_plan)
         self.assertIn("delivery contract closeout", p9_plan)
         self.assertIn("Phase 9 — Operator Surface Delivery and Throughput Scaling", v2_plan)
-        self.assertIn("core implemented / closeout pending", v2_plan)
-        self.assertIn("delivery contract closeout", v2_plan)
-        self.assertIn("current tranche: `Phase 9` in progress", readme)
-        self.assertIn("core implemented / closeout pending", readme)
+        self.assertIn("earlier tranche-specific implementation record", v2_plan)
+        self.assertIn("最近 accepted tranche: `Phase 11`", readme)
+        self.assertIn("P9_Implementation_Plan.md", readme)
+        self.assertIn("P10_Implementation_Plan.md", readme)
+        self.assertIn("P11_Implementation_Plan.md", readme)
+        self.assertNotIn("current tranche: `Phase 9` in progress", readme)
 
     def test_p9_closeout_checklist_is_not_created_early(self) -> None:
         checklist = (

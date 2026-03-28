@@ -5,6 +5,13 @@ from .execution_feedback import (
     build_feedback_materialization_id,
     enqueue_execution_feedback_materialization_upserts,
 )
+from .execution_intelligence import (
+    build_execution_intelligence_summary_from_context,
+    execution_intelligence_context_fields,
+    load_execution_intelligence_summary,
+    materialize_execution_intelligence,
+    persist_execution_intelligence_materialization,
+)
 from .execution_priors import (
     build_execution_prior_key,
     build_execution_prior_summary_from_context,
@@ -32,6 +39,7 @@ __all__ = [
     "build_execution_prior_key",
     "build_execution_feedback_materialization_status",
     "build_execution_feedback_prior",
+    "build_execution_intelligence_summary_from_context",
     "build_execution_science_cohort_summaries",
     "build_feedback_materialization_id",
     "build_execution_prior_summary_from_context",
@@ -41,13 +49,17 @@ __all__ = [
     "derive_opportunity_side",
     "enqueue_execution_feedback_materialization_upserts",
     "enqueue_execution_prior_upserts",
+    "execution_intelligence_context_fields",
     "execution_prior_context_fields",
     "execution_prior_key_id",
     "execution_prior_liquidity_bucket",
+    "load_execution_intelligence_summary",
     "load_execution_prior_summary",
+    "materialize_execution_intelligence",
     "enqueue_ranking_retrospective_row_upserts",
     "enqueue_ranking_retrospective_run_upserts",
     "compare_retrospective_uplift",
     "materialize_execution_priors",
+    "persist_execution_intelligence_materialization",
     "materialize_ranking_retrospective",
 ]

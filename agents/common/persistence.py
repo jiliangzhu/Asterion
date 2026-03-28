@@ -7,7 +7,14 @@ from asterion_core.storage.os_queue import enqueue_upsert_rows_v1
 from asterion_core.storage.utils import safe_json_dumps
 from asterion_core.storage.write_queue import WriteQueueConfig
 
-from .runtime import AgentEvaluationRecord, AgentExecutionArtifacts, AgentInvocationRecord, AgentOutputRecord, AgentReviewRecord
+from .runtime import (
+    AgentEvaluationRecord,
+    AgentExecutionArtifacts,
+    AgentInvocationRecord,
+    AgentOutputRecord,
+    AgentReviewRecord,
+    OperatorReviewDecisionRecord,
+)
 
 
 AGENT_INVOCATION_COLUMNS = [
@@ -58,6 +65,20 @@ AGENT_EVALUATION_COLUMNS = [
     "is_verified",
     "notes",
     "created_at",
+]
+
+AGENT_OPERATOR_REVIEW_DECISION_COLUMNS = [
+    "review_decision_id",
+    "invocation_id",
+    "agent_type",
+    "subject_type",
+    "subject_id",
+    "decision_status",
+    "operator_action",
+    "reason",
+    "actor",
+    "created_at",
+    "updated_at",
 ]
 
 
@@ -129,6 +150,24 @@ def enqueue_agent_evaluation_upserts(
         pk_cols=["evaluation_id"],
         columns=list(AGENT_EVALUATION_COLUMNS),
         rows=[agent_evaluation_to_row(item) for item in evaluations],
+        run_id=run_id,
+    )
+
+
+def enqueue_agent_operator_review_decision_upserts(
+    queue_cfg: WriteQueueConfig,
+    *,
+    decisions: list[OperatorReviewDecisionRecord],
+    run_id: str | None = None,
+) -> str | None:
+    if not decisions:
+        return None
+    return enqueue_upsert_rows_v1(
+        queue_cfg,
+        table="agent.operator_review_decisions",
+        pk_cols=["review_decision_id"],
+        columns=list(AGENT_OPERATOR_REVIEW_DECISION_COLUMNS),
+        rows=[agent_operator_review_decision_to_row(item) for item in decisions],
         run_id=run_id,
     )
 
@@ -210,6 +249,22 @@ def agent_evaluation_to_row(record: AgentEvaluationRecord) -> list[Any]:
         record.is_verified,
         record.notes,
         _sql_ts(record.created_at),
+    ]
+
+
+def agent_operator_review_decision_to_row(record: OperatorReviewDecisionRecord) -> list[Any]:
+    return [
+        record.review_decision_id,
+        record.invocation_id,
+        record.agent_type.value,
+        record.subject_type,
+        record.subject_id,
+        record.decision_status,
+        record.operator_action,
+        record.reason,
+        record.actor,
+        _sql_ts(record.created_at),
+        _sql_ts(record.updated_at),
     ]
 
 

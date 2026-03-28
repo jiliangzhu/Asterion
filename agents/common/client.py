@@ -201,15 +201,6 @@ class OpenAICompatibleAgentClient:
                     json=active_payload,
                     timeout=timeout_seconds,
                 )
-                if response.status_code == 400 and "response_format" in active_payload:
-                    active_payload = dict(active_payload)
-                    active_payload.pop("response_format", None)
-                    continue
-                if response.status_code in {502, 503, 504} and attempt + 1 < self._retry_count:
-                    time.sleep(min(1.5 * (attempt + 1), 3.0))
-                    continue
-                response.raise_for_status()
-                return response.json()
             except Exception:
                 if attempt + 1 < self._retry_count:
                     time.sleep(min(1.5 * (attempt + 1), 3.0))
@@ -223,27 +214,43 @@ class OpenAICompatibleAgentClient:
                     timeout_seconds=timeout_seconds,
                     retry_count=self._retry_count,
                 )
+            if response.status_code == 400 and "response_format" in active_payload:
+                active_payload = dict(active_payload)
+                active_payload.pop("response_format", None)
+                continue
+            if response.status_code in {502, 503, 504} and attempt + 1 < self._retry_count:
+                time.sleep(min(1.5 * (attempt + 1), 3.0))
+                continue
+            if 400 <= response.status_code < 500:
+                response.raise_for_status()
+            if response.status_code >= 500:
+                response.raise_for_status()
+            return response.json()
 
 
 def build_agent_client_from_env(http_client=None) -> AgentClient:
     _maybe_load_project_dotenv()
     provider = os.getenv("ASTERION_AGENT_PROVIDER", "").strip().lower()
     if not provider:
-        if os.getenv("ASTERION_ANTHROPIC_API_KEY"):
+        if _anthropic_api_key():
             provider = "anthropic"
         elif os.getenv("ASTERION_OPENAI_COMPATIBLE_API_KEY") or os.getenv("ALIBABA_API_KEY") or os.getenv("QWEN_API_KEY"):
             provider = "openai_compatible"
         else:
             raise ValueError("ASTERION_AGENT_PROVIDER is required when no provider credentials are configured")
     if provider == "anthropic":
-        api_key = os.getenv("ASTERION_ANTHROPIC_API_KEY", "").strip()
-        model_name = os.getenv("ASTERION_ANTHROPIC_MODEL", "").strip() or os.getenv("ASTERION_AGENT_MODEL", "").strip()
+        api_key = _anthropic_api_key()
+        model_name = (
+            os.getenv("ASTERION_ANTHROPIC_MODEL", "").strip()
+            or os.getenv("ANTHROPIC_MODEL", "").strip()
+            or os.getenv("ASTERION_AGENT_MODEL", "").strip()
+        )
         if not api_key or not model_name:
             raise ValueError("ASTERION_ANTHROPIC_API_KEY and ASTERION_ANTHROPIC_MODEL are required")
         return AnthropicAgentClient(
             api_key=api_key,
             model_name=model_name,
-            base_url=os.getenv("ASTERION_ANTHROPIC_BASE_URL") or None,
+            base_url=(os.getenv("ASTERION_ANTHROPIC_BASE_URL") or os.getenv("ANTHROPIC_BASE_URL") or None),
             http_client=http_client,
         )
     if provider == "openai_compatible":
@@ -319,6 +326,10 @@ def _supports_response_format() -> bool:
     return raw not in {"1", "true", "yes", "y"}
 
 
+def _anthropic_api_key() -> str:
+    return os.getenv("ASTERION_ANTHROPIC_API_KEY", "").strip() or os.getenv("ANTHROPIC_AUTH_TOKEN", "").strip()
+
+
 def _openai_compatible_retry_count() -> int:
     raw = os.getenv("ASTERION_OPENAI_COMPATIBLE_RETRIES", "").strip()
     try:
@@ -336,7 +347,7 @@ def _should_use_curl_fallback(base_url: str | None) -> bool:
 def _default_curl_fallback_for_base_url(base_url: str | None) -> bool:
     if not base_url:
         return False
-    return "dashscope.aliyuncs.com" in base_url or "llm-api.healwrap.cn" in base_url
+    return "dashscope.aliyuncs.com" in base_url or "bobdong.cn" in base_url
 
 
 def _post_json_with_curl(

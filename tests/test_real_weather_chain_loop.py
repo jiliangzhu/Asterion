@@ -25,6 +25,23 @@ class RealWeatherChainLoopTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.loop = _load_loop_module()
 
+    def test_build_smoke_command_passes_canonical_db_path(self) -> None:
+        args = self.loop.parse_args.__globals__["argparse"].Namespace(
+            output_dir="data/dev/real_weather_chain",
+            db_path="data/runtime.duckdb",
+            recent_within_days=14,
+            market_limit=24,
+            triage_limit=12,
+            skip_agent=False,
+        )
+        cmd = self.loop.build_smoke_command(args, force_rebuild=False)
+        self.assertIn("--db-path", cmd)
+        self.assertIn("data/runtime.duckdb", cmd)
+        self.assertIn("--market-limit", cmd)
+        self.assertIn("24", cmd)
+        self.assertIn("--triage-limit", cmd)
+        self.assertIn("12", cmd)
+
     def test_initializing_report_preserves_previous_market_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "real_weather_chain_report.json"

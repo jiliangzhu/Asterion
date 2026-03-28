@@ -26,6 +26,7 @@ from .rpc_fallback import (
     RpcFallbackError,
     rpc_trace_to_json,
 )
+from .realtime_rpc import PolygonRealtimeWatcherRpcClient
 from .watcher_replay import (
     BLOCK_WATERMARK_COLUMNS,
     PROCESSED_EVENT_COLUMNS,
@@ -65,6 +66,7 @@ __all__ = [
     "BLOCK_WATERMARK_COLUMNS",
     "BackfillRpcClient",
     "FallbackRpcPool",
+    "PolygonRealtimeWatcherRpcClient",
     "PROPOSAL_EVIDENCE_LINK_COLUMNS",
     "PROCESSED_EVENT_COLUMNS",
     "PROPOSAL_TRANSITION_COLUMNS",

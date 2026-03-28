@@ -126,6 +126,52 @@ class OperatorSurfaceRefreshJobTest(unittest.TestCase):
                 read_con.close()
             self.assertEqual(tuple(row), ("weather_operator_surface_refresh", "scheduled", True, True, 0, 1))
 
+    def test_operator_surface_refresh_job_uses_guarded_connection_db_path_without_pragma(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            canonical_db_path = Path(tmpdir) / "asterion.duckdb"
+            ui_lite_db_path = Path(tmpdir) / "ui_lite.duckdb"
+            bootstrap = duckdb.connect(str(canonical_db_path))
+            try:
+                bootstrap.execute("CREATE TABLE bootstrap (id INTEGER)")
+            finally:
+                bootstrap.close()
+
+            queue_cfg = WriteQueueConfig(path=str(Path(tmpdir) / "write_queue.sqlite"))
+
+            def _build_ui_lite(*args, **kwargs):
+                _write_ui_lite_contract(ui_lite_db_path)
+                return SimpleNamespace(ok=True, error=None)
+
+            with patch(
+                "dagster_asterion.handlers.refresh_ui_db_replica_once",
+                return_value=SimpleNamespace(ok=True, error=None),
+            ), patch(
+                "dagster_asterion.handlers.build_ui_lite_db_once",
+                side_effect=_build_ui_lite,
+            ):
+                raw_con = duckdb.connect(str(canonical_db_path), read_only=False)
+                con = SimpleNamespace(
+                    db_path=str(canonical_db_path),
+                    execute=raw_con.execute,
+                    close=raw_con.close,
+                )
+                try:
+                    result = run_weather_operator_surface_refresh_job(
+                        con,
+                        queue_cfg,
+                        ui_replica_db_path=str(Path(tmpdir) / "ui_replica.duckdb"),
+                        ui_replica_meta_path=str(Path(tmpdir) / "ui_replica.meta.json"),
+                        ui_lite_db_path=str(ui_lite_db_path),
+                        ui_lite_meta_path=str(Path(tmpdir) / "ui_lite.meta.json"),
+                        readiness_report_json_path=str(Path(tmpdir) / "readiness.json"),
+                        readiness_evidence_json_path=str(Path(tmpdir) / "readiness_evidence.json"),
+                        run_id="refresh_guarded_test",
+                    )
+                finally:
+                    raw_con.close()
+
+            self.assertEqual(result.metadata["source_db_path"], str(canonical_db_path))
+
 
 if __name__ == "__main__":
     unittest.main()

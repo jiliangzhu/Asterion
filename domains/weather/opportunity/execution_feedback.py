@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -102,7 +103,7 @@ def execution_feedback_penalty(
 
 
 def execution_feedback_status(*, sample_count: int, feedback_penalty: float) -> str:
-    if int(sample_count) < 5:
+    if int(sample_count) < 1:
         return "missing"
     if int(sample_count) < 20:
         return "sparse"
@@ -394,7 +395,10 @@ def _dominant_bucket(values: list[str], *, priority: dict[str, int], default: st
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
-    return min(max(float(value), float(lower)), float(upper))
+    normalized = float(value)
+    if not math.isfinite(normalized):
+        return float(lower)
+    return min(max(normalized, float(lower)), float(upper))
 
 
 def _normalize_datetime(value: datetime) -> datetime:

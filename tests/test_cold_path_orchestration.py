@@ -296,7 +296,7 @@ def _proposal() -> UMAProposal:
 
 
 class ColdPathJobMapTest(unittest.TestCase):
-    def test_job_map_contains_resolution_only_review_job(self) -> None:
+    def test_job_map_contains_resolution_and_triage_review_jobs(self) -> None:
         jobs = build_weather_cold_path_job_map()
         self.assertEqual(set(jobs), {
             "weather_market_discovery",
@@ -321,6 +321,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_forecast_calibration_profiles_v2_refresh",
             "weather_resolution_review",
             "weather_operator_surface_refresh",
+            "weather_opportunity_triage_review",
         })
         self.assertEqual(jobs["weather_spec_sync"].upstream_jobs, ["weather_market_discovery"])
         self.assertEqual(jobs["weather_capability_refresh"].upstream_jobs, ["weather_market_discovery"])
@@ -373,6 +374,14 @@ class ColdPathJobMapTest(unittest.TestCase):
             jobs["weather_operator_surface_refresh"].default_schedule_key,
             "weather_operator_surface_refresh_hourly",
         )
+        self.assertEqual(jobs["weather_opportunity_triage_review"].upstream_jobs, ["weather_operator_surface_refresh"])
+        self.assertEqual(jobs["weather_opportunity_triage_review"].mode, "scheduled")
+        self.assertEqual(
+            jobs["weather_opportunity_triage_review"].default_schedule_key,
+            "weather_opportunity_triage_review_hourly",
+        )
+        self.assertIn("agent.operator_review_decisions", jobs["weather_opportunity_triage_review"].output_tables)
+        self.assertIn("ui.opportunity_triage_summary", jobs["weather_opportunity_triage_review"].output_tables)
         self.assertIn(
             "runtime.calibration_profile_materializations",
             jobs["weather_forecast_calibration_profiles_v2_refresh"].output_tables,
@@ -397,6 +406,7 @@ class ColdPathJobMapTest(unittest.TestCase):
             "weather_external_execution_reconciliation_hourly",
             "weather_live_prereq_readiness_hourly",
             "weather_operator_surface_refresh_hourly",
+            "weather_opportunity_triage_review_hourly",
             "weather_watcher_backfill_bihourly",
             "weather_resolution_reconciliation_bihourly",
             "weather_execution_priors_nightly",
@@ -408,6 +418,8 @@ class ColdPathJobMapTest(unittest.TestCase):
         self.assertTrue(schedules["weather_forecast_calibration_profiles_v2_nightly"].enabled_by_default)
         self.assertEqual(schedules["weather_operator_surface_refresh_hourly"].cron_schedule, "58 * * * *")
         self.assertTrue(schedules["weather_operator_surface_refresh_hourly"].enabled_by_default)
+        self.assertEqual(schedules["weather_opportunity_triage_review_hourly"].cron_schedule, "59 * * * *")
+        self.assertTrue(schedules["weather_opportunity_triage_review_hourly"].enabled_by_default)
 
 
 class ColdPathResourcesTest(unittest.TestCase):

@@ -6,6 +6,34 @@ from ui.loaders.execution_loader import load_execution_console_data
 from ui.loaders.shared_truth_source import SurfaceLoaderContract, build_truth_source_summary, validate_surface_loader_contract
 
 
+def _coerce_list(compat, value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if hasattr(value, "tolist") and not isinstance(value, (str, bytes, dict)):
+        converted = value.tolist()
+        if isinstance(converted, list):
+            return converted
+    try:
+        if compat.pd.isna(value):
+            return []
+    except Exception:
+        pass
+    parsed = compat._json_list(value)
+    return parsed if isinstance(parsed, list) else []
+
+
+def _first_non_empty_list(*values: Any, compat) -> list[Any]:
+    for value in values:
+        items = _coerce_list(compat, value)
+        if items:
+            return items
+    return []
+
+
 def load_market_chain_analysis_data() -> dict[str, Any]:
     from ui import data_access as compat
 
@@ -61,7 +89,18 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
     watch_only_vs_executed = execution_payload["watch_only_vs_executed"]
     market_research = execution_payload["market_research"]
     cohort_history = execution_payload["cohort_history"]
-    action_queue = compat._sort_desc(compat.load_ui_lite_snapshot()["tables"]["action_queue_summary"], "queue_priority", "ranking_score", "updated_at")
+    ui_snapshot = compat.load_ui_lite_snapshot()
+    snapshot_tables = ui_snapshot.get("tables") or {}
+    action_queue = compat._sort_desc(
+        snapshot_tables.get("action_queue_summary", compat.pd.DataFrame()),
+        "queue_priority",
+        "ranking_score",
+        "updated_at",
+    )
+    microstructure = snapshot_tables.get("market_microstructure_summary", compat.pd.DataFrame())
+    triage_summary = compat._sort_desc(snapshot_tables.get("opportunity_triage_summary", compat.pd.DataFrame()), "updated_at")
+    if triage_summary.empty:
+        triage_summary = compat._sort_desc((compat.load_opportunity_triage_data() or {}).get("frame", compat.pd.DataFrame()), "updated_at")
     validation_by_market = compat.load_market_validation_overlays()
 
     execution_summary_by_market: dict[str, dict[str, Any]] = {}
@@ -96,6 +135,13 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
     watch_only_by_market = _frame_to_mapping(watch_only_vs_executed, "market_id")
     research_by_market = _frame_to_mapping(market_research, "market_id")
     queue_by_market = _frame_to_mapping(action_queue, "market_id")
+    microstructure_by_market: dict[str, dict[str, Any]] = {}
+    if not microstructure.empty and "market_id" in microstructure.columns:
+        ordered_microstructure = compat._sort_desc(microstructure, "materialized_at", "execution_intelligence_score")
+        microstructure_by_market = _frame_to_mapping(ordered_microstructure, "market_id")
+    triage_by_market: dict[str, dict[str, Any]] = {}
+    if not triage_summary.empty and "market_id" in triage_summary.columns:
+        triage_by_market = _frame_to_mapping(triage_summary, "market_id")
     cohort_history_by_market: dict[str, list[dict[str, Any]]] = {}
     if not cohort_history.empty and "market_id" in cohort_history.columns:
         for market_id, frame in cohort_history.groupby("market_id", dropna=False):
@@ -117,6 +163,7 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
             details = details_by_market.get(market_id, {})
             payload = row.to_dict()
             queue_payload = queue_by_market.get(market_id) or {}
+            triage_payload = triage_by_market.get(market_id) or {}
             payload.update(
                 {
                     "spec": details.get("spec") or {},
@@ -137,27 +184,48 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
                     "executed_evidence": execution_summary_by_market.get(market_id) or {"has_executed_evidence": False},
                     "watch_only_vs_executed": watch_only_by_market.get(market_id) or {},
                     "market_research": research_by_market.get(market_id) or {},
+                    "market_microstructure": microstructure_by_market.get(market_id) or {},
                     "operator_bucket": queue_payload.get("operator_bucket"),
                     "queue_reason_codes": compat._json_list(queue_payload.get("queue_reason_codes_json")),
                     "queue_priority": queue_payload.get("queue_priority"),
                     "calibration_gate_status": queue_payload.get("calibration_gate_status") or payload.get("calibration_gate_status") or "clear",
-                    "calibration_gate_reason_codes": compat._json_list(queue_payload.get("calibration_gate_reason_codes_json"))
-                    or payload.get("calibration_gate_reason_codes")
-                    or [],
+                    "calibration_gate_reason_codes": _first_non_empty_list(
+                        queue_payload.get("calibration_gate_reason_codes_json"),
+                        payload.get("calibration_gate_reason_codes"),
+                        compat=compat,
+                    ),
                     "calibration_impacted_market": queue_payload.get("calibration_impacted_market")
                     if queue_payload.get("calibration_impacted_market") is not None
                     else bool(payload.get("calibration_impacted_market")),
                     "capital_policy_id": queue_payload.get("capital_policy_id") or payload.get("capital_policy_id"),
                     "capital_policy_version": queue_payload.get("capital_policy_version") or payload.get("capital_policy_version"),
-                    "capital_scaling_reason_codes": compat._json_list(queue_payload.get("capital_scaling_reason_codes_json"))
-                    or payload.get("capital_scaling_reason_codes")
-                    or [],
+                    "capital_scaling_reason_codes": _first_non_empty_list(
+                        queue_payload.get("capital_scaling_reason_codes_json"),
+                        payload.get("capital_scaling_reason_codes"),
+                        compat=compat,
+                    ),
                     "surface_delivery_status": queue_payload.get("surface_delivery_status") or payload.get("surface_delivery_status") or "ok",
                     "surface_fallback_origin": queue_payload.get("surface_fallback_origin") or payload.get("surface_fallback_origin"),
-                    "surface_delivery_reason_codes": compat._json_list(queue_payload.get("surface_delivery_reason_codes_json"))
-                    or compat._json_list(payload.get("surface_delivery_reason_codes_json"))
-                    or [],
+                    "surface_delivery_reason_codes": _first_non_empty_list(
+                        queue_payload.get("surface_delivery_reason_codes_json"),
+                        payload.get("surface_delivery_reason_codes_json"),
+                        compat=compat,
+                    ),
                     "surface_last_refresh_ts": queue_payload.get("surface_last_refresh_ts") or payload.get("surface_last_refresh_ts"),
+                    "triage_priority_band": triage_payload.get("priority_band"),
+                    "triage_recommended_operator_action": triage_payload.get("recommended_operator_action"),
+                    "effective_triage_status": triage_payload.get("effective_triage_status"),
+                    "triage_reason_codes": compat._json_list(triage_payload.get("triage_reason_codes_json")),
+                    "triage_execution_risk_flags": compat._json_list(triage_payload.get("execution_risk_flags_json")),
+                    "triage_supporting_evidence_refs": compat._json_list(triage_payload.get("supporting_evidence_refs_json")),
+                    "triage_latest_operator_review_status": triage_payload.get("latest_operator_review_status"),
+                    "triage_latest_operator_action": triage_payload.get("latest_operator_action"),
+                    "triage_latest_agent_invocation_id": triage_payload.get("latest_agent_invocation_id"),
+                    "triage_latest_agent_status": triage_payload.get("latest_agent_status"),
+                    "triage_advisory_gate_status": triage_payload.get("advisory_gate_status"),
+                    "triage_advisory_gate_reason_codes": compat._json_list(triage_payload.get("advisory_gate_reason_codes_json")),
+                    "triage_latest_evaluation_method": triage_payload.get("latest_evaluation_method"),
+                    "triage_latest_evaluation_verified": triage_payload.get("latest_evaluation_verified"),
                     "cohort_history": cohort_history_by_market.get(market_id) or [],
                 }
             )
@@ -180,14 +248,17 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
                 "executed_evidence": execution_summary_by_market.get(str(item.get("market_id"))) or {"has_executed_evidence": False},
                 "watch_only_vs_executed": watch_only_by_market.get(str(item.get("market_id"))) or {},
                 "market_research": research_by_market.get(str(item.get("market_id"))) or {},
+                "market_microstructure": microstructure_by_market.get(str(item.get("market_id"))) or {},
                 "operator_bucket": (queue_by_market.get(str(item.get("market_id"))) or {}).get("operator_bucket"),
                 "queue_reason_codes": compat._json_list((queue_by_market.get(str(item.get("market_id"))) or {}).get("queue_reason_codes_json")),
                 "calibration_gate_status": (queue_by_market.get(str(item.get("market_id"))) or {}).get("calibration_gate_status")
                 or item.get("calibration_gate_status")
                 or "clear",
-                "calibration_gate_reason_codes": compat._json_list((queue_by_market.get(str(item.get("market_id"))) or {}).get("calibration_gate_reason_codes_json"))
-                or item.get("calibration_gate_reason_codes")
-                or [],
+                "calibration_gate_reason_codes": _first_non_empty_list(
+                    (queue_by_market.get(str(item.get("market_id"))) or {}).get("calibration_gate_reason_codes_json"),
+                    item.get("calibration_gate_reason_codes"),
+                    compat=compat,
+                ),
                 "calibration_impacted_market": (queue_by_market.get(str(item.get("market_id"))) or {}).get("calibration_impacted_market")
                 if (queue_by_market.get(str(item.get("market_id"))) or {}).get("calibration_impacted_market") is not None
                 else bool(item.get("calibration_impacted_market")),
@@ -195,20 +266,41 @@ def load_market_chain_analysis_data() -> dict[str, Any]:
                 or item.get("capital_policy_id"),
                 "capital_policy_version": (queue_by_market.get(str(item.get("market_id"))) or {}).get("capital_policy_version")
                 or item.get("capital_policy_version"),
-                "capital_scaling_reason_codes": compat._json_list((queue_by_market.get(str(item.get("market_id"))) or {}).get("capital_scaling_reason_codes_json"))
-                or item.get("capital_scaling_reason_codes")
-                or [],
+                "capital_scaling_reason_codes": _first_non_empty_list(
+                    (queue_by_market.get(str(item.get("market_id"))) or {}).get("capital_scaling_reason_codes_json"),
+                    item.get("capital_scaling_reason_codes"),
+                    compat=compat,
+                ),
                 "surface_delivery_status": (queue_by_market.get(str(item.get("market_id"))) or {}).get("surface_delivery_status")
                 or item.get("surface_delivery_status")
                 or "degraded_source",
                 "surface_fallback_origin": (queue_by_market.get(str(item.get("market_id"))) or {}).get("surface_fallback_origin")
                 or item.get("surface_fallback_origin")
                 or opportunity_payload["source"],
-                "surface_delivery_reason_codes": compat._json_list((queue_by_market.get(str(item.get("market_id"))) or {}).get("surface_delivery_reason_codes_json"))
-                or compat._json_list(item.get("surface_delivery_reason_codes_json"))
-                or [f"fallback:{opportunity_payload['source']}"],
+                "surface_delivery_reason_codes": (
+                    _first_non_empty_list(
+                        (queue_by_market.get(str(item.get("market_id"))) or {}).get("surface_delivery_reason_codes_json"),
+                        item.get("surface_delivery_reason_codes_json"),
+                        compat=compat,
+                    )
+                    or [f"fallback:{opportunity_payload['source']}"]
+                ),
                 "surface_last_refresh_ts": (queue_by_market.get(str(item.get("market_id"))) or {}).get("surface_last_refresh_ts")
                 or item.get("surface_last_refresh_ts"),
+                "triage_priority_band": (triage_by_market.get(str(item.get("market_id"))) or {}).get("priority_band"),
+                "triage_recommended_operator_action": (triage_by_market.get(str(item.get("market_id"))) or {}).get("recommended_operator_action"),
+                "effective_triage_status": (triage_by_market.get(str(item.get("market_id"))) or {}).get("effective_triage_status"),
+                "triage_reason_codes": compat._json_list((triage_by_market.get(str(item.get("market_id"))) or {}).get("triage_reason_codes_json")),
+                "triage_execution_risk_flags": compat._json_list((triage_by_market.get(str(item.get("market_id"))) or {}).get("execution_risk_flags_json")),
+                "triage_supporting_evidence_refs": compat._json_list((triage_by_market.get(str(item.get("market_id"))) or {}).get("supporting_evidence_refs_json")),
+                "triage_latest_operator_review_status": (triage_by_market.get(str(item.get("market_id"))) or {}).get("latest_operator_review_status"),
+                "triage_latest_operator_action": (triage_by_market.get(str(item.get("market_id"))) or {}).get("latest_operator_action"),
+                "triage_latest_agent_invocation_id": (triage_by_market.get(str(item.get("market_id"))) or {}).get("latest_agent_invocation_id"),
+                "triage_latest_agent_status": (triage_by_market.get(str(item.get("market_id"))) or {}).get("latest_agent_status"),
+                "triage_advisory_gate_status": (triage_by_market.get(str(item.get("market_id"))) or {}).get("advisory_gate_status"),
+                "triage_advisory_gate_reason_codes": compat._json_list((triage_by_market.get(str(item.get("market_id"))) or {}).get("advisory_gate_reason_codes_json")),
+                "triage_latest_evaluation_method": (triage_by_market.get(str(item.get("market_id"))) or {}).get("latest_evaluation_method"),
+                "triage_latest_evaluation_verified": (triage_by_market.get(str(item.get("market_id"))) or {}).get("latest_evaluation_verified"),
                 "rule2spec_status": (validation_by_market.get(str(item.get("market_id"))) or {}).get("rule2spec_status") or item.get("rule2spec_status"),
                 "rule2spec_verdict": (validation_by_market.get(str(item.get("market_id"))) or {}).get("rule2spec_verdict") or item.get("rule2spec_verdict"),
                 "rule2spec_summary": (validation_by_market.get(str(item.get("market_id"))) or {}).get("rule2spec_summary") or item.get("rule2spec_summary"),

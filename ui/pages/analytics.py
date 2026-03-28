@@ -72,4 +72,4 @@ def show():
             st.info("执行记录导出功能开发中...")
     
     # 数据管理提示
-    st.info("💡 提示: 所有数据均存储在本地 DuckDB 数据库中，路径: `data/dev/real_weather_chain/real_weather_chain.duckdb`")
+    st.info("💡 提示: canonical runtime truth-source 默认是本地 DuckDB：`data/asterion.duckdb`。")

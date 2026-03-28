@@ -4,6 +4,8 @@ import unittest
 
 from asterion_core.contracts import ExecutionFeedbackPrior, ExecutionPriorKey, ExecutionPriorSummary
 from domains.weather.opportunity import build_weather_opportunity_assessment
+from domains.weather.opportunity.execution_priors import build_execution_prior_summary_from_context
+from domains.weather.opportunity.resolved_execution_projection import build_resolved_execution_projection
 
 
 def _prior_summary(*, feedback_penalty: float | None = None, feedback_status: str = "ready") -> ExecutionPriorSummary:
@@ -51,6 +53,70 @@ def _prior_summary(*, feedback_penalty: float | None = None, feedback_status: st
 
 
 class ExecutionFeedbackLoopTest(unittest.TestCase):
+    def test_resolved_execution_projection_uses_quantity_and_fee_in_realized_pnl(self) -> None:
+        projection = build_resolved_execution_projection(
+            outcome="NO",
+            side="BUY",
+            expected_outcome="NO",
+            filled_quantity=10.0,
+            ticket_size=10.0,
+            expected_fill_price=0.61,
+            realized_fill_price=0.61,
+            total_fee=0.14,
+            predicted_edge_bps=3800.0,
+            execution_result=None,
+            order_status="filled",
+            latest_submit_status="accepted",
+            live_prereq_execution_status=None,
+            external_order_status="filled",
+            gate_allowed=True,
+            latest_sign_attempt_id="sign_1",
+            latest_submit_attempt_id="submit_1",
+            latest_fill_at="2026-03-28T10:00:00+00:00",
+            latest_resolution_at="2026-03-28T11:00:00+00:00",
+        )
+
+        self.assertEqual(projection.evaluation_status, "resolved")
+        self.assertAlmostEqual(projection.resolution_value or 0.0, 0.0)
+        self.assertAlmostEqual(projection.realized_pnl or 0.0, 3.76)
+        self.assertAlmostEqual(projection.post_trade_error or 0.0, -0.04)
+        self.assertEqual(projection.execution_lifecycle_stage, "resolved")
+
+    def test_build_execution_prior_summary_from_context_prefers_explicit_feedback_penalty(self) -> None:
+        summary = build_execution_prior_summary_from_context(
+            {
+                "execution_prior_key": "eprior_test",
+                "execution_prior_market_id": "mkt_feedback",
+                "execution_prior_side": "BUY",
+                "execution_prior_sample_count": 67,
+                "execution_prior_submit_ack_rate": 0.0,
+                "execution_prior_fill_rate": 0.0,
+                "execution_prior_resolution_rate": 0.0,
+                "execution_prior_partial_fill_rate": 0.0,
+                "execution_prior_cancel_rate": 0.0,
+                "execution_prior_quality_status": "ready",
+                "execution_prior_lookup_mode": "exact_market",
+                "execution_prior_feedback_status": "degraded",
+                "execution_prior_feedback_penalty": 0.45,
+                "execution_prior_miss_rate": None,
+                "execution_prior_distortion_rate": None,
+                "execution_prior_slippage_p50": float("nan"),
+                "execution_prior_feedback_scope_breakdown": {
+                    "market": {"feedback_penalty": 0.45, "feedback_status": "degraded"}
+                },
+                "execution_prior_dominant_miss_reason_bucket": "not_submitted",
+                "execution_prior_dominant_distortion_reason_bucket": "none",
+                "execution_prior_cohort_prior_version": "feedback_v1",
+            }
+        )
+
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertIsNotNone(summary.feedback_prior)
+        assert summary.feedback_prior is not None
+        self.assertEqual(summary.feedback_prior.feedback_status, "degraded")
+        self.assertAlmostEqual(summary.feedback_prior.feedback_penalty, 0.45)
+
     def test_feedback_penalty_suppresses_ranking_score(self) -> None:
         base = build_weather_opportunity_assessment(
             market_id="mkt_feedback",

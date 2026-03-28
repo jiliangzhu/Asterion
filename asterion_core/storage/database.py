@@ -95,9 +95,10 @@ def _validate_reader_sql(query: Any) -> None:
 
 
 class GuardedConnection:
-    def __init__(self, con, *, guard_mode: str) -> None:
+    def __init__(self, con, *, guard_mode: str, db_path: str | None = None) -> None:
         self._con = con
         self._guard_mode = guard_mode
+        self._db_path = str(db_path).strip() if db_path is not None and str(db_path).strip() else None
 
     def execute(self, query: Any, *args: Any, **kwargs: Any):
         self._validate_guard(query)
@@ -109,6 +110,10 @@ class GuardedConnection:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._con, name)
+
+    @property
+    def db_path(self) -> str | None:
+        return self._db_path
 
     def _validate_guard(self, query: Any) -> None:
         try:
@@ -140,15 +145,16 @@ def connect_duckdb(cfg: DuckDBConfig):
     guard_mode = "none"
 
     if strict:
-        read_only = not is_writer
+        read_only = env_flag("ASTERION_DB_READ_ONLY", False)
+        db_role = os.getenv("ASTERION_DB_ROLE", "reader").strip().lower()
+        if db_role == "reader":
+            guard_mode = "reader"
         if debug_direct_write:
             read_only = False
             guard_mode = "debug_writer"
         apply_schema = is_writer and requested_apply_schema
         if requested_apply_schema and not is_writer:
             raise ValueError("apply_schema is only allowed for WRITERD=1 and ASTERION_DB_ROLE=writer.")
-        if read_only:
-            guard_mode = "reader"
     else:
         read_only = env_flag("ASTERION_DB_READ_ONLY", False)
         apply_schema = requested_apply_schema if "ASTERION_APPLY_SCHEMA" in os.environ else True
@@ -186,7 +192,7 @@ def connect_duckdb(cfg: DuckDBConfig):
         if ddl_sql:
             con.execute(ddl_sql)
 
-    return GuardedConnection(con, guard_mode=guard_mode)
+    return GuardedConnection(con, guard_mode=guard_mode, db_path=cfg.db_path)
 
 
 def _schema_prefix_allowed(schema_name: str) -> bool:
@@ -303,4 +309,3 @@ def meta_set_watermark_ms(
         """,
         [source, endpoint, market_id, cursor_name, str(value_ms), int(value_ms)],
     )
-

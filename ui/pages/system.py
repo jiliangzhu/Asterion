@@ -19,6 +19,7 @@ from ui.data_access import (
     load_readiness_summary,
     load_system_runtime_status,
 )
+from ui.triage_localization import localize_triage_value
 
 
 def _build_component_rows(status: dict[str, object], readiness: dict[str, object]) -> list[dict[str, object]]:
@@ -73,7 +74,10 @@ def _build_component_rows(status: dict[str, object], readiness: dict[str, object
             "组件": "Real Weather Chain Report",
             "状态": status.get("weather_smoke_status") or "UNKNOWN",
             "来源": status.get("weather_smoke_report_path"),
-            "详情": "real ingress smoke 辅助视图",
+            "详情": (
+                f"canonical_db={status.get('canonical_db_path') or 'missing'} "
+                f"split_brain={status.get('source_split_brain')}"
+            ),
         },
         {
             "组件": "Calibration Profiles v2",
@@ -82,8 +86,45 @@ def _build_component_rows(status: dict[str, object], readiness: dict[str, object
             "详情": (
                 f"window_end={status.get('latest_calibration_window_end')} "
                 f"profile_age_hours={status.get('latest_calibration_profile_age_hours')} "
+                f"samples={status.get('calibration_sample_count')} "
+                f"profiles={status.get('calibration_profile_count')} "
                 f"impacted={status.get('calibration_impacted_market_count')} "
                 f"hard_gate={status.get('calibration_hard_gate_market_count')}"
+            ),
+        },
+        {
+            "组件": "Calibration Bootstrap",
+            "状态": (status.get("calibration_bootstrap_status") or "NOT_RUN").upper(),
+            "来源": "real_weather_chain_report.runtime_chain",
+            "详情": f"refresh={status.get('calibration_refresh_status') or 'not_run'}",
+        },
+        {
+            "组件": "Resolution Agent Runtime",
+            "状态": (status.get("resolution_runtime_status") or status.get("resolution_latest_run_status") or "NOT_RUN").upper(),
+            "来源": "runtime_chain / agent.invocations",
+            "详情": f"subjects={status.get('resolution_subject_count', 0)} latest={status.get('resolution_latest_run_status') or 'not_run'}",
+        },
+        {
+            "组件": "Paper Execution Runtime",
+            "状态": (status.get("paper_execution_status") or ("CLOSED" if int(status.get("fill_count") or 0) > 0 else "OPEN")).upper(),
+            "来源": "runtime_chain / runtime.strategy_runs / trading.orders / trading.fills",
+            "详情": (
+                f"strategy_runs={status.get('strategy_run_count', 0)} "
+                f"tickets={status.get('trade_ticket_count', 0)} "
+                f"allocations={status.get('allocation_decision_count', 0)} "
+                f"orders={status.get('paper_order_count', 0)} "
+                f"fills={status.get('fill_count', 0)}"
+            ),
+        },
+        {
+            "组件": "Settlement Feedback Closure",
+            "状态": (status.get("profitability_settlement_feedback_closure_status") or "OPEN").upper(),
+            "来源": "real_weather_chain_report.settlement_feedback_pipeline",
+            "详情": (
+                f"pending={status.get('profitability_pending_resolution_ticket_count', 0)} "
+                f"resolved={status.get('profitability_resolved_ticket_count', 0)} "
+                f"realized_rows={status.get('profitability_realized_pnl_row_count', 0)} "
+                f"writeback={status.get('profitability_latest_feedback_writeback_status') or 'not_run'}"
             ),
         },
     ]
@@ -195,16 +236,79 @@ def show() -> None:
         render_section_header("Minimal health summary")
         health_rows = [
             {"组件": "Latest Surface Refresh", "值": status.get("latest_surface_refresh_status"), "说明": "persisted operator surface refresh seam"},
+            {"组件": "Canonical DB", "值": status.get("canonical_db_path"), "说明": "single canonical runtime DB expected by loop / UI / report"},
+            {"组件": "Source Split-Brain", "值": status.get("source_split_brain"), "说明": "true means report / UI / runtime are still reading divergent DBs"},
             {"组件": "Degraded Surfaces", "值": status.get("degraded_surface_count"), "说明": "persisted delivery surfaces currently degraded"},
             {"组件": "Read Error Surfaces", "值": status.get("read_error_surface_count"), "说明": "persisted delivery surfaces currently failing"},
+            {"组件": "Capability Refresh", "值": status.get("capability_refresh_status"), "说明": "capability refresh job status from real weather chain runtime"},
+            {"组件": "Resolution Reconciliation", "值": status.get("resolution_reconciliation_status"), "说明": "resolution reconciliation job status in current loop"},
+            {"组件": "Calibration Bootstrap", "值": status.get("calibration_bootstrap_status"), "说明": "bootstrap samples from matured forecasts + archive observations"},
+            {"组件": "Calibration Refresh", "值": status.get("calibration_refresh_status"), "说明": "v2 calibration materialization job status"},
+            {"组件": "Allocation Preview", "值": status.get("allocation_preview_status"), "说明": "allocation preview explicitly reports skipped when no deployable snapshots exist"},
+            {"组件": "Paper Execution", "值": status.get("paper_execution_status"), "说明": "paper execution job status from current loop"},
+            {"组件": "Settlement Feedback Closure", "值": status.get("profitability_settlement_feedback_closure_status"), "说明": "成交之后是否已经走到真实结算、realized pnl 和反馈回写"},
+            {"组件": "Pending Resolution Tickets", "值": status.get("profitability_pending_resolution_ticket_count"), "说明": "已有成交但仍在等待真实结算验证的票据数"},
+            {"组件": "Resolved Tickets", "值": status.get("profitability_resolved_ticket_count"), "说明": "已有真实 settlement verification 的票据数"},
+            {"组件": "Realized PnL Rows", "值": status.get("profitability_realized_pnl_row_count"), "说明": "predicted_vs_realized 中已形成真实 realized pnl 的行数"},
+            {"组件": "Latest Resolution Markets", "值": status.get("profitability_latest_resolution_market_count"), "说明": "本轮 reconciliation 真正核验到的市场数"},
+            {"组件": "Feedback Writeback", "值": status.get("profitability_latest_feedback_writeback_status"), "说明": "execution priors / feedback materialization 最新回写状态"},
+            {"组件": "Feedback Materializations", "值": status.get("profitability_latest_feedback_materialization_count"), "说明": "runtime.execution_feedback_materializations 当前累计条数"},
+            {"组件": "Latest Triage Run", "值": status.get("triage_latest_run_id"), "说明": "latest persisted opportunity triage invocation/run id"},
+            {"组件": "Latest Triage Status", "值": status.get("triage_latest_run_status"), "说明": "latest persisted opportunity triage invocation status"},
+            {"组件": "Triage Runtime Status", "值": status.get("triage_runtime_status"), "说明": "current loop triage runtime status, including idle_no_subjects"},
+            {"组件": "Resolution Latest Status", "值": status.get("resolution_latest_run_status"), "说明": "resolution agent runtime status or idle_no_subjects"},
+            {"组件": "Resolution Subjects", "值": status.get("resolution_subject_count"), "说明": "current proposal subjects visible to resolution review"},
+            {"组件": "Triage Advisory Gate", "值": status.get("triage_advisory_gate_status"), "说明": "enabled 仅在 replay evaluation verified 后出现"},
+            {"组件": "Latest Triage Evaluation", "值": status.get("triage_latest_evaluation_method"), "说明": "latest persisted triage evaluation method"},
+            {"组件": "Triage Last Evaluated", "值": status.get("triage_last_evaluated_at"), "说明": "latest persisted triage evaluation timestamp"},
+            {"组件": "Calibration Samples", "值": status.get("calibration_sample_count"), "说明": "persisted calibration samples feeding v2 profiles"},
+            {"组件": "Calibration Profiles", "值": status.get("calibration_profile_count"), "说明": "persisted v2 calibration profiles"},
+            {"组件": "Calibration Materializations", "值": status.get("calibration_materialization_count"), "说明": "runtime calibration materialization records"},
             {"组件": "Opportunity Surface", "值": status.get("opportunity_row_count"), "说明": "当前机会排序读面行数"},
             {"组件": "Actionable Markets", "值": status.get("actionable_market_count"), "说明": "当前可优先 review 的市场数"},
             {"组件": "Resolution Review Rows", "值": status.get("agent_row_count"), "说明": "Resolution Agent 当前可见 review rows"},
+            {"组件": "Triage Rows", "值": status.get("triage_row_count"), "说明": "Opportunity Triage overlay 当前可见 rows"},
+            {"组件": "Triage Subjects", "值": status.get("triage_subject_count"), "说明": "triage overlay current persisted subject rows"},
+            {"组件": "Triage Failed", "值": status.get("triage_failed_count"), "说明": "timeout / parse_error / failure rows do not affect canonical queue"},
+            {"组件": "Triage Accepted", "值": status.get("triage_accepted_count"), "说明": "operator 已接受的 triage overlay rows"},
+            {"组件": "Triage Deferred", "值": status.get("triage_deferred_count"), "说明": "operator 已延后的 triage overlay rows"},
             {"组件": "Pending Operator Review", "值": status.get("pending_operator_review_count"), "说明": "建议 hold/manual/dispute 且尚未 operator 接纳的 proposal"},
             {"组件": "Blocked By Operator", "值": status.get("blocked_by_operator_review_count"), "说明": "operator 已明确阻断的 proposal"},
             {"组件": "Ready For Redeem Review", "值": status.get("ready_for_redeem_review_count"), "说明": "operator 已放行到 redeem review 的 proposal"},
             {"组件": "Calibration Freshness", "值": status.get("latest_calibration_freshness_status"), "说明": "最新 calibration profile materialization freshness"},
+            {"组件": "Strategy Runs", "值": status.get("strategy_run_count"), "说明": "canonical paper strategy runs"},
+            {"组件": "Trade Tickets", "值": status.get("trade_ticket_count"), "说明": "canonical trade tickets"},
+            {"组件": "Allocation Decisions", "值": status.get("allocation_decision_count"), "说明": "capital allocation outputs"},
+            {"组件": "Paper Orders", "值": status.get("paper_order_count"), "说明": "canonical paper orders"},
+            {"组件": "Paper Fills", "值": status.get("fill_count"), "说明": "canonical paper fills"},
+            {"组件": "Profitability Path Closed", "值": status.get("profitability_path_closed"), "说明": "only true when signal -> execution -> feedback closure is genuinely non-empty"},
+            {"组件": "Execution Closure Status", "值": status.get("profitability_execution_closure_status"), "说明": "separates signal+paper closure from still-missing intelligence surfaces"},
+            {"组件": "Intelligence Closure Status", "值": status.get("profitability_intelligence_closure_status"), "说明": "tracks execution intelligence + triage runtime honesty instead of only path_closed"},
+            {"组件": "Deployable Signals", "值": status.get("profitability_has_deployable_signals"), "说明": "at least one non-NO_TRADE snapshot selected into deployable set"},
+            {"组件": "Empirical Feedback", "值": status.get("profitability_has_empirical_feedback"), "说明": "predicted vs realized rows from current canonical runtime"},
+            {"组件": "Active Priors Hit", "值": status.get("profitability_active_market_prior_hit_count"), "说明": "当前活跃机会里真正命中 execution priors 的数量"},
+            {"组件": "Deployable Snapshots", "值": status.get("profitability_deployable_snapshot_count"), "说明": "当前轮进入可执行集合的 snapshot 数量"},
+            {"组件": "Exec-Intel Covered", "值": status.get("profitability_execution_intelligence_covered_snapshot_count"), "说明": "当前可执行机会里已有 execution intelligence 覆盖的数量"},
+            {"组件": "Agent Running Status", "值": status.get("profitability_agent_running_status"), "说明": "只看 triage invocation/output/evaluation 是否真实落库"},
+            {"组件": "Agent Value Status", "值": status.get("profitability_agent_value_status"), "说明": "区分真实有效输出与 fallback-only defer"},
+            {"组件": "Useful Agent Output", "值": status.get("profitability_agents_have_useful_output"), "说明": "triage/output/evaluation non-empty and not only idle/failure"},
+            {"组件": "Latest Non-fallback Triage", "值": status.get("profitability_latest_triage_non_fallback_output_count"), "说明": "最新一轮真正走到 provider 输出而非 fallback 的 triage 数量"},
         ]
+        for row in health_rows:
+            row["值"] = localize_triage_value(
+                {
+                    "Settlement Feedback Closure": "profitability_settlement_feedback_closure_status",
+                    "Latest Triage Status": "triage_latest_run_status",
+                    "Triage Runtime Status": "triage_runtime_status",
+                    "Resolution Latest Status": "resolution_latest_run_status",
+                    "Triage Advisory Gate": "triage_advisory_gate_status",
+                    "Latest Triage Evaluation": "triage_latest_evaluation_method",
+                    "Agent Running Status": "profitability_agent_running_status",
+                    "Agent Value Status": "profitability_agent_value_status",
+                    "Useful Agent Output": "profitability_agents_have_useful_output",
+                }.get(str(row["组件"]), ""),
+                row["值"],
+            )
         st.dataframe(pd.DataFrame(health_rows), width="stretch", hide_index=True)
 
     with evidence_tab:

@@ -10,6 +10,8 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
+import duckdb
+
 from asterion_core.contracts import (
     AccountTradingCapability,
     BalanceType,
@@ -2697,6 +2699,32 @@ class ExecutionFoundationDuckDBTest(unittest.TestCase):
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM trading.exposure_snapshots").fetchone()[0], 1)
                 finally:
                     con.close()
+
+
+@unittest.skipUnless(HAS_DUCKDB, "duckdb is required")
+class GuardedConnectionDbPathTest(unittest.TestCase):
+    def test_reader_guarded_connection_exposes_db_path_without_pragma(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "guarded.duckdb")
+            bootstrap = duckdb.connect(db_path)
+            try:
+                bootstrap.execute("CREATE TABLE bootstrap (id INTEGER)")
+            finally:
+                bootstrap.close()
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "ASTERION_STRICT_SINGLE_WRITER": "1",
+                    "ASTERION_DB_ROLE": "reader",
+                    "WRITERD": "0",
+                },
+                clear=False,
+            ):
+                guarded = connect_duckdb(DuckDBConfig(db_path=db_path))
+
+            self.assertEqual(guarded.db_path, db_path)
+            self.assertEqual(guarded.execute("SELECT COUNT(*) FROM bootstrap").fetchone()[0], 0)
 
 
 if __name__ == "__main__":

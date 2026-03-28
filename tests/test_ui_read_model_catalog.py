@@ -27,6 +27,7 @@ class UiReadModelCatalogTest(unittest.TestCase):
         self.assertEqual(len(rows), len(tuple(iter_read_model_catalog_records())))
         self.assertIn(("ui.action_queue_summary", "v1", "opportunity_builder", "ranking_score"), rows)
         self.assertIn(("ui.cohort_history_summary", "v1", "execution_builder", None), rows)
+        self.assertIn(("ui.market_microstructure_summary", "v1", "execution_builder", "execution_intelligence_score"), rows)
         self.assertIn(("ui.market_opportunity_summary", "v1", "opportunity_builder", "ranking_score"), rows)
         self.assertIn(("ui.surface_delivery_summary", "v1", "catalog_builder", None), rows)
         self.assertIn(("ui.system_runtime_summary", "v1", "catalog_builder", None), rows)
@@ -44,6 +45,27 @@ class UiReadModelCatalogTest(unittest.TestCase):
         assert delivery_record is not None
         self.assertIn("fallback_origin", delivery_record.required_columns)
         self.assertIn("degraded_reason_codes_json", delivery_record.required_columns)
+
+        microstructure_record = get_read_model_catalog_record("ui.market_microstructure_summary")
+        assert microstructure_record is not None
+        self.assertIn("execution_intelligence_score", microstructure_record.required_columns)
+        self.assertIn("reason_codes_json", microstructure_record.required_columns)
+
+        triage_record = get_read_model_catalog_record("ui.opportunity_triage_summary")
+        assert triage_record is not None
+        self.assertIn("advisory_gate_status", triage_record.required_columns)
+        self.assertIn("advisory_gate_reason_codes_json", triage_record.required_columns)
+        self.assertIn("latest_evaluation_method", triage_record.required_columns)
+        self.assertIn("latest_evaluation_verified", triage_record.required_columns)
+
+        runtime_record = get_read_model_catalog_record("ui.system_runtime_summary")
+        assert runtime_record is not None
+        self.assertIn("triage_latest_run_id", runtime_record.required_columns)
+        self.assertIn("triage_latest_run_status", runtime_record.required_columns)
+        self.assertIn("triage_latest_evaluation_method", runtime_record.required_columns)
+        self.assertIn("triage_advisory_gate_status", runtime_record.required_columns)
+        self.assertIn("triage_last_evaluated_at", runtime_record.required_columns)
+        self.assertIn("triage_failed_count", runtime_record.required_columns)
 
     def test_validate_ui_lite_db_accepts_catalog_and_truth_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import duckdb
 
@@ -22,8 +23,11 @@ class OperatorSurfaceRefreshRunRecord:
     error: str | None = None
 
 
-def persist_operator_surface_refresh_run(db_path: str | Path, record: OperatorSurfaceRefreshRunRecord) -> None:
-    con = duckdb.connect(str(db_path), read_only=False)
+def persist_operator_surface_refresh_run(target: str | Path | Any, record: OperatorSurfaceRefreshRunRecord) -> None:
+    if getattr(target, "_guard_mode", None) == "reader":
+        return
+    owns_connection = isinstance(target, (str, Path))
+    con = duckdb.connect(str(target), read_only=False) if owns_connection else getattr(target, "_con", target)
     try:
         con.execute("CREATE SCHEMA IF NOT EXISTS runtime")
         con.execute(
@@ -74,7 +78,8 @@ def persist_operator_surface_refresh_run(db_path: str | Path, record: OperatorSu
             ],
         )
     finally:
-        con.close()
+        if owns_connection:
+            con.close()
 
 
 def _sql_ts(value: datetime) -> str:

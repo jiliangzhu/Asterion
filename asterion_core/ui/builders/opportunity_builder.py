@@ -61,7 +61,7 @@ def _create_action_queue_summary(con, *, table_row_counts: dict[str, int]) -> No
         allocation_by_market = {
             str(row["market_id"]): row.to_dict()
             for _, row in allocation_frame.iterrows()
-            if row.get("market_id") is not None
+            if not _is_missing_scalar(row.get("market_id"))
         }
 
     watch_only_by_market = _table_dict_by_key(con, "ui.watch_only_vs_executed_summary", "market_id")
@@ -69,26 +69,22 @@ def _create_action_queue_summary(con, *, table_row_counts: dict[str, int]) -> No
 
     rows: list[dict[str, Any]] = []
     for _, row in base.iterrows():
-        market_id = str(row.get("market_id") or "")
+        market_id = _coalesce_text(row.get("market_id"))
         allocation = allocation_by_market.get(market_id) or {}
         watch_only = watch_only_by_market.get(market_id) or {}
         retrospective = retrospective_by_market.get(market_id) or {}
 
-        allocation_status = str(
-            allocation.get("allocation_status")
-            or row.get("allocation_status")
-            or ""
-        )
-        actionability_status = str(row.get("actionability_status") or "")
-        agent_review_status = str(row.get("agent_review_status") or "")
-        market_quality_status = str(row.get("market_quality_status") or "")
-        calibration_freshness_status = str(row.get("calibration_freshness_status") or "")
-        calibration_gate_status = str(row.get("calibration_gate_status") or "")
-        source_freshness_status = str(row.get("source_freshness_status") or "")
-        feedback_status = str(row.get("feedback_status") or watch_only.get("feedback_status") or "")
-        source_truth_status = str(row.get("source_truth_status") or "")
-        live_prereq_status = str(row.get("live_prereq_status") or "")
-        surface_delivery_status = str(row.get("surface_delivery_status") or "ok")
+        allocation_status = _coalesce_text(allocation.get("allocation_status"), row.get("allocation_status"))
+        actionability_status = _coalesce_text(row.get("actionability_status"))
+        agent_review_status = _coalesce_text(row.get("agent_review_status"))
+        market_quality_status = _coalesce_text(row.get("market_quality_status"))
+        calibration_freshness_status = _coalesce_text(row.get("calibration_freshness_status"))
+        calibration_gate_status = _coalesce_text(row.get("calibration_gate_status"))
+        source_freshness_status = _coalesce_text(row.get("source_freshness_status"))
+        feedback_status = _coalesce_text(row.get("feedback_status"), watch_only.get("feedback_status"))
+        source_truth_status = _coalesce_text(row.get("source_truth_status"))
+        live_prereq_status = _coalesce_text(row.get("live_prereq_status"))
+        surface_delivery_status = _coalesce_text(row.get("surface_delivery_status")) or "ok"
 
         operator_bucket, queue_priority, reason_codes = _classify_operator_bucket(
             actionability_status=actionability_status,
@@ -109,7 +105,7 @@ def _create_action_queue_summary(con, *, table_row_counts: dict[str, int]) -> No
             if code not in reason_codes:
                 reason_codes.append(code)
 
-        budget_impact = _json_object(allocation.get("budget_impact_json") or row.get("budget_impact"))
+        budget_impact = _json_object(_coalesce_value(allocation.get("budget_impact_json"), row.get("budget_impact")))
         preview_budget = _json_object(budget_impact.get("preview"))
         updated_at = _latest_timestamp(
             allocation.get("created_at"),
@@ -119,8 +115,9 @@ def _create_action_queue_summary(con, *, table_row_counts: dict[str, int]) -> No
             row.get("calibration_profile_materialized_at"),
             retrospective.get("updated_at"),
         )
-        strategy_id = allocation.get("strategy_id") or retrospective.get("strategy_id")
-        queue_item_id = f"queue:{market_id}:{allocation.get('allocation_decision_id') or strategy_id or 'none'}"
+        strategy_id = _coalesce_value(allocation.get("strategy_id"), retrospective.get("strategy_id"))
+        queue_item_suffix = _coalesce_text(allocation.get("allocation_decision_id"), strategy_id) or "none"
+        queue_item_id = f"queue:{market_id}:{queue_item_suffix}"
         rows.append(
             {
                 "queue_item_id": queue_item_id,
@@ -136,54 +133,54 @@ def _create_action_queue_summary(con, *, table_row_counts: dict[str, int]) -> No
                 "deployable_expected_pnl": _coerce_float(_prefer_overlay_value(allocation, row, "deployable_expected_pnl")),
                 "deployable_notional": _coerce_float(_prefer_overlay_value(allocation, row, "deployable_notional")),
                 "max_deployable_size": _coerce_float(_prefer_overlay_value(allocation, row, "max_deployable_size")),
-                "pre_budget_deployable_size": _coerce_float(allocation.get("pre_budget_deployable_size")) if allocation.get("pre_budget_deployable_size") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_size")),
-                "pre_budget_deployable_notional": _coerce_float(allocation.get("pre_budget_deployable_notional")) if allocation.get("pre_budget_deployable_notional") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_notional")),
-                "pre_budget_deployable_expected_pnl": _coerce_float(allocation.get("pre_budget_deployable_expected_pnl")) if allocation.get("pre_budget_deployable_expected_pnl") is not None else _coerce_float(preview_budget.get("pre_budget_deployable_expected_pnl")),
-                "preview_binding_limit_scope": allocation.get("preview_binding_limit_scope") or preview_budget.get("preview_binding_limit_scope"),
-                "preview_binding_limit_key": allocation.get("preview_binding_limit_key") or preview_budget.get("preview_binding_limit_key"),
-                "requested_size": _coerce_float(allocation.get("requested_size")) if allocation.get("requested_size") is not None else _coerce_float(preview_budget.get("requested_size")),
-                "requested_notional": _coerce_float(allocation.get("requested_notional")) if allocation.get("requested_notional") is not None else _coerce_float(preview_budget.get("requested_notional")),
+                "pre_budget_deployable_size": _coalesce_float(allocation.get("pre_budget_deployable_size"), preview_budget.get("pre_budget_deployable_size")),
+                "pre_budget_deployable_notional": _coalesce_float(allocation.get("pre_budget_deployable_notional"), preview_budget.get("pre_budget_deployable_notional")),
+                "pre_budget_deployable_expected_pnl": _coalesce_float(allocation.get("pre_budget_deployable_expected_pnl"), preview_budget.get("pre_budget_deployable_expected_pnl")),
+                "preview_binding_limit_scope": _coalesce_value(allocation.get("preview_binding_limit_scope"), preview_budget.get("preview_binding_limit_scope")),
+                "preview_binding_limit_key": _coalesce_value(allocation.get("preview_binding_limit_key"), preview_budget.get("preview_binding_limit_key")),
+                "requested_size": _coalesce_float(allocation.get("requested_size"), preview_budget.get("requested_size")),
+                "requested_notional": _coalesce_float(allocation.get("requested_notional"), preview_budget.get("requested_notional")),
                 "recommended_size": _coerce_float(_prefer_overlay_value(allocation, row, "recommended_size")),
                 "allocation_status": allocation_status or None,
                 "actionability_status": actionability_status or None,
                 "agent_review_status": agent_review_status or None,
                 "feedback_status": feedback_status or None,
-                "feedback_penalty": _coerce_float(row.get("feedback_penalty") or watch_only.get("feedback_penalty")),
+                "feedback_penalty": _coalesce_float(row.get("feedback_penalty"), watch_only.get("feedback_penalty")),
                 "calibration_freshness_status": calibration_freshness_status or None,
                 "calibration_gate_status": calibration_gate_status or None,
                 "calibration_gate_reason_codes_json": json.dumps(_json_list(row.get("calibration_gate_reason_codes")), ensure_ascii=True, sort_keys=True),
-                "calibration_impacted_market": bool(row.get("calibration_impacted_market")),
+                "calibration_impacted_market": _coerce_bool(row.get("calibration_impacted_market")) or False,
                 "market_quality_status": market_quality_status or None,
                 "source_freshness_status": source_freshness_status or None,
                 "source_badge": row.get("source_badge"),
                 "source_truth_status": row.get("source_truth_status"),
                 "surface_delivery_status": surface_delivery_status,
                 "surface_fallback_origin": row.get("surface_fallback_origin"),
-                "surface_delivery_reason_codes_json": row.get("surface_delivery_reason_codes_json") or "[]",
-                "surface_last_refresh_ts": row.get("surface_last_refresh_ts") or updated_at,
+                "surface_delivery_reason_codes_json": _coalesce_text(row.get("surface_delivery_reason_codes_json")) or "[]",
+                "surface_last_refresh_ts": _coalesce_value(row.get("surface_last_refresh_ts"), updated_at),
                 "operator_bucket": operator_bucket,
                 "queue_priority": queue_priority,
                 "queue_reason_codes_json": json.dumps(reason_codes, ensure_ascii=True, sort_keys=True),
-                "binding_limit_scope": allocation.get("binding_limit_scope") or budget_impact.get("binding_limit_scope"),
-                "binding_limit_key": allocation.get("binding_limit_key") or budget_impact.get("binding_limit_key"),
-                "capital_policy_id": allocation.get("capital_policy_id") or row.get("capital_policy_id"),
-                "capital_policy_version": allocation.get("capital_policy_version") or row.get("capital_policy_version"),
+                "binding_limit_scope": _coalesce_value(allocation.get("binding_limit_scope"), budget_impact.get("binding_limit_scope")),
+                "binding_limit_key": _coalesce_value(allocation.get("binding_limit_key"), budget_impact.get("binding_limit_key")),
+                "capital_policy_id": _coalesce_value(allocation.get("capital_policy_id"), row.get("capital_policy_id")),
+                "capital_policy_version": _coalesce_value(allocation.get("capital_policy_version"), row.get("capital_policy_version")),
                 "capital_scaling_reason_codes_json": json.dumps(
-                    _json_list(allocation.get("capital_scaling_reason_codes_json")) if allocation.get("capital_scaling_reason_codes_json") is not None else _json_list(row.get("capital_scaling_reason_codes")),
+                    _json_list(allocation.get("capital_scaling_reason_codes_json")) if not _is_missing_scalar(allocation.get("capital_scaling_reason_codes_json")) else _json_list(row.get("capital_scaling_reason_codes")),
                     ensure_ascii=True,
                     sort_keys=True,
                 ),
-                "regime_bucket": allocation.get("regime_bucket") or row.get("regime_bucket"),
+                "regime_bucket": _coalesce_value(allocation.get("regime_bucket"), row.get("regime_bucket")),
                 "capital_scarcity_penalty": _coerce_float(_prefer_overlay_value(allocation, row, "capital_scarcity_penalty")),
                 "concentration_penalty": _coerce_float(_prefer_overlay_value(allocation, row, "concentration_penalty")),
                 "rerank_position": int(_coerce_float(allocation.get("rerank_position")) or _coerce_float(budget_impact.get("rerank_position")) or 0) or None,
                 "rerank_reason_codes_json": json.dumps(
-                    _json_list(allocation.get("rerank_reason_codes_json")) if allocation.get("rerank_reason_codes_json") is not None else _json_list(budget_impact.get("rerank_reason_codes")),
+                    _json_list(allocation.get("rerank_reason_codes_json")) if not _is_missing_scalar(allocation.get("rerank_reason_codes_json")) else _json_list(budget_impact.get("rerank_reason_codes")),
                     ensure_ascii=True,
                     sort_keys=True,
                 ),
                 "remaining_run_budget": _coerce_float(budget_impact.get("remaining_run_budget")),
-                "allocation_decision_id": allocation.get("allocation_decision_id") or row.get("allocation_decision_id"),
+                "allocation_decision_id": _coalesce_value(allocation.get("allocation_decision_id"), row.get("allocation_decision_id")),
                 "updated_at": updated_at,
             }
         )
@@ -420,7 +417,7 @@ def _table_dict_by_key(con, table_name: str, key_column: str) -> dict[str, dict[
     return {
         str(row[key_column]): row.to_dict()
         for _, row in frame.iterrows()
-        if row.get(key_column) is not None
+        if not _is_missing_scalar(row.get(key_column))
     }
 
 
@@ -454,7 +451,7 @@ def _table_exists(con, table_name: str) -> bool:
 def _json_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
-    if value is None or value == "":
+    if _is_missing_scalar(value):
         return []
     try:
         payload = json.loads(str(value))
@@ -466,7 +463,7 @@ def _json_list(value: Any) -> list[Any]:
 def _json_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
-    if value is None or value == "":
+    if _is_missing_scalar(value):
         return {}
     try:
         payload = json.loads(str(value))
@@ -476,13 +473,8 @@ def _json_object(value: Any) -> dict[str, Any]:
 
 
 def _coerce_float(value: Any) -> float | None:
-    if value is None or value == "":
+    if _is_missing_scalar(value):
         return None
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:  # noqa: BLE001
-        pass
     try:
         return float(value)
     except Exception:  # noqa: BLE001
@@ -490,7 +482,7 @@ def _coerce_float(value: Any) -> float | None:
 
 
 def _prefer_overlay_value(overlay: dict[str, Any], base: Any, key: str) -> Any:
-    if isinstance(overlay, dict) and key in overlay and overlay.get(key) is not None:
+    if isinstance(overlay, dict) and key in overlay and not _is_missing_scalar(overlay.get(key)):
         return overlay.get(key)
     if isinstance(base, dict):
         return base.get(key)
@@ -498,7 +490,60 @@ def _prefer_overlay_value(overlay: dict[str, Any], base: Any, key: str) -> Any:
 
 
 def _latest_timestamp(*values: Any) -> Any:
-    candidates = [value for value in values if value not in {None, ""}]
+    candidates = [value for value in values if not _is_missing_scalar(value)]
     if not candidates:
         return None
     return max(candidates, key=lambda item: str(item))
+
+
+def _is_missing_scalar(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, (list, tuple, dict, set)):
+        return False
+    try:
+        missing = pd.isna(value)
+        if isinstance(missing, (list, tuple, dict, set)):
+            return False
+        if hasattr(missing, "shape"):
+            return False
+        if bool(missing):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return value == ""
+
+
+def _coalesce_value(*values: Any) -> Any:
+    for value in values:
+        if not _is_missing_scalar(value):
+            return value
+    return None
+
+
+def _coalesce_text(*values: Any) -> str:
+    value = _coalesce_value(*values)
+    return "" if value is None else str(value)
+
+
+def _coalesce_float(*values: Any) -> float | None:
+    for value in values:
+        coerced = _coerce_float(value)
+        if coerced is not None:
+            return coerced
+    return None
+
+
+def _coerce_bool(value: Any) -> bool | None:
+    if _is_missing_scalar(value):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "t", "yes", "y"}:
+        return True
+    if text in {"0", "false", "f", "no", "n"}:
+        return False
+    return None
